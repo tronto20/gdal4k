@@ -84,6 +84,7 @@ jobs:
             gdal4k/build/test-results/
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
+            verification/results/raster-transport-*.json
             verification/results/published-consumer-*/
             verification/tools/vcpkg/buildtrees/*/*.log
             gdal4k-engine/build/engine/*/cmake/build.ninja
@@ -151,6 +152,9 @@ jobs:
             gdal4k-runtime/build/test-results/
             verification/results/published-consumer-*/
             verification/results/web-inputs-*/
+            verification/results/http-inputs-*/
+            verification/results/binary-transport-*/
+            verification/results/js-codec-benchmark-*.json
             verification/results/related-inputs/
             verification/tools/vcpkg/buildtrees/*/*.log
 
