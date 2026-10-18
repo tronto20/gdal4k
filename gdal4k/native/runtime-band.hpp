@@ -40,3 +40,33 @@ inline CPLJSONObject setBandHistogram(GDALRasterBandH h,const CPLJSONObject& a) 
     for(auto item:array){auto n=std::stoll(item.ToString());require(n>=0,"Histogram counts cannot be negative");counts.push_back(static_cast<GUIntBig>(n));}
     return value(GDALSetDefaultHistogramEx(h,lo,hi,static_cast<int>(counts.size()),counts.data()));
 }
+
+// PAM's NoData setters do not invalidate previously generated masks in GDAL 3.12.4.
+// A protected base member pointer is applied to the real GDALRasterBand object:
+// no downcast to a fictitious derived instance or layout-dependent access is used.
+struct BandMaskCacheAccess : GDALRasterBand {
+    static void invalidate(GDALRasterBandH handle) {
+        auto member = &BandMaskCacheAccess::InvalidateMaskBand;
+        static_assert(std::is_same_v<decltype(member), void (GDALRasterBand::*)()>);
+        (GDALRasterBand::FromHandle(handle)->*member)();
+    }
+};
+inline CPLJSONObject setBandNoData(Runtime& runtime, GDALRasterBandH band, const CPLJSONObject& args, const std::string& operation) {
+    const auto type = GDALGetRasterDataType(band);
+    if (operation == "setNoDataValueAsInt64") require(type == GDT_Int64, "Exact NoData type does not match band");
+    if (operation == "setNoDataValueAsUInt64") require(type == GDT_UInt64, "Exact NoData type does not match band");
+    auto oldMask = GDALGetMaskBand(band);
+    auto nativeMask = GDALRasterBand::FromHandle(oldMask);
+    const bool generated = dynamic_cast<GDALAllValidMaskBand*>(nativeMask) || dynamic_cast<GDALNoDataMaskBand*>(nativeMask);
+    CPLErr code;
+    if (operation == "setNoDataValueAsInt64") code = GDALSetRasterNoDataValueAsInt64(band, std::stoll(args["value"].ToString()));
+    else if (operation == "setNoDataValueAsUInt64") code = GDALSetRasterNoDataValueAsUInt64(band, std::stoull(args["value"].ToString()));
+    else if (operation == "deleteNoDataValue") code = GDALDeleteRasterNoDataValue(band);
+    else code = GDALSetRasterNoDataValue(band, CPLAtof(args["value"].ToString().c_str()));
+    // A driver may already have freed its old cached wrapper. Invalidate aliases by
+    // pointer identity only, before resetting a remaining generated cache. Explicit
+    // mask bands (including MEM-owned masks) retain their pixel data and ownership.
+    if (oldMask) runtime.invalidatePointer(oldMask);
+    if (generated) BandMaskCacheAccess::invalidate(band);
+    return value(code);
+}

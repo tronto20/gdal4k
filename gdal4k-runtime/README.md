@@ -325,6 +325,14 @@ source.rasterizeTo(
 )
 ```
 
+
+OGR 속성 스키마는 `Layer.deleteField/reorderField/reorderFields/alterFieldDefn`과
+`FieldDefn.cloneFieldDefn`, `FieldAlterFlags`로 편집합니다. 먼저 해당 스키마의 모든 Feature·clone과
+같은 Dataset의 SQL 결과를 닫고 속성 필터를 해제합니다. 드라이버 호출 후에는 성공 여부와
+무관하게 borrowed 정의를 다시 조회합니다. borrowed FieldDefn setter/FeatureDefn 구조 변경은
+거부되며 독립 clone을 변경해 Layer API에 전달합니다. 지원 여부·변환·오류 코드는 드라이버 정책이며
+자동 트랜잭션·rollback은 없습니다. `createField`에도 같은 Feature 수명 검사가 적용됩니다.
+
 ## OGR Geometry와 공간 필터
 
 `GdalRuntime.createGeometryFromWkt/FromWkb/FromGeoJson`으로 새 Geometry를 만들고
@@ -367,3 +375,13 @@ dataset.withTransaction {
 ```
 
 `withTransaction`은 start 성공 뒤에만 트랜잭션을 소유하며 성공 시 commit, 블록 실패·취소·commit 오류 시 rollback을 시도합니다. 정리 오류는 원래 오류에 suppressed로 보존합니다. 자동 중첩/에뮬레이션/fallback은 없으며 드라이버의 구조 변경 rollback과 핸들 재조회 정책은 호출자가 관리합니다. 반환된 nonzero 값 자체는 예외가 아니므로 블록에서 검사해야 합니다. 트랜잭션 도중 외부에서 commit/rollback하거나 Dataset을 닫지 않습니다.
+
+`rasterCalculate`, `Band.reclassifyTo`, `zonalStatistics`는 창 단위 연산으로 전체
+래스터를 한 번에 메모리에 올리지 않습니다. [예제와 NoData·정밀도·정렬·취소 정책](../README.md#창-단위-래스터-계산재분류구역-통계)을 참고하세요.
+
+`Dataset.grid`/`gridTo`와 `viewshed`/`viewshedTo`는 포인트 보간과 DEM 가시권을
+처리합니다. [예제와 좌표계·입력 NoData 제약](../README.md#포인트-보간과-가시권-분석)을 참고하세요.
+
+`Band.sieveTo`, `proximityTo`, `fillNoData`와 `Dataset.contour`/`contourTo`로
+작은 분류 영역 제거, 거리 래스터, 결측값 보간과 등고선을 처리합니다.
+[사용법과 정밀도·제자리 수정 정책](../README.md#래스터-정리거리등고선)을 참고하세요.

@@ -104,6 +104,24 @@ class OgrLayerApiTest {
             assertEquals(1L, input.getFeatureCount())
         } } }
     } }
+    @Test fun schemaMutationWaitsForBatchFeaturesAndRetainedClones() = runTest(timeout = 120.seconds) { vector { ds ->
+        layer(ds, "schema-batch", first, 11).use { input ->
+            var retained: Feature? = null
+            input.forEachFeatureBatch(1) { features ->
+                assertFails { input.deleteField(0) }
+                retained = features.single().cloneFeature()
+            }
+            // Scoped batch features have closed, but their independent clone still shares the schema.
+            val clone = requireNotNull(retained)
+            assertFails { input.deleteField(0) }
+            assertEquals(11, clone.getFieldAsInteger("value")); clone.close()
+            val borrowed = requireNotNull(input.getLayerDefn())
+            assertEquals(0, input.deleteField(0))
+            assertFails { borrowed.getFieldCount() }; borrowed.close()
+            requireNotNull(input.getLayerDefn()).use { assertEquals(0, it.getFieldCount()) }
+            assertEquals(4.0, area(input))
+        }
+    } }
     private suspend fun <T> points(block: suspend (Layer) -> T): T {
         val features = (0..4).joinToString(",") { """{"type":"Feature","properties":{"value":$it},"geometry":{"type":"Point","coordinates":[$it,0]}}""" }
         val json = """{"type":"FeatureCollection","features":[$features]}"""

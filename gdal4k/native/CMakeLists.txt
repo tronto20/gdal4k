@@ -40,6 +40,12 @@ else()
 endif()
 if(EMSCRIPTEN)
     add_executable(gdal4k gdal4k.cpp web-inputs.cpp web-outputs.cpp "${GDAL4K_RESOURCE_CPP}")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(GDAL4K_SERIAL_VIEWSHED "${CMAKE_CURRENT_BINARY_DIR}/viewshed-serial.cpp")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../gdal4k-engine/tools/serial-viewshed.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/serial-viewshed" "${GDAL4K_SERIAL_VIEWSHED}" COMMAND_ERROR_IS_FATAL ANY)
+    target_sources(gdal4k PRIVATE "${GDAL4K_SERIAL_VIEWSHED}")
+    target_include_directories(gdal4k PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/serial-viewshed")
     set_target_properties(gdal4k PROPERTIES SUFFIX ".mjs")
     target_compile_options(gdal4k PRIVATE -fexceptions)
     target_link_options(gdal4k PRIVATE
