@@ -135,13 +135,13 @@ struct gdal4k_binary_result {
     g4k::BinaryRaster buffers{};
     ~gdal4k_binary_result() { gdal4k_free(json); }
 };
-extern "C" int gdal4k_binary_version() { return 1; }
+extern "C" int gdal4k_binary_version() { return 2; }
 extern "C" gdal4k_binary_result* gdal4k_execute_binary(gdal4k_context* context,const char* request,const unsigned char* input,int size,gdal4k_control* control) {
     try {
         auto result=std::make_unique<gdal4k_binary_result>();
         auto args=parse(request).GetObj("args"); auto name=args.GetString("method"),type=args.GetString("type");
         g4k::require(size>=0 && (!size || input),"Invalid binary raster input");
-        g4k::require((type=="Band"||type=="Dataset") && (name.rfind("readRaster_",0)==0 || name.rfind("writeRaster_",0)==0 || (type=="Band"&&(name.rfind("readBlock_",0)==0||name.rfind("writeBlock_",0)==0))),"Binary transport requires a raster I/O operation");
+        g4k::require((type=="CoordinateTransformation" && name=="transformPoints_Array_DoubleArray") || (type=="Band"||type=="Dataset") && (name.rfind("readRaster_",0)==0 || name.rfind("writeRaster_",0)==0 || (type=="Band"&&(name.rfind("readBlock_",0)==0||name.rfind("writeBlock_",0)==0))),"Binary transport requires a supported array operation");
         result->buffers.input=input; result->buffers.length=static_cast<size_t>(size);
         struct Scope {g4k::BinaryRaster* previous; Scope(g4k::BinaryRaster* value):previous(g4k::activeBinary){g4k::activeBinary=value;}~Scope(){g4k::activeBinary=previous;}} scope(&result->buffers);
         result->json=gdal4k_execute_controlled(context,request,control);

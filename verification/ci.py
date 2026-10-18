@@ -78,6 +78,7 @@ def main():
         gradle(*tasks,options=options)
         if target in ['macosArm64','linuxX64','mingwX64']:run(sys.executable,ROOT/'verification/raster-transport-report.py',PLATFORMS[target])
         if target in ['macosArm64','linuxX64']:run(sys.executable,ROOT/'verification/window-memory-report.py','--target',PLATFORMS[target])
+        if target in ['macosArm64','linuxX64']:run(sys.executable,ROOT/'verification/coordinate-memory-report.py','after','--target',PLATFORMS[target],'--skip-compile')
         run(sys.executable, ROOT/'verification/audit-engine.py', PLATFORMS[target])
         publish(target)
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))

@@ -26,7 +26,9 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     val handle = bridge.create(options.projData.orEmpty().encodeToByteArray(), options.gdalData.orEmpty().encodeToByteArray())
     check(handle != 0L) { "Unable to initialize GDAL" }
     object : GdalTransport {
-        override val supportsBinaryRaster = try { bridge.binaryVersion() == 1 } catch (_: UnsatisfiedLinkError) { false }
+        private val binaryVersion = try { bridge.binaryVersion() } catch (_: UnsatisfiedLinkError) { 0 }
+        override val supportsBinaryRaster = binaryVersion in 1..2
+        override val supportsBinaryCoordinates = binaryVersion == 2
         private var closed = false
         private val inputs = JniInputs({ bridge.mount(handle, it) }, bridge::unmount)
         @Synchronized private fun callNow(request: String, attachment: Any?, control: Long = 0): String {
