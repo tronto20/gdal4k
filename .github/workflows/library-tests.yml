@@ -87,6 +87,9 @@ jobs:
             verification/results/raster-transport-*.json
             verification/results/window-memory-*.json
             verification/results/window-memory/
+            verification/results/coordinate-memory-*.json
+            verification/results/coordinate-memory/
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CoordinateMemoryProbe*.class
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/RasterWindowMemoryProbe*.class
             verification/results/published-consumer-*/
             verification/tools/vcpkg/buildtrees/*/*.log

@@ -295,6 +295,7 @@ inline CPLJSONObject mdRaster(GDALMDArrayH h,const CPLJSONObject& a,bool write) 
 #include "runtime-band.hpp"
 #include "runtime-band-structures.hpp"
 #include "runtime-vector.hpp"
+#include "runtime-coordinates.hpp"
 inline CPLJSONObject Runtime::execute(const CPLJSONObject& request){
     Runtime& r=*this;const auto type=request.GetString("type"),method=request.GetString("method");
     auto id=std::stoull(request.GetString("handle","0"));

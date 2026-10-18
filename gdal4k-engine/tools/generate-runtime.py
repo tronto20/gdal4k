@@ -257,7 +257,7 @@ special('SpatialReference','getAxisOrientation','OGRAxisOrientation o=OAO_Other;
 special('SpatialReference','convertToOtherProjection','return r.result(OSRConvertToOtherProjection(h,a["projection"].ToString().c_str(),nullptr),"SpatialReference",true);')
 for name,fn in [('promoteTo3D','OSRPromoteTo3D'),('demoteTo2D','OSRDemoteTo2D')]:special('SpatialReference',name,f'return value({fn}(h,nullptr));')
 special('CoordinateTransformation','transformPoint','double x=a["x"].ToDouble(),y=a["y"].ToDouble(),z=a["z"].ToDouble();require(OCTTransform(h,1,&x,&y,&z)!=0,"Coordinate transformation failed");return numbers({x,y,z});')
-special('CoordinateTransformation','transformPoints','CPLJSONArray out;for(auto p:a.GetArray("points")){auto v=doubles(p.ToArray());require(v.size()>=2,"Point must have at least two coordinates");double z=v.size()>2?v[2]:0;require(v.size()<=4,"A point must have two, three or four coordinates");auto success=v.size()==4?OCTTransform4D(h,1,&v[0],&v[1],&z,&v[3],nullptr):OCTTransform(h,1,&v[0],&v[1],&z);require(success!=0,"Coordinate transformation failed");if(v.size()>2)v[2]=z;out.Add(numbers(v.data(),v.size())["value"]);}return value(out);')
+special('CoordinateTransformation','transformPoints','return transformCoordinatePoints(static_cast<OGRCoordinateTransformationH>(h),a);')
 special('CoordinateTransformation','transformBounds','double x0,y0,x1,y1;require(OCTTransformBounds(h,a["xMin"].ToDouble(),a["yMin"].ToDouble(),a["xMax"].ToDouble(),a["yMax"].ToDouble(),&x0,&y0,&x1,&y1,a.GetInteger("densifyPoints"))!=0,"Bounds transformation failed");return numbers({x0,y0,x1,y1});')
 special('Layer','getExtent','OGREnvelope e;if(OGR_L_GetExtent(h,&e,a.GetBool("force"))!=OGRERR_NONE)return nullValue();return numbers({e.MinX,e.MaxX,e.MinY,e.MaxY});')
 special('Feature','getFieldAsStringList','return strings(OGR_F_GetFieldAsStringList(h,a.GetInteger("index")));')
@@ -324,7 +324,7 @@ for cls in TYPES:
             payload=', '.join('"'+n+'" to '+kt_arg(n,t) for n,t in params if n!='buffer')
             body=f'return rasterCall("{cls}", "{sig}", buffer, mapOf({payload}), {str(name.startswith("write")).lower()})'
         elif cls=='CoordinateTransformation' and name=='transformPoints':
-            body=f'val result = {call}.jsonArray; result.forEachIndexed {{ i, p -> p.jsonArray.forEachIndexed {{ j, v -> points[i][j] = v.jsonPrimitive.content.toDouble() }} }}'
+            body='coordinateCall(points)'
         elif cls=='CoordinateTransformation' and name=='transformBounds':
             body=f'require(bounds.size >= 4); {call}.jsonArray.forEachIndexed {{ i, v -> bounds[i] = v.jsonPrimitive.content.toDouble() }}'
         elif ret=='Unit':

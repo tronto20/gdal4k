@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
 
 internal class RuntimeEngine(private val transport: GdalTransport) {
+    val supportsBinaryCoordinates: Boolean get() = transport.supportsBinaryCoordinates
     val supportsBinaryRaster: Boolean get() = transport.supportsBinaryRaster
     val supportsHttpInputPolicy: Boolean get() = transport.supportsHttpInputPolicy
     private val mutex = Mutex()
@@ -26,7 +27,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val name = method.substringBefore('_')
         val cancellable = transport.supportsHttpInputPolicy || name in setOf("openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "buildVRT",
-            "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
+            "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
         val control = if (method != "close" && (cancellable || caller[GdalProgressContext] != null))
             GdalCallControl(caller[Job], caller[GdalProgressContext], "$type.$name") else null
         return mutex.withLock {

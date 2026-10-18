@@ -452,3 +452,20 @@ GDAL cache setting is isolated to these benchmark processes, not a library defau
 Chromium, Wasm GC, Native and Android peak memory are not measured by this JVM probe. Correct
 sample counts/checksums and source/engine hashes are required; timing and memory are evidence,
 not a pass threshold or a cross-platform promise.
+
+### Bulk coordinate transforms
+
+`CoordinateTransformation.transformPoints` preserves its in-place nested-array API and supports
+mixed 2D/3D/4D rows. Bundled engines use bounded GDAL multi-point calls and negotiate binary
+protocol version 2 for coordinates. Version 1 engines keep binary raster support and use JSON
+for coordinates. Input and decoded output are staged privately; failed transforms or cancellation
+before final commit leave caller arrays unchanged. Cancellation racing the final copy may observe
+completed output. Do not mutate arrays concurrently. GDAL controls axis order, operation selection,
+height and time semantics. This does not add reprojection algorithms, coordinate repair or zero-copy.
+
+`verification/coordinate-memory-report.py after --target <platform>` records fresh-JVM JSON/binary
+comparisons using the same current engine, coordinate inputs and correctness checks. It separates
+operation time, cumulative JVM allocation, sampled heap and actual OS peak RSS. It runs on Linux
+x64 and macOS ARM64 CI; no timing threshold or Native/web/Android performance guarantee is implied.
+An optional `before` phase needs a separately preserved, hash-verified old engine; historical baseline
+results must not be relabelled as a current-source run.

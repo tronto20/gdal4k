@@ -19,7 +19,8 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
         initialize(createGdalWorker(), { c.resume(it) }, { c.resumeWithException(GdalException(it)) })
     }
     return object : GdalTransport {
-        override val supportsBinaryRaster: Boolean = bridge.binaryVersion == 1
+        override val supportsBinaryRaster: Boolean = bridge.binaryVersion == 1 || bridge.binaryVersion == 2
+        override val supportsBinaryCoordinates: Boolean = bridge.binaryVersion == 2
         override suspend fun callBinary(request: String, input: ByteArray?, control: GdalCallControl?): GdalBinaryReply = suspendCoroutine { c ->
             binaryInvoke(bridge, request, input, { control?.accept(it) }, { control?.shouldCancel() ?: false },
                 { c.resume(GdalBinaryReply(it.json as String, binaryBytes(it))) }, { c.resumeWithException(GdalException(it)) })

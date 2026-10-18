@@ -831,7 +831,7 @@
         double x=a["x"].ToDouble(),y=a["y"].ToDouble(),z=a["z"].ToDouble();require(OCTTransform(h,1,&x,&y,&z)!=0,"Coordinate transformation failed");return numbers({x,y,z});
     }
     if(type=="CoordinateTransformation" && method=="transformPoints_Array_DoubleArray") {
-        CPLJSONArray out;for(auto p:a.GetArray("points")){auto v=doubles(p.ToArray());require(v.size()>=2,"Point must have at least two coordinates");double z=v.size()>2?v[2]:0;require(v.size()<=4,"A point must have two, three or four coordinates");auto success=v.size()==4?OCTTransform4D(h,1,&v[0],&v[1],&z,&v[3],nullptr):OCTTransform(h,1,&v[0],&v[1],&z);require(success!=0,"Coordinate transformation failed");if(v.size()>2)v[2]=z;out.Add(numbers(v.data(),v.size())["value"]);}return value(out);
+        return transformCoordinatePoints(static_cast<OGRCoordinateTransformationH>(h),a);
     }
     if(type=="CoordinateTransformation" && method=="transformBounds_DoubleArray_Double_Double_Double_Double_Int") {
         double x0,y0,x1,y1;require(OCTTransformBounds(h,a["xMin"].ToDouble(),a["yMin"].ToDouble(),a["xMax"].ToDouble(),a["yMax"].ToDouble(),&x0,&y0,&x1,&y1,a.GetInteger("densifyPoints"))!=0,"Bounds transformation failed");return numbers({x0,y0,x1,y1});
