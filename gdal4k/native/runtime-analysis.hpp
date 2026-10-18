@@ -69,6 +69,26 @@ inline CPLJSONObject bandAnalysis(Runtime& runtime, GDALRasterBandH source, cons
         require(source != target, "Proximity source and target must differ");
         analysisBand(target); analysisSameSize(source, target);
         require(GDALGetRasterAccess(target) == GA_Update, "Proximity target is read-only");
+        // GDAL uses a signed temporary GTiff for unsigned proximity targets.
+        // Android's cwd may be read-only. Preserve an explicit CPL_TMPDIR;
+        // otherwise use the real output filesystem, or a scoped /vsimem workspace
+        // for an in-memory target. RAII restores thread-local config and removes
+        // any scratch files on success, error or cooperative cancellation.
+        auto type = GDALGetRasterDataType(target);
+        const bool scratchNeeded = type == GDT_Byte || type == GDT_UInt16 || type == GDT_UInt32;
+        std::unique_ptr<Directory> scratch;
+        std::string temporaryPath;
+        if (scratchNeeded && !CPLGetConfigOption("CPL_TMPDIR", nullptr)) {
+            auto dataset = GDALGetBandDataset(target);
+            char** files = dataset ? GDALGetFileList(dataset) : nullptr;
+            if (files && files[0]) temporaryPath = files[0];
+            CSLDestroy(files);
+            if (temporaryPath.empty()) {
+                scratch = std::make_unique<Directory>();
+                temporaryPath = scratch->path + "/proximity.tif";
+            }
+        }
+        OutputTemporaryDirectory temporary(temporaryPath, !temporaryPath.empty());
         return value(GDALComputeProximity(source, target, options.list, progress, activeProgress));
     }
     auto distance = analysisNumber(args["maxSearchDistance"].ToString());

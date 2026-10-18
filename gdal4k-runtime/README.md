@@ -407,3 +407,5 @@ dataset.withTransaction {
 `Band.sieveTo`, `proximityTo`, `fillNoData`와 `Dataset.contour`/`contourTo`로
 작은 분류 영역 제거, 거리 래스터, 결측값 보간과 등고선을 처리합니다.
 [사용법과 정밀도·제자리 수정 정책](../README.md#래스터-정리거리등고선)을 참고하세요.
+
+Proximity의 Byte·UInt16·UInt32 출력은 GDAL이 signed 임시 TIFF를 사용합니다. 명시한 `CPL_TMPDIR`은 유지하고, 기본값에서는 파일 출력의 디렉터리 또는 MEM 출력의 수명 제한 `/vsimem` 작업 공간을 사용합니다. MEM 출력의 임시 TIFF도 메모리를 사용하며 Float32·Float64 출력은 이 unsigned 변환용 임시 파일을 요구하지 않습니다.

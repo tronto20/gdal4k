@@ -425,3 +425,5 @@ val contours = dem.contour(10.0) // GPKG GdalFiles
   `LEVEL_EXP_BASE=n`, `NODATA=n`, `-dsco`/`-lco`를 받습니다. 기존 출력은 덮어쓰지 않습니다.
   생성 도중 실패한 direct 파일과 sidecar는 호출자 소유입니다. `List<String>`와
   `vararg String` 옵션 모두 제공하며 vararg는 `asList()`로 위임합니다.
+
+Proximity의 Byte·UInt16·UInt32 출력은 GDAL이 signed 임시 TIFF를 사용합니다. 명시한 `CPL_TMPDIR`은 유지하고, 기본값에서는 파일 출력의 디렉터리 또는 MEM 출력의 수명 제한 `/vsimem` 작업 공간을 사용합니다. MEM 출력의 임시 TIFF도 메모리를 사용하며 Float32·Float64 출력은 이 unsigned 변환용 임시 파일을 요구하지 않습니다.

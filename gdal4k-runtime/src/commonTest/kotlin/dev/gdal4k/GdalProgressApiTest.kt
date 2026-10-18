@@ -131,11 +131,12 @@ class GdalProgressApiTest {
     @Test fun newBandAnalysisCancellationKeepsCallerBandsAndContourInputUsable() = runTest(timeout = 120.seconds) {
         raster().use { source -> raster().use { target ->
             requireNotNull(source.getRasterBand(1)).use { band -> requireNotNull(target.getRasterBand(1)).use { out ->
-                val operations: List<suspend () -> Int> = listOf(
-                    { band.sieveTo(out, 2) }, { band.proximityTo(out) }, { band.fillNoData(maxSearchDistance = 2.0) })
-                for (operation in operations) {
+                val operations: List<Pair<String, suspend () -> Int>> = listOf(
+                    "sieve" to { band.sieveTo(out, 2) }, "proximity" to { band.proximityTo(out) },
+                    "fillNoData" to { band.fillNoData(maxSearchDistance = 2.0) })
+                for ((name, operation) in operations) {
                     assertFailsWith<CancellationException> { withGdalProgress({ false }) { operation() } }
-                    assertEquals(0, operation())
+                    assertEquals(0, operation(), "$name after cancellation")
                     assertEquals(128, source.getRasterXSize()); assertEquals(128, target.getRasterYSize())
                 }
             } }
