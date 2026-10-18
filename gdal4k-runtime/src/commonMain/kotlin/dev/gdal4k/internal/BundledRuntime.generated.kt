@@ -36,6 +36,12 @@ internal class BundledGdalRuntime(engine: RuntimeEngine) : RuntimeHandle(engine,
 }
 
 internal class BundledDataset(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Dataset {
+    override suspend fun grid(driver: String, name: String, arguments: List<String>): GdalFiles { val result = invoke("Dataset", "grid_String_String_List_String", mapOf("driver" to encode(driver), "name" to encode(name), "arguments" to encode(arguments))); return decodeFiles(result) }
+    override suspend fun gridTo(path: String, driver: String, arguments: List<String>): Unit { invoke("Dataset", "gridTo_String_String_List_String", mapOf("path" to encode(path), "driver" to encode(driver), "arguments" to encode(arguments))); return Unit }
+    override suspend fun viewshed(options: ViewshedOptions, band: Int, driver: String, name: String, creationOptions: List<String>): GdalFiles { val result = invoke("Dataset", "viewshed_ViewshedOptions_Int_String_String_List_String", mapOf("options" to encode(options), "band" to encode(band), "driver" to encode(driver), "name" to encode(name), "creationOptions" to encode(creationOptions))); return decodeFiles(result) }
+    override suspend fun viewshedTo(path: String, options: ViewshedOptions, band: Int, driver: String, creationOptions: List<String>): Unit { invoke("Dataset", "viewshedTo_String_ViewshedOptions_Int_String_List_String", mapOf("path" to encode(path), "options" to encode(options), "band" to encode(band), "driver" to encode(driver), "creationOptions" to encode(creationOptions))); return Unit }
+    override suspend fun contour(interval: Double, base: Double, band: Int, driver: String, name: String, layerName: String, arguments: List<String>): GdalFiles { val result = invoke("Dataset", "contour_Double_Double_Int_String_String_String_List_String", mapOf("interval" to encode(interval), "base" to encode(base), "band" to encode(band), "driver" to encode(driver), "name" to encode(name), "layerName" to encode(layerName), "arguments" to encode(arguments))); return decodeFiles(result) }
+    override suspend fun contourTo(path: String, interval: Double, base: Double, band: Int, driver: String, layerName: String, arguments: List<String>): Unit { invoke("Dataset", "contourTo_String_Double_Double_Int_String_String_List_String", mapOf("path" to encode(path), "interval" to encode(interval), "base" to encode(base), "band" to encode(band), "driver" to encode(driver), "layerName" to encode(layerName), "arguments" to encode(arguments))); return Unit }
     override suspend fun polygonize(driver: String, name: String, band: Int, mask: Band?, layerName: String, fieldName: String, arguments: List<String>): GdalFiles { val result = invoke("Dataset", "polygonize_String_String_Int_Band_String_String_List_String", mapOf("driver" to encode(driver), "name" to encode(name), "band" to encode(band), "mask" to handle(mask), "layerName" to encode(layerName), "fieldName" to encode(fieldName), "arguments" to encode(arguments))); return decodeFiles(result) }
     override suspend fun polygonizeTo(path: String, driver: String, band: Int, mask: Band?, layerName: String, fieldName: String, arguments: List<String>): Unit { invoke("Dataset", "polygonizeTo_String_String_Int_Band_String_String_List_String", mapOf("path" to encode(path), "driver" to encode(driver), "band" to encode(band), "mask" to handle(mask), "layerName" to encode(layerName), "fieldName" to encode(fieldName), "arguments" to encode(arguments))); return Unit }
     override suspend fun demProcessing(processing: String, driver: String, name: String, arguments: List<String>): GdalFiles { val result = invoke("Dataset", "demProcessing_String_String_String_List_String", mapOf("processing" to encode(processing), "driver" to encode(driver), "name" to encode(name), "arguments" to encode(arguments))); return decodeFiles(result) }
@@ -140,6 +146,9 @@ internal class BundledDriver(engine: RuntimeEngine, id: String, parent: RuntimeH
 }
 
 internal class BundledBand(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Band {
+    override suspend fun sieveTo(target: Band, threshold: Int, connectedness: Int, mask: Band?, useDefaultMask: Boolean): Int { val result = invoke("Band", "sieveTo_Band_Int_Int_Band_Boolean", mapOf("target" to handle(target), "threshold" to encode(threshold), "connectedness" to encode(connectedness), "mask" to handle(mask), "useDefaultMask" to encode(useDefaultMask))); return result.jsonPrimitive.int }
+    override suspend fun proximityTo(target: Band, arguments: List<String>): Int { val result = invoke("Band", "proximityTo_Band_List_String", mapOf("target" to handle(target), "arguments" to encode(arguments))); return result.jsonPrimitive.int }
+    override suspend fun fillNoData(maxSearchDistance: Double, smoothingIterations: Int, mask: Band?, arguments: List<String>): Int { val result = invoke("Band", "fillNoData_Double_Int_Band_List_String", mapOf("maxSearchDistance" to encode(maxSearchDistance), "smoothingIterations" to encode(smoothingIterations), "mask" to handle(mask), "arguments" to encode(arguments))); return result.jsonPrimitive.int }
     override suspend fun getColorTable(): ColorTable? { val result = invoke("Band", "getColorTable", mapOf()); return engine.wrapColorTable(result, null) }
     override suspend fun setColorTable(table: ColorTable?): Int { val result = invoke("Band", "setColorTable_ColorTable", mapOf("table" to handle(table))); return result.jsonPrimitive.int }
     override suspend fun getDefaultRAT(): RasterAttributeTable? { val result = invoke("Band", "getDefaultRAT", mapOf()); return engine.wrapRasterAttributeTable(result, this) }
@@ -327,9 +336,14 @@ internal class BundledGCP(engine: RuntimeEngine, id: String, parent: RuntimeHand
 }
 
 internal class BundledLayer(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Layer {
+    override suspend fun overlayTo(method: Layer, result: Layer, operation: String, arguments: List<String>): Int { val result = invoke("Layer", "overlayTo_Layer_Layer_String_List_String", mapOf("method" to handle(method), "result" to handle(result), "operation" to encode(operation), "arguments" to encode(arguments))); return result.jsonPrimitive.int }
     override suspend fun setSpatialFilter(filter: Geometry?): Int { val result = invoke("Layer", "setSpatialFilter_Geometry", mapOf("filter" to handle(filter))); return result.jsonPrimitive.int }
     override suspend fun setSpatialFilterRect(minX: Double, minY: Double, maxX: Double, maxY: Double): Int { val result = invoke("Layer", "setSpatialFilterRect_Double_Double_Double_Double", mapOf("minX" to encode(minX), "minY" to encode(minY), "maxX" to encode(maxX), "maxY" to encode(maxY))); return result.jsonPrimitive.int }
     override suspend fun getSpatialFilter(): Geometry? { val result = invoke("Layer", "getSpatialFilter", mapOf()); return engine.wrapGeometry(result, null) }
+    override suspend fun deleteField(index: Int): Int { val result = invoke("Layer", "deleteField_Int", mapOf("index" to encode(index))); return result.jsonPrimitive.int }
+    override suspend fun reorderFields(newToOld: IntArray): Int { val result = invoke("Layer", "reorderFields_IntArray", mapOf("newToOld" to encode(newToOld))); return result.jsonPrimitive.int }
+    override suspend fun reorderField(oldIndex: Int, newIndex: Int): Int { val result = invoke("Layer", "reorderField_Int_Int", mapOf("oldIndex" to encode(oldIndex), "newIndex" to encode(newIndex))); return result.jsonPrimitive.int }
+    override suspend fun alterFieldDefn(index: Int, definition: FieldDefn, flags: Int): Int { val result = invoke("Layer", "alterFieldDefn_Int_FieldDefn_Int", mapOf("index" to encode(index), "definition" to handle(definition), "flags" to encode(flags))); return result.jsonPrimitive.int }
     override suspend fun createField(field: FieldDefn, approximate: Boolean): Int { val result = invoke("Layer", "createField_FieldDefn_Boolean", mapOf("field" to handle(field), "approximate" to encode(approximate))); return result.jsonPrimitive.int }
     override suspend fun close() = closeHandle()
     override suspend fun getDataset(): Dataset? { val result = invoke("Layer", "getDataset", mapOf()); return engine.wrapDataset(result, this) }
@@ -445,6 +459,7 @@ internal class BundledFeatureDefn(engine: RuntimeEngine, id: String, parent: Run
 }
 
 internal class BundledFieldDefn(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), FieldDefn {
+    override suspend fun cloneFieldDefn(): FieldDefn { val result = invoke("FieldDefn", "cloneFieldDefn", mapOf()); return requireNotNull(engine.wrapFieldDefn(result, null)) }
     override suspend fun close() = closeHandle()
     override suspend fun getName(): String { val result = invoke("FieldDefn", "getName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getNameRef(): String { val result = invoke("FieldDefn", "getNameRef", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }

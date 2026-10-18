@@ -99,6 +99,38 @@ interface GdalRuntime {
  * Shared dataset handle. Platform-specific implementations will wrap the native dataset object.
  */
 interface Dataset {
+    /** Interpolates vector points using GDALGrid utility arguments, e.g. -a, -zfield,
+     * -txe/-tye, -outsize, -ot and -co. CRS assignment and layer/filter/cursor handling
+     * follow GDAL; -a_srs assigns output CRS without transforming coordinates.
+     * Produces a new concrete raster file; source and partial output stay caller-owned.
+     */
+    suspend fun grid(driver: String = "GTiff", name: String = "grid.tif", arguments: List<String>): GdalFiles
+    /** Direct OS/Node/opfs:/ file output, without a complete in-memory output copy. */
+    suspend fun gridTo(path: String, driver: String = "GTiff", arguments: List<String>)
+
+    /** Computes a viewshed from one DEM band. Requires a north-up raster in a projected CRS.
+     * Coordinates use that CRS; DEM heights and horizontal units must be consistent.
+     * Input NoData is not masked by GDAL and can produce erroneous visibility results.
+     * Output is Byte for visibility, Float64 for minimum target height. Driver must support
+     * direct raster creation (e.g. GTiff); use translate for a later COG conversion.
+     * Creation options are KEY=VALUE. No scale/offset, reprojection or repair is applied.
+     */
+    suspend fun viewshed(options: ViewshedOptions, band: Int = 1, driver: String = "GTiff", name: String = "viewshed.tif", creationOptions: List<String>): GdalFiles
+    /** Writes a new direct file; partial output belongs to the caller on failure. */
+    suspend fun viewshedTo(path: String, options: ViewshedOptions, band: Int = 1, driver: String = "GTiff", creationOptions: List<String>)
+
+    /** Generates a new contour line layer using GDALContourGenerateEx. Raw band values,
+     * source CRS and geotransform are used, without scale/offset or reprojection.
+     * Output fields are id (Integer64) and elevation (Real). interval must be positive.
+     * KEY=VALUE arguments: FIXED_LEVELS, LEVEL_EXP_BASE, NODATA; -dsco/-lco KEY=VALUE.
+     * FIXED_LEVELS overrides interval; otherwise LEVEL_EXP_BASE overrides interval.
+     * Default NoData comes from the source. Input and partial outputs remain caller-owned.
+     */
+    suspend fun contour(interval: Double, base: Double = 0.0, band: Int = 1, driver: String = "GPKG", name: String = "contours.gpkg", layerName: String = "contours", arguments: List<String>): GdalFiles
+
+    /** Direct OS/Node/opfs:/ output. Existing files are rejected. No full-output staging. */
+    suspend fun contourTo(path: String, interval: Double, base: Double = 0.0, band: Int = 1, driver: String = "GPKG", layerName: String = "contours", arguments: List<String>)
+
     /** Polygonizes a numeric raster band into a new vector file. Default mask excludes NoData.
      * Integer values use Int64 fields; floating values use Real fields without integer truncation.
      * UInt64 and complex bands are rejected. Output layer uses the source CRS and geotransform.

@@ -41,7 +41,7 @@ export class Outputs {
             }
             let handle;
             if (fs) {
-                const fd = fs.openSync(this.nativePath(path), mode.replace('b', ''));
+                const fd = fs.openSync(this.nativePath(path), mode.replace(/[bt]/g, ''));
                 handle = {read: (view, at) => fs.readSync(fd, view, 0, view.length, at), write: (view, at) => fs.writeSync(fd, view, 0, view.length, at), size: () => fs.fstatSync(fd).size, truncate: n => fs.ftruncateSync(fd, n), flush: () => fs.fsyncSync(fd), close: () => fs.closeSync(fd)};
             } else {
                 const create = /^[wa]/.test(mode);
