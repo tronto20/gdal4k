@@ -78,6 +78,11 @@ for m in ['cloneGeometry','centroid','pointOnSurface','boundary','convexHull','b
 SPECIAL={}
 def special(cls,name,body):SPECIAL[(cls,name)]=body
 
+OWNED.add(('FieldDefn','cloneFieldDefn'))
+special('FieldDefn','cloneFieldDefn','auto original=OGRFieldDefn::FromHandle(h);auto copy=new OGRFieldDefn(original);copy->SetIgnored(original->IsIgnored());return r.result(OGRFieldDefn::ToHandle(copy),"FieldDefn",true);')
+for method in ['createField','deleteField','reorderFields','reorderField','alterFieldDefn']:
+    special('Layer',method,f'return changeLayerFields(r,h,a,"{method}");')
+
 for method in ['createGeometryFromWkt','createGeometryFromWkb','createGeometryFromGeoJson']:
     OWNED.add(('GdalRuntime',method))
     special('GdalRuntime',method,'return createVectorGeometry(r,a,"'+method+'");')
