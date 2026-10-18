@@ -187,15 +187,29 @@ class RasterAnalysisApiTest {
                         }
                     } }
                 }
-                val path = datasetOutputPath("unsigned-proximity-$type.tif")
+                val name = "unsigned-proximity-$type.tif"
+                val web = GdalPlatform.current().osName == "web"
+                // Raw Driver.create uses GDAL's filesystem; host/OPFS outputs use translateTo.
+                val path = if (web) "/vsimem/$datasetOutputPrefix-$name" else datasetOutputPath(name)
                 requireNotNull(runtime.getDriver("GTiff")).use { driver -> try {
                     requireNotNull(driver.create(path, 3, 3, 1, type)).use { ds -> requireNotNull(ds.getRasterBand(1)).use { target ->
                         assertEquals(0, source.proximityTo(target), "GTiff $type")
                         assertContentEquals(expected, values(target))
                     } }
-                    runtime.openDataset(path).use { ds -> requireNotNull(ds.getRasterBand(1)).use { target ->
-                        assertEquals(type, target.getRasterDataType()); assertContentEquals(expected, values(target))
-                    } }
+                    runtime.openDataset(path).use { ds ->
+                        requireNotNull(ds.getRasterBand(1)).use { target ->
+                            assertEquals(type, target.getRasterDataType()); assertContentEquals(expected, values(target))
+                        }
+                        if (web) {
+                            val exported = datasetOutputPath("export-$name")
+                            try {
+                                ds.translateTo(exported, driver = "GTiff")
+                                runtime.openDataset(exported).use { reopened -> requireNotNull(reopened.getRasterBand(1)).use { target ->
+                                    assertEquals(type, target.getRasterDataType()); assertContentEquals(expected, values(target))
+                                } }
+                            } finally { driver.delete(exported) }
+                        }
+                    }
                 } finally { driver.delete(path) } }
             }
             assertContentEquals(input, values(source))

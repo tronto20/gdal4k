@@ -81,6 +81,7 @@ def main():
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))
         stage(target,[PLATFORMS[target]],[target],include_tests=target=='linuxArm64')
     elif target=='web':
+        run('node', ROOT/'verification/web-output-modes.mjs')
         gradle(':gdal4k-runtime:jsNodeTest',':gdal4k-runtime:wasmJsNodeTest',':gdal4k-runtime:jsBrowserTest',':gdal4k-runtime:wasmJsBrowserTest')
         run('node', ROOT/'verification/related-inputs.mjs')
         run(sys.executable, ROOT/'verification/audit-engine.py', 'web')
