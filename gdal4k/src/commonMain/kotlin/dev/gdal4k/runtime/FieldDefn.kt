@@ -1,9 +1,13 @@
 package dev.gdal4k.runtime
 
 /**
- * Shared OGR field definition handle.
+ * OGR field definition. Definitions borrowed from a layer/feature are read-only.
+ * Clone before editing; Layer schema changes invalidate borrowed definitions.
  */
 interface FieldDefn {
+    /** Independent editable copy, owned by the caller. */
+    suspend fun cloneFieldDefn(): FieldDefn
+
     suspend fun close()
 
     suspend fun getName(): String

@@ -325,6 +325,14 @@ source.rasterizeTo(
 )
 ```
 
+
+OGR 속성 스키마는 `Layer.deleteField/reorderField/reorderFields/alterFieldDefn`과
+`FieldDefn.cloneFieldDefn`, `FieldAlterFlags`로 편집합니다. 먼저 해당 스키마의 모든 Feature·clone과
+같은 Dataset의 SQL 결과를 닫고 속성 필터를 해제합니다. 드라이버 호출 후에는 성공 여부와
+무관하게 borrowed 정의를 다시 조회합니다. borrowed FieldDefn setter/FeatureDefn 구조 변경은
+거부되며 독립 clone을 변경해 Layer API에 전달합니다. 지원 여부·변환·오류 코드는 드라이버 정책이며
+자동 트랜잭션·rollback은 없습니다. `createField`에도 같은 Feature 수명 검사가 적용됩니다.
+
 ## OGR Geometry와 공간 필터
 
 `GdalRuntime.createGeometryFromWkt/FromWkb/FromGeoJson`으로 새 Geometry를 만들고

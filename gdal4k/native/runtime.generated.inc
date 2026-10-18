@@ -890,8 +890,20 @@
     if(type=="Layer" && method=="getSpatialFilter") {
         auto g=OGR_L_GetSpatialFilter(h);return r.result(g?OGR_G_Clone(g):nullptr,"Geometry",true);
     }
+    if(type=="Layer" && method=="deleteField_Int") {
+        return changeLayerFields(r,h,a,"deleteField");
+    }
+    if(type=="Layer" && method=="reorderFields_IntArray") {
+        return changeLayerFields(r,h,a,"reorderFields");
+    }
+    if(type=="Layer" && method=="reorderField_Int_Int") {
+        return changeLayerFields(r,h,a,"reorderField");
+    }
+    if(type=="Layer" && method=="alterFieldDefn_Int_FieldDefn_Int") {
+        return changeLayerFields(r,h,a,"alterFieldDefn");
+    }
     if(type=="Layer" && method=="createField_FieldDefn_Boolean") {
-        auto out=apply(OGR_L_CreateField, Arg(r,h), Arg(r,a["field"]), Arg(r,a["approximate"]));return value(out);
+        return changeLayerFields(r,h,a,"createField");
     }
     if(type=="Layer" && method=="getDataset") {
         return r.result(apply(OGR_L_GetDataset, Arg(r,h)),"Dataset",false,id);
@@ -1198,6 +1210,9 @@
     }
     if(type=="FeatureDefn" && method=="isSame_FeatureDefn") {
         return value(apply(OGR_FD_IsSame, Arg(r,h), Arg(r,a["other"]))!=0);
+    }
+    if(type=="FieldDefn" && method=="cloneFieldDefn") {
+        auto original=OGRFieldDefn::FromHandle(h);auto copy=new OGRFieldDefn(original);copy->SetIgnored(original->IsIgnored());return r.result(OGRFieldDefn::ToHandle(copy),"FieldDefn",true);
     }
     if(type=="FieldDefn" && method=="getName") {
         auto out=apply(OGR_Fld_GetNameRef, Arg(r,h));return value(out);

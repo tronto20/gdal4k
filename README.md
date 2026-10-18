@@ -137,6 +137,37 @@ Band와 수명이 분리된 복사본을 반환하므로 변경을 반영하려�
 타입 변환이나 리샘플링에는 기존 `readRaster`/`writeRaster`를 사용합니다. 직접 블록 접근
 전에 대기 중인 RasterIO 쓰기를 flush하며, 직접 쓰기는 기존 블록 캐시도 비웁니다.
 
+### OGR 속성 필드 스키마 편집
+
+```kotlin
+import dev.gdal4k.runtime.*
+
+// 업데이트 가능한 Dataset의 Layer에서, 활성 Feature를 모두 닫은 뒤 실행합니다.
+layer.getLayerDefn()!!.use { definition ->
+    definition.getFieldDefn(0)!!.use { original ->
+        original.cloneFieldDefn().use { replacement ->
+            replacement.setName("label")
+            check(layer.alterFieldDefn(0, replacement, FieldAlterFlags.Name) == 0)
+        }
+    }
+}
+check(layer.reorderFields(intArrayOf(2, 0, 1)) == 0) // new[i] = old[map[i]]
+check(layer.deleteField(2) == 0)
+```
+
+`deleteField`, `reorderField(s)`, `alterFieldDefn`은 OGR 드라이버의 실제 스키마 변경을
+호출합니다. `createField`도 같은 수명 검사와 복사 정책을 따릅니다. 레이어에서 만든 Feature와
+그 clone은 모두 먼저 닫고, 속성 필터를 해제하고, 같은 Dataset의 SQL 결과도 닫아야 합니다.
+저장된 피처 자체를 삭제하는 기능은 아니며, 기존 행의 값 변환·지원 여부는 드라이버 정책입니다.
+`testCapability("DeleteField" / "ReorderFields" / "AlterFieldDefn")`로 지원 여부를 조회할 수 있습니다.
+
+잘못된 인덱스·순열·flags는 호출 전에 거부합니다. 드라이버 호출까지 진행했다면 성공 여부와
+관계없이 기존 borrowed FeatureDefn/FieldDefn 핸들을 폐기하므로 정의는 다시 조회해야 합니다.
+독립 `cloneFieldDefn()`은 원본을 닫거나 스키마를 바꿔도 사용할 수 있습니다. borrowed 정의의
+setter나 FeatureDefn 직접 구조 변경은 거부하며, clone을 편집해 Layer API에 전달합니다.
+flags는 `FieldAlterFlags`를 `or`로 조합합니다. 별도 자동 트랜잭션·형 변환 fallback·복구는 없고,
+GDAL 드라이버 실패는 nonzero 오류 코드로 반환합니다. 파일 전체를 bridge로 복사하지 않습니다.
+
 ### OGR Geometry 생성과 공간 조회
 
 ```kotlin
