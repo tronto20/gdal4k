@@ -1,5 +1,7 @@
 package dev.gdal4k
 
+import dev.gdal4k.GdalFile
+import dev.gdal4k.GdalFiles
 import dev.gdal4k.runtime.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
