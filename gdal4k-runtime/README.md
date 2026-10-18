@@ -345,3 +345,7 @@ OGR 속성 스키마는 `Layer.deleteField/reorderField/reorderFields/alterField
 필터링하고 변경 시 읽기를 초기화합니다. 공간/속성 조건은 함께 적용되지만 `getFeature(fid)`는
 필터를 무시합니다. 드라이버의 envelope 후보 판정 가능성을 포함한 정확한 계약과 예시는
 [OGR 사용법](../README.md#ogr-geometry-생성과-공간-조회)을 참고하세요.
+
+`Band.sieveTo`, `proximityTo`, `fillNoData`와 `Dataset.contour`/`contourTo`로
+작은 분류 영역 제거, 거리 래스터, 결측값 보간과 등고선을 처리합니다.
+[사용법과 정밀도·제자리 수정 정책](../README.md#래스터-정리거리등고선)을 참고하세요.

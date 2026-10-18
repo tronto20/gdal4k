@@ -265,3 +265,37 @@ are ambiguous. Terrain analysis in a geographic CRS may require reprojection.
 The source stays caller-owned. Direct outputs and sidecars, including partial
 outputs after failure/cancellation, belong to the caller. Direct output avoids
 copying the resulting file into a `GdalFiles` buffer.
+
+### 래스터 정리·거리·등고선
+
+밴드 알고리즘은 이미 연 writable 대상 밴드에 직접 씁니다. 입력과 대상의 크기가 같아야
+하며 지오트랜스폼·CRS·NoData 메타데이터는 자동 복사하지 않습니다. 반환값 `0`은
+GDAL 성공 코드이며, 실패 시 일부 픽셀이 기록되었을 수 있습니다.
+
+```kotlin
+sourceBand.sieveTo(targetBand, threshold = 8, connectedness = 8)
+sourceBand.proximityTo(distanceBand, "VALUES=1,2", "DISTUNITS=PIXEL")
+editableBand.fillNoData("INTERPOLATION=NEAREST", maxSearchDistance = 20.0)
+val contours = dem.contour(10.0) // GPKG GdalFiles
+// large output: OS/Node file, or browser opfs:/ path
+ dem.contourTo("contours.gpkg", 10.0, "-lco", "SPATIAL_INDEX=YES")
+```
+
+- Sieve는 작은 연결 영역을 가장 큰 이웃의 값으로 바꿉니다. 기본 source mask는
+  NoData를 제외합니다. `useDefaultMask=false` 또는 명시적 `mask`로 조절합니다.
+  GDAL은 실수를 정수로 반올림합니다. UInt64와 complex 입력은 지원하지 않습니다.
+  source와 target을 같게 지정하면 제자리 수정합니다.
+- Proximity는 기본적으로 0이 아닌 픽셀까지 거리를 계산합니다. source/target은
+  다른 밴드여야 합니다. GDAL의 내부 source 분류값은 Int32이며 `VALUES`, `MAXDIST`,
+  `NODATA`, `USE_INPUT_NODATA`, `FIXED_BUF_VAL`을 지원합니다. GEO 거리는 GDAL의
+  픽셀 크기 규칙을 따르며 측지 거리 계산이나 재투영이 아닙니다.
+- FillNoData는 대상 밴드를 제자리 수정합니다. 기본 mask의 0 픽셀을 보간하며 명시적
+  mask도 가능합니다. 내부 연산은 GDAL의 Float32 정밀도이며 밴드 타입으로 변환합니다.
+  scale/offset과 NoData 메타데이터는 바꾸지 않습니다. 기본 scratch driver는 이식 가능한
+  `MEM`입니다. 큰 입력은 `TEMP_FILE_DRIVER=GTiff`와 writable `CPL_TMPDIR`이 있는 환경을
+  사용하세요. smoothing은 `NODATA=` 옵션을 고려하지 않는 GDAL 제약이 있습니다.
+- Contour는 실제 `GDALContourGenerateEx`로 선 레이어를 생성합니다. 원본 CRS와 회전
+  포함 geotransform을 사용하고 `id`/`elevation` 필드를 기록합니다. `FIXED_LEVELS=a,b`,
+  `LEVEL_EXP_BASE=n`, `NODATA=n`, `-dsco`/`-lco`를 받습니다. 기존 출력은 덮어쓰지 않습니다.
+  생성 도중 실패한 direct 파일과 sidecar는 호출자 소유입니다. `List<String>`와
+  `vararg String` 옵션 모두 제공하며 vararg는 `asList()`로 위임합니다.

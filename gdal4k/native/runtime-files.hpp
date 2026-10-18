@@ -205,6 +205,7 @@ inline CPLJSONObject rasterizeDataset(GDALDatasetH source, const CPLJSONObject& 
 }
 
 #include "runtime-polygonize.hpp"
+#include "runtime-analysis.hpp"
 
 struct RasterSources {
     std::vector<GDALDatasetH> datasets;
