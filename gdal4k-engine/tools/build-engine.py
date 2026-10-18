@@ -166,6 +166,7 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
  licenses=out/'licenses';licenses.mkdir(exist_ok=True)
  for f in (installed/triplet/'share').glob('*/copyright'):
   shutil.copy2(f,licenses/(f.parent.name+'.txt'))
+ if target=='web':shutil.copy2(ROOT/'gdal4k/native/serial-viewshed/LICENSE',licenses/'gdal4k-serial-viewshed.txt')
  artifacts=[out/'gdal4k.mjs',out/'gdal4k.wasm'] if target=='web' else [out/'libgdal4k.a',out/'native-linker-options.json']
  if target=='web':artifacts += [p for p in (BINARY/'build/generated/web/assets').rglob('*') if p.is_file()]
  elif dest:artifacts.append(dest)

@@ -325,6 +325,14 @@ source.rasterizeTo(
 )
 ```
 
+
+OGR 속성 스키마는 `Layer.deleteField/reorderField/reorderFields/alterFieldDefn`과
+`FieldDefn.cloneFieldDefn`, `FieldAlterFlags`로 편집합니다. 먼저 해당 스키마의 모든 Feature·clone과
+같은 Dataset의 SQL 결과를 닫고 속성 필터를 해제합니다. 드라이버 호출 후에는 성공 여부와
+무관하게 borrowed 정의를 다시 조회합니다. borrowed FieldDefn setter/FeatureDefn 구조 변경은
+거부되며 독립 clone을 변경해 Layer API에 전달합니다. 지원 여부·변환·오류 코드는 드라이버 정책이며
+자동 트랜잭션·rollback은 없습니다. `createField`에도 같은 Feature 수명 검사가 적용됩니다.
+
 ## OGR Geometry와 공간 필터
 
 `GdalRuntime.createGeometryFromWkt/FromWkb/FromGeoJson`으로 새 Geometry를 만들고
@@ -339,6 +347,8 @@ source.rasterizeTo(
 [OGR 사용법](../README.md#ogr-geometry-생성과-공간-조회)을 참고하세요.
 
 ### GDAL 진행률과 협력적 취소
+
+Sieve·Proximity·FillNoData·Contour·Grid·Viewshed와 7개 레이어 overlay도 GDAL 자체 콜백에 연결됩니다. 진행률은 호출별 표본이며 연산이나 드라이버에 따라 중간 알림이 없을 수 있습니다. 제자리 수정과 이미 생성한 출력·레이어 스키마는 취소로 되돌리지 않습니다.
 
 ```kotlin
 val files = withGdalProgress({ progress ->
@@ -357,6 +367,48 @@ val files = withGdalProgress({ progress ->
 JNI·Native는 독립 control의 atomic 취소/진행률을 읽으며 GDAL native 콜백에서 Kotlin을 재진입하지 않습니다. 웹 Worker는 진행률 콜백에서 ordinary single-thread Wasm을 yield하고 취소 메시지를 실행 큐 밖에서 처리합니다. 작업·입력 핸들이 살아 있는 동안 Worker를 종료하거나 native 스레드를 강제 종료하지 않습니다. 취소/관찰자 실패 직전에 만들어진 반환 핸들도 모두 닫은 뒤 예외를 전달합니다. VRT의 입력 lease, URI/Node/OPFS mount와 directory descriptor는 실제 Dataset 해제 시점까지 유지됩니다.
 
 입력은 호출자 소유이며 이미 쓴 출력·cursor·metadata 변경은 rollback하지 않습니다. 직접 출력의 부분 파일도 호출자가 정리합니다. HTTP·파일 mount 단계의 전송 정책은 별개이며, native 진행률 자체가 전송 제한 시간이나 무조건적인 네트워크 중단을 제공하지는 않습니다.
+
+### OGR 레이어 연산과 제한된 피처 일괄 처리
+
+`overlayTo`는 두 입력 레이어를 새 결과 레이어로 Intersection/Union/SymDifference/Identity/Update/Clip/Erase 합니다. 두 입력은 독립된 native 레이어 커서여야 합니다. 같은 Dataset.getLayer로 다시 얻은 핸들도 같은 레이어이면 거부합니다. 서로 다른 레이어 사이에서도 커서를 공유하는 드라이버는 별도로 연 입력 Dataset을 사용해야 합니다. 결과도 두 입력과 달라야 하며, 쓰기·필드 생성이 가능하고 속성 필드·피처·필터가 없어야 합니다. 먼저 결과 레이어의 살아 있는 Feature와 같은 데이터셋의 SQL 결과를 닫습니다. 결과 스키마의 빌린 정의 핸들은 드라이버 호출 전에 무효화되므로 실패 코드 이후에도 다시 조회합니다. 좌표계가 양쪽에 알려져 있는데 다르면 거절합니다. GEOS 평면 연산이며 자동 재투영·도형 복구·트랜잭션은 없습니다. 기본 geometry field를 사용하고 입력 커서/필터에는 GDAL 의미가 적용됩니다.
+
+```kotlin
+val code = input.overlayTo(method, output, LayerOverlayOperation.Intersection,
+    "INPUT_PREFIX=left_", "METHOD_PREFIX=right_")
+check(code == 0)
+
+layer.forEachFeatureBatch(batchSize = 256) { features ->
+    // 이 콜백을 벗어나면 모든 임시 Feature가 닫힙니다. 보관하려면 안에서 cloneFeature().
+    for (feature in features) println(feature.getFID())
+}
+```
+
+`readFeatureBatch(limit)`는 현재 필터·커서에서 최대 limit개를 읽고 소유권을 호출자에게 줍니다. 빈 목록은 EOF이며 실제 GDAL 읽기 오류는 예외로 구별합니다. 모든 반환 Feature를 닫아야 합니다. `forEachFeatureBatch`는 기본적으로 먼저 rewind하고 매 콜백 뒤 실패·취소 시에도 Feature를 정리합니다. 같은 레이어를 다른 코루틴에서 동시에 순회·변경하지 않습니다.
+
+`writeFeatureBatch`는 Create/Replace/Upsert를 순차 호출하고 첫 오류에서 `completed`와 `errorCode`를 반환합니다. 이전 쓰기와 GDAL의 FID 변경은 유지되고 입력 핸들은 닫지 않습니다. 원자성이 필요하면 명시적으로 지원되는 데이터셋 트랜잭션을 사용하고 실패 코드를 확인해 예외를 던집니다.
+
+```kotlin
+dataset.flushCache() // GPKG처럼 새 테이블 DDL을 미루는 드라이버의 스키마를 먼저 확정
+// 다른 작업과 같은 Dataset 트랜잭션을 공유하지 않습니다.
+dataset.withTransaction {
+    val result = output.writeFeatureBatch(features, FeatureWriteMode.Create)
+    check(result.successful) { "Written ${result.completed}, GDAL error ${result.errorCode}" }
+}
+```
+
+`withTransaction`은 start 성공 뒤에만 트랜잭션을 소유하며 성공 시 commit, 블록 실패·취소·commit 오류 시 rollback을 시도합니다. 정리 오류는 원래 오류에 suppressed로 보존합니다. 자동 중첩/에뮬레이션/fallback은 없으며 드라이버의 구조 변경 rollback과 핸들 재조회 정책은 호출자가 관리합니다. 반환된 nonzero 값 자체는 예외가 아니므로 블록에서 검사해야 합니다. 트랜잭션 도중 외부에서 commit/rollback하거나 Dataset을 닫지 않습니다.
+
+`rasterCalculate`, `Band.reclassifyTo`, `zonalStatistics`는 창 단위 연산으로 전체
+래스터를 한 번에 메모리에 올리지 않습니다. [예제와 NoData·정밀도·정렬·취소 정책](../README.md#창-단위-래스터-계산재분류구역-통계)을 참고하세요.
+
+`Dataset.grid`/`gridTo`와 `viewshed`/`viewshedTo`는 포인트 보간과 DEM 가시권을
+처리합니다. [예제와 좌표계·입력 NoData 제약](../README.md#포인트-보간과-가시권-분석)을 참고하세요.
+
+`Band.sieveTo`, `proximityTo`, `fillNoData`와 `Dataset.contour`/`contourTo`로
+작은 분류 영역 제거, 거리 래스터, 결측값 보간과 등고선을 처리합니다.
+[사용법과 정밀도·제자리 수정 정책](../README.md#래스터-정리거리등고선)을 참고하세요.
+
+Proximity의 Byte·UInt16·UInt32 출력은 GDAL이 signed 임시 TIFF를 사용합니다. 명시한 `CPL_TMPDIR`은 유지하고, 기본값에서는 파일 출력의 디렉터리 또는 MEM 출력의 수명 제한 `/vsimem` 작업 공간을 사용합니다. MEM 출력의 임시 TIFF도 메모리를 사용하며 Float32·Float64 출력은 이 unsigned 변환용 임시 파일을 요구하지 않습니다.
 
 ### HTTP deadlines, retries and cancellation
 

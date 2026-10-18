@@ -14,6 +14,7 @@ root = a.prefix/'share/gdal'
 files = resource_files(a.prefix)
 notices = '\n\n'.join('=== '+f.parent.name+' ===\n'+f.read_text() for f in sorted((a.prefix/'share').glob('*/copyright')))
 if a.web:
+    notices += '\n\n=== gdal4k serial Viewshed ===\n' + (Path(__file__).resolve().parents[2]/'gdal4k/native/serial-viewshed/LICENSE').read_text()
     a.output.parent.mkdir(parents=True,exist_ok=True)
     a.output.write_text('// GDAL data bytes live in the lazily read web resource asset.\n'
         'const char* gdal4k_data_directory() { return "/vsigdal4k/resources"; }\n'
