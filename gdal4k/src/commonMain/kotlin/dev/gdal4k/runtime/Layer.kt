@@ -6,6 +6,15 @@ package dev.gdal4k.runtime
  * Layer metadata, filtering, feature editing, cursor state and planar overlay operations.
  */
 interface Layer {
+    /** Starts a filtered column scan from the beginning. Close the stream before changing the
+     * layer's cursor, filters or schema, including through aliases or dataset operations.
+     * Supports primitive integer/real/string/binary attributes and WKB geometry; unsupported
+     * Arrow schemas fail explicitly. Existing Feature APIs remain available for other types and
+     * for distinguishing unset fields from explicit null. Requires a column-capable engine.
+     * Closing the stream may reset the layer cursor; do not mix feature and column iteration.
+     */
+    suspend fun openColumnStream(batchSize: Int = 1024): FeatureColumnStream
+
     /** GEOS planar overlay of default geometry fields into a distinct, writable, empty result
      * layer with no attribute fields or active filters. operation is intersection/union/
      * symDifference/identity/update/clip/erase. Known CRS mismatches are rejected; no reprojection.

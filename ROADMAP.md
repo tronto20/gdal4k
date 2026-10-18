@@ -1,16 +1,29 @@
-# Approved feature expansion
+# Approved improvement program
 
-User approved the complete proposed roadmap on 2026-10-18 (Asia/Seoul).
-Implementation, verification and Ready PRs are authorized. New PR merges require separate approval.
+The user authorized implementation, separate PRs, measured verification, full exact-HEAD CI,
+Ready and sequential expected-SHA merges on 2026-10-18 (Asia/Seoul). Current main integration,
+fresh reviews/rules/checks and tested-HEAD main ancestry remain mandatory for every PR.
 
-| Workstream | Deliverables | State |
+Raster analysis, Grid/Viewshed, raster calculation, OGR layer/feature batches, optional driver
+profiles, progress/cancellation and web input policies already have APIs on main. See README
+and the driver profile documentation for their supported semantics and verification limits;
+these are not missing APIs to reimplement.
+
+| Order | Workstream | State |
 | --- | --- | --- |
-| Raster cleanup and contours | Band Sieve, FillNoData, Proximity; Dataset Contour memory/direct output | Local validation passed; PR/full CI pending |
-| Interpolation and visibility | GDAL Grid vector-to-raster, Viewshed observer analysis | Implementation and local verification in progress |
-| Raster calculation | Windowed arithmetic, explicit NoData policy, reclassification, zone statistics | Pending |
-| OGR batch and layers | Bounded feature batches and layer operations, explicit transaction and ownership semantics | Pending |
-| Driver profiles | Opt-in HDF5/netCDF, Parquet, PostgreSQL capabilities and per-target dependency/size validation | Pending; assess driver dependency portability before adding profiles |
-| Long-running operations | Progress reporting and cancellation across JNI, Native and web workers | Pending |
-| Input transport | Explicit timeout/retry/cancellation and on-demand range safeguards | Pending |
+| 1 | Coordinate array transfer | Merged in PR29; tested HEAD confirmed in main |
+| 2 | Vector column transfer | In progress: existing path measured; scoped GDAL Arrow C stream implementation and verification |
+| 3 | File I/O copy reduction | Approved; extend existing direct-to-path APIs |
+| 4 | Multidimensional numeric transfer | Approved; optimize existing MDArray/MDValue APIs |
+| 5 | JVM/Native HTTP input | Approved; extend existing web policies and compare actual bounded ranges |
+| 6 | Valid-data raster footprint | Approved; wrap GDALFootprint with mask/NoData semantics |
+| 7 | Raster tile index | Approved; wrap GDALTileIndex for explicit input locations |
+| 8 | Multidimensional conversion | Approved; wrap GDALMultiDimTranslate with explicit type/shape/loss limits |
 
-Each PR must preserve the existing target/publication policy. Tests must exercise real GDAL operations and independent published consumers. Current exact HEAD CI success and fresh review/rules/base gates are required for Ready. CI success is separate from remote package publication.
+Performance claims require identical-input/environment speed, cumulative allocation and OS peak
+RSS diagnostics with raw logs/hashes. Functional additions require correctness/error/lifetime
+coverage and representative diagnostics. Preserve the default target/dependency/publication
+policy. Verify actual source and independent published consumers. CI success and merge are
+separate from remote package publication. Workstreams advance only after the previous tested
+HEAD is confirmed in fetched main. Future worktrees/branches are retained unless separately
+authorized for cleanup.

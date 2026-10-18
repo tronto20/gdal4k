@@ -368,6 +368,23 @@ JNI·Native는 독립 control의 atomic 취소/진행률을 읽으며 GDAL nativ
 
 입력은 호출자 소유이며 이미 쓴 출력·cursor·metadata 변경은 rollback하지 않습니다. 직접 출력의 부분 파일도 호출자가 정리합니다. HTTP·파일 mount 단계의 전송 정책은 별개이며, native 진행률 자체가 전송 제한 시간이나 무조건적인 네트워크 중단을 제공하지는 않습니다.
 
+### OGR 컬럼 읽기
+
+`Layer.openColumnStream(batchSize)`는 현재 속성·공간 필터를 적용해 처음부터 읽는 GDAL Arrow C stream입니다. `forEachColumnBatch`는 콜백 실패·취소에도 stream을 닫습니다. 반환 `FeatureColumnBatch`의 타입별 배열과 `valid`는 호출자 소유이며 Dataset을 닫은 후에도 유지됩니다. 정수는 Int/Long으로, 문자열은 UTF-8로, geometry는 WKB와 알려진 CRS의 `spatialReferenceWkt`로 전달하며 기본 플랫폼에 Arrow 라이브러리를 추가하지 않습니다.
+
+```kotlin
+layer.forEachColumnBatch(1024) { batch ->
+    val ids = batch.columns.single { it.name == "id" } as FeatureColumn.Longs
+    for (row in 0 until batch.rowCount) {
+        if (ids.valid[row]) println(ids.values[row])
+    }
+}
+```
+
+한 native 레이어에는 stream 하나만 열 수 있습니다. stream을 닫기 전 다른 핸들로 같은 레이어의 커서·필터·스키마를 바꾸거나 관련 Dataset 연산을 실행하면 오류가 납니다. 레이어 별칭 또는 Dataset을 닫으면 stream도 닫힙니다. 종료 시 GDAL이 커서를 재설정할 수 있으므로 Feature 순회와 혼용하지 않습니다. 수동 stream은 EOF 후에도 닫아야 합니다.
+
+primitive 정수·실수·boolean·문자열·binary와 WKB geometry를 지원합니다. nested/list/dictionary/date 등 지원하지 않는 Arrow 스키마는 명시적으로 거부하며 기존 Feature API를 사용합니다. `valid=false`는 unset과 명시적 null을 구분하지 않습니다. FID를 포함한 Arrow 컬럼 순서·이름을 유지하며 이름이 중복될 수 있습니다. batchSize는 1–65,536이고 응답은 64 MiB까지입니다. 큰 값은 더 작은 batchSize로 읽어야 하며, 단일 값에 대한 GDAL의 native 할당 크기는 별도입니다. 이 API는 zero-copy가 아닙니다. binary protocol 3 엔진이 필요하며 이전 엔진의 기존 Feature 경로는 유지됩니다.
+
 ### OGR 레이어 연산과 제한된 피처 일괄 처리
 
 `overlayTo`는 두 입력 레이어를 새 결과 레이어로 Intersection/Union/SymDifference/Identity/Update/Clip/Erase 합니다. 두 입력은 독립된 native 레이어 커서여야 합니다. 같은 Dataset.getLayer로 다시 얻은 핸들도 같은 레이어이면 거부합니다. 서로 다른 레이어 사이에서도 커서를 공유하는 드라이버는 별도로 연 입력 Dataset을 사용해야 합니다. 결과도 두 입력과 달라야 하며, 쓰기·필드 생성이 가능하고 속성 필드·피처·필터가 없어야 합니다. 먼저 결과 레이어의 살아 있는 Feature와 같은 데이터셋의 SQL 결과를 닫습니다. 결과 스키마의 빌린 정의 핸들은 드라이버 호출 전에 무효화되므로 실패 코드 이후에도 다시 조회합니다. 좌표계가 양쪽에 알려져 있는데 다르면 거절합니다. GEOS 평면 연산이며 자동 재투영·도형 복구·트랜잭션은 없습니다. 기본 geometry field를 사용하고 입력 커서/필터에는 GDAL 의미가 적용됩니다.

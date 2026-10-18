@@ -14,6 +14,7 @@ import kotlin.io.encoding.Base64
 
 internal class RuntimeEngine(private val transport: GdalTransport) {
     val supportsBinaryCoordinates: Boolean get() = transport.supportsBinaryCoordinates
+    val supportsBinaryColumns: Boolean get() = transport.supportsBinaryColumns
     val supportsBinaryRaster: Boolean get() = transport.supportsBinaryRaster
     val supportsHttpInputPolicy: Boolean get() = transport.supportsHttpInputPolicy
     private val mutex = Mutex()
@@ -25,7 +26,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val caller = currentCoroutineContext()
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
-        val cancellable = transport.supportsHttpInputPolicy || name in setOf("openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+        val cancellable = transport.supportsHttpInputPolicy || type == "FeatureColumnStream" || name in setOf("openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")

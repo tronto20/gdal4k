@@ -12,8 +12,9 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     val handle = gdal4k_create(options.projData, options.gdalData) ?: error("Unable to initialize GDAL")
     object : GdalTransport {
         private val binaryVersion = gdal4k_binary_version()
-        override val supportsBinaryRaster = binaryVersion in 1..2
-        override val supportsBinaryCoordinates = binaryVersion == 2
+        override val supportsBinaryRaster = binaryVersion in 1..3
+        override val supportsBinaryCoordinates = binaryVersion in 2..3
+        override val supportsBinaryColumns = binaryVersion == 3
         private fun binaryNow(request: String, input: ByteArray?, control: CPointer<gdal4k_control>?): GdalBinaryReply {
             fun execute(pointer: CPointer<UByteVar>?): GdalBinaryReply {
                 val result = gdal4k_execute_binary(handle, request, pointer, input?.size ?: 0, control)

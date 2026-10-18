@@ -908,6 +908,9 @@
     if(type=="GCP" && method=="setId_String") {
         auto p=static_cast<GDAL_GCP*>(h);CPLFree(p->pszId);p->pszId=CPLStrdup(a["id"].ToString().c_str());return nullValue();
     }
+    if(type=="Layer" && method=="openColumnStream_Int") {
+        return openColumnStream(r,h,a,id);
+    }
     if(type=="Layer" && method=="overlayTo_Layer_Layer_String_List_String") {
         return layerOverlay(r,h,a);
     }
@@ -1924,4 +1927,7 @@
     }
     if(type=="RasterAttributeTable" && method=="removeStatistics") {
         apply(GDALRATRemoveStatistics, Arg(r,h)); return nullValue();
+    }
+    if(type=="FeatureColumnStream" && method=="read") {
+        try { return readColumnBatch(*static_cast<VectorColumnStream*>(h)); } catch (...) { r.close(id); throw; }
     }

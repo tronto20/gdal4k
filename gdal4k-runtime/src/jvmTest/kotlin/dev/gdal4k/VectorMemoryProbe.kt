@@ -18,9 +18,12 @@ object VectorMemoryProbe {
     @JvmStatic fun main(args: Array<String>): Unit = runBlocking {
         val driverName = args[0]
         val count = args[1].toInt()
+        val mode = args.getOrElse(3) { "features" }
+        require(mode in listOf("features", "columns"))
         require(driverName in listOf("GeoJSON", "MEM", "GPKG") && count > 0)
         val transport = createTransport(GdalOptions(libraryPath = args[2]))
         var calls = 0L
+        var binaryCalls = 0L
         var bridgeBytes = 0L
         fun utf8Size(text: String): Long {
             var bytes = 0L
@@ -43,6 +46,12 @@ object VectorMemoryProbe {
                 bridgeBytes += utf8Size(request) + utf8Size(reply)
                 return reply
             }
+            override suspend fun callBinary(request: String, input: ByteArray?, control: GdalCallControl?): GdalBinaryReply {
+                val reply = transport.callBinary(request, input, control)
+                binaryCalls++
+                bridgeBytes += utf8Size(request) + utf8Size(reply.json) + (input?.size ?: 0) + reply.bytes.size
+                return reply
+            }
         })
         val runtime = BundledGdalRuntime(engine)
         val features = (0 until count).joinToString(",") { i ->
@@ -56,7 +65,40 @@ object VectorMemoryProbe {
         try {
             runtime.openDataset(input, DatasetOpenOptions(kind = DatasetKind.Vector)).use { source ->
                 suspend fun measure(layer: Layer) {
+                    fun verifyGeometry(i: Int, bytes: ByteArray): Long {
+                        check(bytes.size == 21)
+                        val buffer = ByteBuffer.wrap(bytes).order(if (bytes[0] == 1.toByte()) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
+                        check(buffer.getInt(1) == 1 && buffer.getDouble(5) == i.toDouble() && buffer.getDouble(13) == 1.0)
+                        return bytes.sumOf { byte -> byte.toLong() and 255 }
+                    }
+                    suspend fun readColumns(limit: Int): Long {
+                        var row = 0; var checksum = 0L
+                        layer.forEachColumnBatch(256) { batch ->
+                            val big = batch.columns.single { it.name == "id64" } as FeatureColumn.Longs
+                            val real = batch.columns.single { it.name == "value" } as FeatureColumn.Reals
+                            val text = batch.columns.single { it.name == "label" } as FeatureColumn.Strings
+                            val geometry = batch.columns.single { it.geometry } as FeatureColumn.Binary
+                            repeat(batch.rowCount) { n ->
+                                val i = row++
+                                if (i < limit) {
+                                    check(big.valid[n] == (i % 7 != 0))
+                                    if (big.valid[n]) {
+                                        check(big.values[n] == 9007199254740993L + i)
+                                        checksum += big.values[n] xor i.toLong()
+                                    }
+                                    check(real.valid[n] && real.values[n] == i * 0.5)
+                                    check(text.valid[n] == (i % 5 != 0))
+                                    if (text.valid[n]) check(text.values[n] == "행-$i")
+                                    check(geometry.valid[n] == (i % 11 != 0))
+                                    if (geometry.valid[n]) checksum += verifyGeometry(i, geometry.values[n])
+                                }
+                            }
+                        }
+                        check(row == count)
+                        return checksum
+                    }
                     suspend fun read(limit: Int): Long {
+                        if (mode == "columns") return readColumns(limit)
                         layer.resetReading()
                         var row = 0
                         var checksum = 0L
@@ -77,10 +119,7 @@ object VectorMemoryProbe {
                                     check((geometry != null) == (i % 11 != 0))
                                     geometry?.use {
                                         val bytes = it.exportToWkb()
-                                        check(bytes.size == 21)
-                                        val buffer = ByteBuffer.wrap(bytes).order(if (bytes[0] == 1.toByte()) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
-                                        check(buffer.getInt(1) == 1 && buffer.getDouble(5) == i.toDouble() && buffer.getDouble(13) == 1.0)
-                                        checksum += bytes.sumOf { byte -> byte.toLong() and 255 }
+                                        checksum += verifyGeometry(i, bytes)
                                     }
                                 }
                                 row++
@@ -101,7 +140,7 @@ object VectorMemoryProbe {
                             LockSupport.parkNanos(2_000_000)
                         }
                     }, "vector-heap-probe").apply { isDaemon = true }
-                    calls = 0; bridgeBytes = 0
+                    calls = 0; binaryCalls = 0; bridgeBytes = 0
                     val before = mx.getTotalThreadAllocatedBytes()
                     sampler.start()
                     val start = System.nanoTime()
@@ -111,7 +150,7 @@ object VectorMemoryProbe {
                         System.nanoTime() - start
                     } finally { sampling.set(false); sampler.join() }
                     val allocated = mx.getTotalThreadAllocatedBytes() - before
-                    println("GDAL4K_VECTOR_MEMORY {\"mode\":\"features\",\"driver\":\"$driverName\",\"rows\":$count,\"rounds\":3,\"elapsedNanos\":$elapsed,\"jvmAllocatedBytes\":$allocated,\"sampledPeakHeapUsedBytes\":${maxOf(peak.get(), heap.heapMemoryUsage.used)},\"checksum\":\"$checksum\",\"jsonCalls\":$calls,\"bridgeBytes\":$bridgeBytes,\"javaVersion\":\"${System.getProperty("java.version")}\"}")
+                    println("GDAL4K_VECTOR_MEMORY {\"mode\":\"$mode\",\"driver\":\"$driverName\",\"rows\":$count,\"rounds\":3,\"elapsedNanos\":$elapsed,\"jvmAllocatedBytes\":$allocated,\"sampledPeakHeapUsedBytes\":${maxOf(peak.get(), heap.heapMemoryUsage.used)},\"checksum\":\"$checksum\",\"jsonCalls\":$calls,\"binaryCalls\":$binaryCalls,\"bridgeBytes\":$bridgeBytes,\"javaVersion\":\"${System.getProperty("java.version")}\"}")
                 }
                 if (driverName == "GeoJSON") requireNotNull(source.getLayer(0)).use { measure(it) }
                 else requireNotNull(runtime.getDriver(driverName)).use { driver ->

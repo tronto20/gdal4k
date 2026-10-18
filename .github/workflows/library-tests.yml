@@ -89,6 +89,9 @@ jobs:
             verification/results/window-memory/
             verification/results/coordinate-memory-*.json
             verification/results/coordinate-memory/
+            verification/results/vector-memory-*.json
+            verification/results/vector-memory/
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/VectorMemoryProbe*.class
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CoordinateMemoryProbe*.class
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/RasterWindowMemoryProbe*.class
             verification/results/published-consumer-*/

@@ -8,7 +8,7 @@ engine target, so an API/version mismatch cannot become a published stub.
 from pathlib import Path
 import re
 ROOT = Path(__file__).resolve().parents[2]
-TYPES = ['GdalRuntime','Dataset','Driver','Band','SpatialReference','CoordinateTransformation','GCP','Layer','Feature','FeatureDefn','FieldDefn','GeomFieldDefn','Geometry','Group','MDArray','Dimension','FieldDomain','Relationship','Attribute','ColorTable','RasterAttributeTable']
+TYPES = ['GdalRuntime','Dataset','Driver','Band','SpatialReference','CoordinateTransformation','GCP','Layer','Feature','FeatureDefn','FieldDefn','GeomFieldDefn','Geometry','Group','MDArray','Dimension','FieldDomain','Relationship','Attribute','ColorTable','RasterAttributeTable','FeatureColumnStream']
 
 def methods(cls):
     text = '\n'.join(p.read_text() for p in (ROOT/'gdal4k/src/commonMain/kotlin/dev/gdal4k/runtime').glob('*.kt'))
@@ -316,6 +316,9 @@ special('RasterAttributeTable','translateToColorTable','auto n=a.GetInteger("ent
 
 special('Layer','overlayTo','return layerOverlay(r,h,a);')
 special('Layer','getNextFeature','CPLErrorReset();auto p=OGR_L_GetNextFeature(h);fileEnsure(p||CPLGetLastErrorType()<CE_Failure,"Cannot read next feature");return r.result(p,"Feature",true);')
+PARENT_OWNED.add(('Layer','openColumnStream'))
+special('Layer','openColumnStream','return openColumnStream(r,h,a,id);')
+special('FeatureColumnStream','read','try { return readColumnBatch(*static_cast<VectorColumnStream*>(h)); } catch (...) { r.close(id); throw; }')
 
 
 for op in ['grid','viewshed']:
@@ -346,6 +349,10 @@ for cls in TYPES:
             body=f'return rasterCall("{cls}", "{sig}", buffer, mapOf({payload}), {str(name.startswith("write")).lower()})'
         elif cls=='CoordinateTransformation' and name=='transformPoints':
             body='coordinateCall(points)'
+        elif cls=='FeatureColumnStream' and name=='read':
+            body='return columnRead()'
+        elif cls=='Layer' and name=='openColumnStream':
+            body=f'require(batchSize in 1..65536) {{ "Column batch size must be between 1 and 65536" }}; check(engine.supportsBinaryColumns) {{ "Column transfer requires engine binary protocol 3; use Feature iteration with older engines" }}; val result = {call}; return requireNotNull(engine.wrapFeatureColumnStream(result, this))'
         elif cls=='CoordinateTransformation' and name=='transformBounds':
             body=f'require(bounds.size >= 4); {call}.jsonArray.forEachIndexed {{ i, v -> bounds[i] = v.jsonPrimitive.content.toDouble() }}'
         elif ret=='Unit':

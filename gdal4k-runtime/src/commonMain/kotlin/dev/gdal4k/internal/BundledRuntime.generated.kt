@@ -336,6 +336,7 @@ internal class BundledGCP(engine: RuntimeEngine, id: String, parent: RuntimeHand
 }
 
 internal class BundledLayer(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Layer {
+    override suspend fun openColumnStream(batchSize: Int): FeatureColumnStream { require(batchSize in 1..65536) { "Column batch size must be between 1 and 65536" }; check(engine.supportsBinaryColumns) { "Column transfer requires engine binary protocol 3; use Feature iteration with older engines" }; val result = invoke("Layer", "openColumnStream_Int", mapOf("batchSize" to encode(batchSize))); return requireNotNull(engine.wrapFeatureColumnStream(result, this)) }
     override suspend fun overlayTo(method: Layer, result: Layer, operation: String, arguments: List<String>): Int { val result = invoke("Layer", "overlayTo_Layer_Layer_String_List_String", mapOf("method" to handle(method), "result" to handle(result), "operation" to encode(operation), "arguments" to encode(arguments))); return result.jsonPrimitive.int }
     override suspend fun setSpatialFilter(filter: Geometry?): Int { val result = invoke("Layer", "setSpatialFilter_Geometry", mapOf("filter" to handle(filter))); return result.jsonPrimitive.int }
     override suspend fun setSpatialFilterRect(minX: Double, minY: Double, maxX: Double, maxY: Double): Int { val result = invoke("Layer", "setSpatialFilterRect_Double_Double_Double_Double", mapOf("minX" to encode(minX), "minY" to encode(minY), "maxX" to encode(maxX), "maxY" to encode(maxY))); return result.jsonPrimitive.int }
@@ -730,6 +731,11 @@ internal class BundledRasterAttributeTable(engine: RuntimeEngine, id: String, pa
     override suspend fun removeStatistics(): Unit { invoke("RasterAttributeTable", "removeStatistics", mapOf()); return Unit }
 }
 
+internal class BundledFeatureColumnStream(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), FeatureColumnStream {
+    override suspend fun read(): FeatureColumnBatch? { return columnRead() }
+    override suspend fun close() = closeHandle()
+}
+
 internal fun RuntimeEngine.wrap(type: String, value: JsonElement, parent: RuntimeHandle?): RuntimeHandle? {
     if (value is JsonNull) return null
     val id = value.jsonPrimitive.content
@@ -754,6 +760,7 @@ internal fun RuntimeEngine.wrap(type: String, value: JsonElement, parent: Runtim
         "Attribute" -> BundledAttribute(this, id, parent)
         "ColorTable" -> BundledColorTable(this, id, parent)
         "RasterAttributeTable" -> BundledRasterAttributeTable(this, id, parent)
+        "FeatureColumnStream" -> BundledFeatureColumnStream(this, id, parent)
         else -> error("Unknown GDAL handle type: $type")
     }
 }
@@ -777,3 +784,4 @@ internal fun RuntimeEngine.wrapRelationship(value: JsonElement, parent: RuntimeH
 internal fun RuntimeEngine.wrapAttribute(value: JsonElement, parent: RuntimeHandle?): Attribute? = wrap("Attribute", value, parent) as Attribute?
 internal fun RuntimeEngine.wrapColorTable(value: JsonElement, parent: RuntimeHandle?): ColorTable? = wrap("ColorTable", value, parent) as ColorTable?
 internal fun RuntimeEngine.wrapRasterAttributeTable(value: JsonElement, parent: RuntimeHandle?): RasterAttributeTable? = wrap("RasterAttributeTable", value, parent) as RasterAttributeTable?
+internal fun RuntimeEngine.wrapFeatureColumnStream(value: JsonElement, parent: RuntimeHandle?): FeatureColumnStream? = wrap("FeatureColumnStream", value, parent) as FeatureColumnStream?
