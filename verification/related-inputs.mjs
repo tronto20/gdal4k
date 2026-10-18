@@ -26,7 +26,7 @@ async function verifyShape(bridge, source, attachment) {
         if (response.error) throw new Error(response.error);
         return response.result.value;
     }
-    const id = await call('GdalRuntime', '0', 'openDataset_String_DatasetOpenOptions', {source, options: {update: false, kind: 4, options: []}}, attachment);
+    const id = await call('GdalRuntime', '0', 'openDataset_String_DatasetOpenOptions', {source, options: {update: false, kind: 4, options: [], ...(attachment?.kind === 'urls' ? {httpInputPolicy: {requestTimeoutMillis:5000,maxRetries:1,retryDelayMillis:0,maxRetryDelayMillis:10,requireStrongETag:true}} : {})}}, attachment);
     try {
         const result = await call('Dataset', id, 'translateVector_String_String_List_String', {driver: 'GeoJSON', name: 'out.geojson', arguments: ['-t_srs', 'EPSG:4326']});
         const bytes = Uint8Array.from(atob(result.files.find(f => f.name === result.main).data), c => c.charCodeAt(0));
@@ -134,9 +134,11 @@ try {
         }, {verify: verifyShape.toString(), base, mainRoute, relatedFiles});
         assert(!requests.some(r => r.url.includes('unused.bin')));
         assert(requests.filter(r => r.range).every(r => /^bytes=\d+-\d+$/.test(r.range)));
-        const destination = path.join(root, 'verification/results/related-inputs');
+        const label = process.argv[3];
+        if (label && !['js','wasmJs'].includes(label)) throw new Error('Invalid related input target');
+        const destination = path.join(root, 'verification/results/related-inputs' + (label ? '-' + label : ''));
         fs.mkdirSync(destination, {recursive: true});
-        fs.writeFileSync(path.join(destination, 'web.json'), JSON.stringify({status: 'passed', platforms: ['Node', 'Chromium'], scenarios: ['Shapefile SHP/SHX/DBF/PRJ', 'native Node siblings', 'selected browser File collection', 'automatic HTTP relatives', 'individually signed HTTP sidecars', 'lazy reads and bounded cache cleanup', 'duplicate names rejected'], requests}, null, 2));
+        fs.writeFileSync(path.join(destination, 'web.json'), JSON.stringify({status: 'passed', platforms: ['Node', 'Chromium'], scenarios: ['Shapefile SHP/SHX/DBF/PRJ', 'native Node siblings', 'selected browser File collection', 'automatic HTTP relatives', 'individually signed HTTP sidecars with explicit timeout/retry/strong-ETag policy', 'lazy reads and bounded cache cleanup', 'duplicate names rejected'], requests}, null, 2));
         console.log('GDAL4K_RELATED_INPUTS_OK');
     } finally { await bridge.close(); }
 } finally {

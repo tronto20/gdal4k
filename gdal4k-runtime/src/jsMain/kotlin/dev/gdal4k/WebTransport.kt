@@ -14,6 +14,7 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
         initialize(createGdalWorker(), { c.resume(it) }, { c.resumeWithException(GdalException(it)) })
     }
     return object : GdalTransport {
+        override val supportsHttpInputPolicy = true
         override suspend fun call(request: String, attachment: Any?, control: GdalCallControl?): String = suspendCoroutine { c ->
             if (control == null) invoke(bridge, request, attachment, { c.resume(it) }, { c.resumeWithException(GdalException(it)) })
             else controlledInvoke(bridge, request, attachment, control::accept, control::shouldCancel, { c.resume(it) }, { c.resumeWithException(GdalException(it)) })

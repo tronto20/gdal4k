@@ -9,7 +9,7 @@ const wasmUrl = new URL('./gdal4k.wasm', import.meta.url);
 let module, context, inputs, outputs, queue = Promise.resolve();
 const datasets = new Map();
 const pendingCalls = new Set(), cancelledCalls = new Set();
-let activeControl, activeCall;
+let activeControl, activeCall, activeAbort;
 function nodeWasmBinary() {
     const bytes = process.getBuiltinModule('fs').readFileSync(wasmUrl);
     // Emscripten makes a copy of a Buffer/Uint8Array, but only a view of an
@@ -31,6 +31,22 @@ async function execute(request, control = 0) {
     if (!pointer) throw new Error('GDAL allocation failed');
     try { return module.UTF8ToString(pointer); } finally { module._gdal4k_free(pointer); }
 }
+function releaseInputs(response, args) {
+    // Public handles may close before native VRT dependencies release their source mounts.
+    const released = response.releasedDatasets ?? (!response.error && args?.method === 'close' ? [args.handle] : []);
+    for (const handle of released) { datasets.get(handle)?.close(); datasets.delete(handle); }
+}
+async function cleanupAllocated(response, failure) {
+    for (const handle of [...(response.allocatedHandles ?? [])].reverse()) {
+        try {
+            const closed = JSON.parse(await execute({op: 'runtime', args: {type: 'Handle', handle, method: 'close', parameters: {}}}));
+            releaseInputs(closed);
+            if (closed.error) throw new Error(closed.error);
+        } catch (cleanup) {
+            (failure.cleanupErrors ??= []).push(String(cleanup.stack || cleanup));
+        }
+    }
+}
 async function dispatch({id, operation, payload, file, controlled}) {
     let mounted;
     try {
@@ -46,15 +62,20 @@ async function dispatch({id, operation, payload, file, controlled}) {
             if (!context) throw inputs.lastError || new Error('Unable to initialize bundled GDAL');
         } else if (operation === 'call') {
             if (!context) throw new Error('GDAL Worker is closed');
+            activeCall = id; activeAbort = new AbortController();
+            if (cancelledCalls.has(id)) activeAbort.abort(new DOMException('HTTP input operation cancelled', 'AbortError'));
+            inputs.beginCall(activeAbort.signal);
             const request = JSON.parse(payload);
             const args = request.args;
             if (args?.type === 'GdalRuntime' && args.method === 'openDataset_String_DatasetOpenOptions') {
                 let source = args.parameters.source;
+                const policy = args.parameters.options?.httpInputPolicy;
+                if (policy && ((file && file.kind !== 'urls') || !/^https?:\/\//i.test(source))) throw new Error('HTTP input policy requires a direct HTTP(S) URL');
                 if (source.startsWith('opfs:/')) { source = outputs.path(source); args.parameters.source = source; }
                 const virtual = source.startsWith('/vsigdal4k-output/') || /^\/vsi[a-z0-9_]+\//i.test(source);
                 if (file || /^https?:\/\//i.test(source) || (node && !virtual)) {
                     if (args.parameters.options?.update) throw new Error('Direct web inputs are read-only');
-                    mounted = await inputs.mount(source, file);
+                    mounted = await inputs.mount(source, file, policy);
                     args.parameters.source = mounted.path;
                 } else if (!virtual) {
                     throw new Error('Browser paths require a selected File; use openDataset(file) or an HTTP(S) URL');
@@ -64,7 +85,7 @@ async function dispatch({id, operation, payload, file, controlled}) {
             if (args?.type === 'Driver' && args.method === 'delete_String') args.parameters.name = outputs.path(args.parameters.name);
             inputs.lastError = null; outputs.lastError = null;
             if (controlled) {
-                activeControl = module._gdal4k_control_create(); activeCall = id;
+                activeControl = module._gdal4k_control_create();
                 if (!activeControl) throw new Error('Unable to allocate GDAL control');
                 module.gdal4kProgress = event => port.postMessage({id, progress: event});
                 if (cancelledCalls.has(id)) module._gdal4k_control_cancel(activeControl);
@@ -73,27 +94,22 @@ async function dispatch({id, operation, payload, file, controlled}) {
             finally {
                 module.gdal4kProgress = undefined;
                 if (activeControl) module._gdal4k_control_destroy(activeControl);
-                activeControl = 0; activeCall = undefined;
+                activeControl = 0;
             }
             const response = JSON.parse(result);
-            if (inputs.lastError || outputs.lastError) {
-                // RasterIO can return a numeric error; keep the transport error actionable.
-                const failure = inputs.lastError || outputs.lastError;
-                if (mounted && typeof response.result?.value === 'string') {
-                    await execute({op: 'runtime', args: {type: 'Handle', handle: response.result.value, method: 'close', parameters: {}}});
-                }
-                throw failure;
-            }
             if (mounted) {
                 if (response.error) { mounted.close(); mounted = null; }
                 else { datasets.set(response.result.value, mounted); mounted = null; }
             }
-            // Native VRT leases may retain mounts after the public source handle closes.
-            // Release only datasets whose native resources were actually destroyed.
-            const released = response.releasedDatasets ?? (!response.error && args?.method === 'close' ? [args.handle] : []);
-            for (const handle of released) {
-                datasets.get(handle)?.close();
-                datasets.delete(handle);
+            releaseInputs(response, args);
+            if (inputs.lastError || outputs.lastError) {
+                // A backend read can fail even when GDAL returns a numeric error or an
+                // allocated result. Release every new handle, retaining the primary failure.
+                const failure = inputs.lastError || outputs.lastError;
+                if (!response.allocatedHandles && args?.method === 'openDataset_String_DatasetOpenOptions' &&
+                    typeof response.result?.value === 'string') response.allocatedHandles = [response.result.value];
+                await cleanupAllocated(response, failure);
+                throw failure;
             }
         } else if (operation === 'close') {
             if (context) await module.ccall('gdal4k_destroy', null, ['number'], [context], {async: true});
@@ -105,8 +121,11 @@ async function dispatch({id, operation, payload, file, controlled}) {
         port.postMessage({id, result});
     } catch (error) {
         mounted?.close();
-        port.postMessage({id, error: String(error.stack || error)});
+        port.postMessage({id, error: String(error.stack || error) + (error.cleanupErrors?.length ? '\nCleanup: ' + error.cleanupErrors.join('\n') : '')});
     } finally {
+        if (activeCall === id) {
+            inputs?.endCall(); activeAbort = undefined; activeCall = undefined;
+        }
         pendingCalls.delete(id); cancelledCalls.delete(id);
     }
 }
@@ -115,7 +134,10 @@ const receive = message => {
     // GDAL call queue and touches only the independent atomic control, never the context.
     if (message.operation === 'cancel') {
         if (pendingCalls.has(message.id)) cancelledCalls.add(message.id);
-        if (activeCall === message.id && activeControl) module._gdal4k_control_cancel(activeControl);
+        if (activeCall === message.id) {
+            activeAbort?.abort(new DOMException('HTTP input operation cancelled', 'AbortError'));
+            if (activeControl) module._gdal4k_control_cancel(activeControl);
+        }
         return;
     }
     if (message.operation === 'call') pendingCalls.add(message.id);

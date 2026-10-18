@@ -1,56 +1,10 @@
+import {httpSource, MissingInput} from './gdal4k-http-input.mjs';
 // Read-only random access. File contents never become a MEMFS or /vsimem file.
 const CHUNK = 64 * 1024;
 const CACHE_LIMIT = 8 * 1024 * 1024;
 const nodeRuntime = typeof process !== 'undefined' && process.versions?.node;
 const nodeFs = nodeRuntime ? process.getBuiltinModule('fs') : null;
 const validName = name => typeof name === 'string' && name.length && name !== '.' && name !== '..' && !/[\/\\:\0]/.test(name);
-class MissingInput extends Error {}
-function range(response, start, end, total) {
-    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response);
-    if (!match || +match[1] !== start || +match[2] !== end || (total !== undefined && +match[3] !== total)) {
-        throw new Error('Invalid HTTP Content-Range; expose this header through CORS');
-    }
-    const size = +match[3];
-    if (!Number.isSafeInteger(size) || size <= end) throw new Error('Invalid HTTP file size');
-    return size;
-}
-async function readExact(response, expected) {
-    const reader = response.body.getReader();
-    const bytes = new Uint8Array(expected);
-    let count = 0;
-    try {
-        for (;;) {
-            const {done, value} = await reader.read();
-            if (done) break;
-            if (count + value.length > expected) throw new Error('Invalid HTTP range payload length');
-            bytes.set(value, count); count += value.length;
-        }
-        if (count !== expected) throw new Error('Invalid HTTP range payload length');
-        return bytes;
-    } finally { await reader.cancel(); }
-}
-async function httpSource(url) {
-    async function fetchRange(start, end, size, validator) {
-        const headers = {Range: `bytes=${start}-${end}`};
-        if (validator) headers['If-Range'] = validator;
-        const response = await fetch(url, {headers, credentials: 'same-origin', signal: AbortSignal.timeout(30000)});
-        try {
-            if (response.status === 404) throw new MissingInput('Input file was not found');
-            if (response.status !== 206) throw new Error('HTTP input requires 206 byte-range responses; full-download fallback is disabled');
-            const total = range(response.headers.get('Content-Range'), start, end, size);
-            if (validator && response.headers.get('ETag') !== validator) throw new Error('HTTP input changed during reading');
-            const bytes = await readExact(response, end - start + 1);
-            return {total, bytes, etag: response.headers.get('ETag')};
-        } catch (error) { await response.body?.cancel().catch(() => {}); throw error; }
-    }
-    const initial = await fetchRange(0, 0);
-    const validator = initial.etag && !initial.etag.startsWith('W/') ? initial.etag : null;
-    return {
-        size: initial.total,
-        async read(start, end) { return (await fetchRange(start, end, initial.total, validator)).bytes; },
-        close() {},
-    };
-}
 
 export class Inputs {
     constructor() {
@@ -61,7 +15,10 @@ export class Inputs {
         this.cachedBytes = 0;
         this.lastError = null;
         this.closeResources = null;
+        this.currentSignal = null;
     }
+    beginCall(signal) { this.currentSignal = signal; }
+    endCall() { this.currentSignal = null; }
     key(path) { return path.startsWith('/vsigdal4k/') ? path : '/vsigdal4k/' + path; }
     directory(path) {
         path = this.key(path);
@@ -114,7 +71,7 @@ export class Inputs {
                         const bytes = new Uint8Array(end-start+1);
                         return bytes.subarray(0, nodeFs.readSync(fd, bytes, 0, bytes.length, start));
                     }, close() { nodeFs.closeSync(fd); }};
-                } else source = await httpSource(url);
+                } else source = await httpSource(url, {}, () => this.currentSignal);
                 if (source.size !== size) throw new Error('Bundled GDAL resource asset size mismatch');
                 return source;
             })().catch(error => { source?.close(); source = null; opening = null; throw error; });
@@ -136,7 +93,9 @@ export class Inputs {
         path = this.key(path);
         const provider = await this.provider(path);
         if (!provider) throw new Error('Input has been closed');
+        provider.check?.();
         if (!Number.isSafeInteger(position) || position < 0) throw new Error('Invalid input offset');
+        if (!Number.isSafeInteger(length) || length < 0) throw new Error('Invalid input length');
         const count = Math.min(length, Math.max(0, provider.size - position));
         const output = new Uint8Array(count);
         let copied = 0;
@@ -164,7 +123,8 @@ export class Inputs {
         }
         return output;
     }
-    async mount(source, attachment) {
+    async mount(source, attachment, policy = null) {
+        if (policy && !/^https?:\/\//i.test(source)) throw new Error('HTTP input policy requires a direct HTTP(S) URL');
         let name, names, open;
         if (attachment && attachment.kind !== 'urls') {
             const files = attachment.kind === 'files' ? attachment.files : [attachment];
@@ -192,7 +152,7 @@ export class Inputs {
                     : urls ? (Object.hasOwn(urls, name) ? urls[name] : null) : new URL(encodeURIComponent(name), mainUrl).href;
                 if (!url) return null;
                 if (!/^https?:\/\//i.test(url)) throw new Error('Related inputs require HTTP(S) URLs');
-                return httpSource(url);
+                return httpSource(url, policy ?? {}, () => this.currentSignal);
             };
         } else {
             if (!nodeFs) throw new Error('Browser paths require selected Files or HTTP(S) URLs');
