@@ -266,6 +266,46 @@ The source stays caller-owned. Direct outputs and sidecars, including partial
 outputs after failure/cancellation, belong to the caller. Direct output avoids
 copying the resulting file into a `GdalFiles` buffer.
 
+### 창 단위 래스터 계산·재분류·구역 통계
+
+```kotlin
+rasterCalculate(listOf(red, nir), output, RasterChunkSize(256, 256)) { values ->
+    (values[1] - values[0]) / (values[1] + values[0]) // NDVI, raw input values
+}
+source.reclassifyTo(classes, listOf(
+    RasterClass(Double.NEGATIVE_INFINITY, 0.0, 1.0),
+    RasterClass(0.0, 10.0, 2.0),
+    RasterClass(10.0, Double.POSITIVE_INFINITY, 3.0),
+), outputNoData = -9999.0)
+val statistics: Map<Long, RasterZoneStatistics> = values.zonalStatistics(zoneIds)
+```
+
+`rasterCalculate`는 같은 크기로 정렬된 여러 Band를 2차원 창 단위로 읽어 결과 Band에
+씁니다. CRS·픽셀 그리드 정렬, 출력 파일 생성, 지오트랜스폼 복사는 호출자가 맡습니다.
+필요한 경우 기존 Warp/Rasterize로 입력과 zone ID를 같은 그리드에 맞추세요. 자동 재투영,
+resampling, scale/offset 적용은 하지 않습니다. 콜백에 넘기는 DoubleArray는 픽셀마다
+재사용하므로 보관할 경우 복사해야 합니다. GDAL 마스크·밴드 NoData·비유한 입력은 출력
+NoData로 전파하며 비유한 계산 결과도 동일하게 처리합니다. 밴드 NoData 메타데이터는
+시작할 때 새로 읽고, 실수 NoData는 GDAL의 Float32-epsilon 비교 규칙을 따릅니다.
+명시적·alpha·dataset 마스크는 GDAL의 읽기 결과를 사용합니다. 처리 중 입력과 메타데이터를
+다른 작업에서 변경하지 마세요.
+
+기본 출력 NoData는 NaN이므로 보통 Float32/Float64 결과 Band를 사용합니다. 정수 결과에는
+표현 가능한 유한 정수 NoData를 명시해야 합니다. 값의 대상 타입 변환은 GDAL 규칙을 따릅니다.
+정확한 Int64/UInt64와 complex 계산은 묵시적으로 Double로 바꾸지 않고 거부하므로 먼저
+원하는 정책으로 명시적 변환을 하세요. 그 외 Byte/Int8/16/32 및 Float16/32/64를 지원합니다.
+
+재분류는 겹치지 않는 반개구간 `[minimum, maximum)`을 내부에서 정렬하고 이진 탐색합니다.
+범위 밖 값은 출력 NoData가 됩니다. 제자리 계산도 가능하며 원래 NoData를 처리 중 유지하고
+성공 후 결과 NoData 메타데이터를 설정합니다. 예외·취소 시 이전 창의 부분 기록이 남을 수
+있습니다. 행/창 경계에서 취소를 확인하고 임시 마스크 핸들을 정리하며 입력·대상은 닫지 않습니다.
+
+구역 통계는 정수 zone ID(-2^31..2^32-1)별 count/min/max/sum/mean/모집단 표준편차를
+돌려줍니다. 두 밴드의 mask/NoData를 제외하며 0도 유효 zone입니다. 표본이 없는 zone은
+생략합니다. 평균·분산은 Welford, 합계는 보정 합산을 사용하고 Double 누적 overflow는 예외로
+알립니다. 통계는 원시 값이며 polygon 면적 가중 통계가 아닙니다. 래스터 버퍼는 창 크기에
+비례하지만 구역 누적 메모리는 서로 다른 zone 개수에 비례합니다.
+
 ### 포인트 보간과 가시권 분석
 
 ```kotlin
