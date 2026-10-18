@@ -148,7 +148,7 @@ with tempfile.TemporaryDirectory(prefix='gdal4k-web-inputs-') as temporary:
     url=f'http://127.0.0.1:{server.server_port}'
     archive=io.BytesIO()
     with zipfile.ZipFile(archive,'w') as z:z.writestr('small.tif',(ROOT/'verification/fixtures/sample.tif').read_bytes())
-    config={'output':str(work/'memory.json'),'zip':base64.b64encode(archive.getvalue()).decode(),'assets':str(assets),'url':url,'file':str(image),'browserOnly':a.browser_only,'root':str(ROOT),'workload':a.workload or a.window_only,'windowOnly':a.window_only,'compactRead':(assets/'gdal4k-resources.mjs').exists()}
+    config={'binaryOutput':str(work/'binary.json'),'output':str(work/'memory.json'),'zip':base64.b64encode(archive.getvalue()).decode(),'assets':str(assets),'url':url,'file':str(image),'browserOnly':a.browser_only,'root':str(ROOT),'workload':a.workload or a.window_only,'windowOnly':a.window_only,'compactRead':(assets/'gdal4k-resources.mjs').exists()}
     config_file=work/'config.json';config_file.write_text(json.dumps(config))
     try:subprocess.run(['node',str(ROOT/('verification/web-memory.mjs' if a.memory_only else 'verification/http-inputs.mjs' if a.http_policy else 'verification/web-inputs.mjs')),str(config_file)],check=True,cwd=ROOT)
     finally:server.shutdown();server.server_close()
@@ -172,9 +172,13 @@ with tempfile.TemporaryDirectory(prefix='gdal4k-web-inputs-') as temporary:
             if sum(record['status']==503 for record in selected('retry'))!=1:raise RuntimeError('Transient retry was not exercised')
             if not any(record['if_range']=='"policy-v1"' for record in selected('healthy')):raise RuntimeError('Conditional identity reads not exercised')
         destination=ROOT/'verification/results'/('http-inputs-'+a.target);destination.mkdir(parents=True,exist_ok=True)
-        (destination/'result.json').write_text(json.dumps({'target':a.target,'published_assets':bool(a.repo),'logical_file_bytes':image.stat().st_size,'requests':records,'result':'passed'},indent=2)+'\n')
+        (destination/'result.json').write_text(json.dumps({'target':a.target,'published_assets':bool(a.repo),'binary_raster':True,'logical_file_bytes':image.stat().st_size,'requests':records,'result':'passed'},indent=2)+'\n')
         print('GDAL4K_HTTP_INPUT_POLICY_OK',a.target,'Node+Chromium',flush=True)
         raise SystemExit(0)
+    binary=json.loads((work/'binary.json').read_text())
+    if set(binary)!=({'Chromium'} if a.browser_only else {'Node','Chromium'}) or any(v['result']!='passed' for v in binary.values()):raise RuntimeError('Binary protocol verification incomplete')
+    destination=ROOT/'verification/results'/('binary-transport-'+a.target);destination.mkdir(parents=True,exist_ok=True)
+    (destination/'result.json').write_text(json.dumps({'result':'passed','target':a.target,'published_assets':bool(a.repo),'platforms':binary},indent=2)+'\n')
     valid=[r for r in records if r['route']=='/large.tif']
     if not valid or any(r['status']!=206 or r['bytes_sent']>65536 for r in valid):raise RuntimeError('Unbounded HTTP read')
     total_read=sum(r['bytes_sent'] for r in valid)

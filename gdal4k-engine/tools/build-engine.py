@@ -55,12 +55,18 @@ def vcpkg_work_options(out):
    raise RuntimeError('Refusing shared or symlinked vcpkg workspace: '+str(path))
  return [f'--x-buildtrees-root={out/"vcpkg-buildtrees"}',f'--x-packages-root={out/"vcpkg-packages"}']
 
+def require_private_install_prefix(out):
+ # A cache miss must never turn an explicitly shared/read-only prefix into an installer target.
+ if (out/'installed').is_symlink():
+  raise RuntimeError('Refusing vcpkg installation through an installed-prefix symlink; use an isolated install prefix or an explicit read-only rebuild')
+
 def main():
  p=argparse.ArgumentParser();p.add_argument('target',choices=TARGETS);p.add_argument('--jobs',type=int,default=4);p.add_argument('--vcpkg',type=Path);p.add_argument('--build-tools',type=Path);a=p.parse_args()
  source_hash=fingerprint()
  out=BINARY/'build/engine'/a.target;out.mkdir(parents=True,exist_ok=True)
  if reusable(out,source_hash):
   print('Verified prebuilt GDAL engine: '+a.target);return
+ require_private_install_prefix(out)
  # Gradle tool preparation writes paths only; it does not alter the parent shell.
  if a.build_tools:
   values=json.loads(a.build_tools.read_text(encoding='utf-8'))

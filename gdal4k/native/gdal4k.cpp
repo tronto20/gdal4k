@@ -129,3 +129,28 @@ extern "C" void gdal4k_destroy(gdal4k_context *ctx) {
     std::lock_guard<std::mutex> lock(configurationMutex);
     delete ctx;
 }
+
+struct gdal4k_binary_result {
+    char* json = nullptr;
+    g4k::BinaryRaster buffers{};
+    ~gdal4k_binary_result() { gdal4k_free(json); }
+};
+extern "C" int gdal4k_binary_version() { return 2; }
+extern "C" gdal4k_binary_result* gdal4k_execute_binary(gdal4k_context* context,const char* request,const unsigned char* input,int size,gdal4k_control* control) {
+    try {
+        auto result=std::make_unique<gdal4k_binary_result>();
+        auto args=parse(request).GetObj("args"); auto name=args.GetString("method"),type=args.GetString("type");
+        g4k::require(size>=0 && (!size || input),"Invalid binary raster input");
+        g4k::require((type=="CoordinateTransformation" && name=="transformPoints_Array_DoubleArray") || (type=="Band"||type=="Dataset") && (name.rfind("readRaster_",0)==0 || name.rfind("writeRaster_",0)==0 || (type=="Band"&&(name.rfind("readBlock_",0)==0||name.rfind("writeBlock_",0)==0))),"Binary transport requires a supported array operation");
+        result->buffers.input=input; result->buffers.length=static_cast<size_t>(size);
+        struct Scope {g4k::BinaryRaster* previous; Scope(g4k::BinaryRaster* value):previous(g4k::activeBinary){g4k::activeBinary=value;}~Scope(){g4k::activeBinary=previous;}} scope(&result->buffers);
+        result->json=gdal4k_execute_controlled(context,request,control);
+        if(!result->json) return nullptr;
+        g4k::require(result->buffers.output.size()<=INT_MAX,"Binary raster response exceeds addressable array size");
+        return result.release();
+    } catch(...) { return nullptr; }
+}
+extern "C" const char* gdal4k_binary_json(const gdal4k_binary_result* result) {return result?result->json:nullptr;}
+extern "C" const unsigned char* gdal4k_binary_data(const gdal4k_binary_result* result) {return result&&!result->buffers.output.empty()?result->buffers.output.data():nullptr;}
+extern "C" int gdal4k_binary_size(const gdal4k_binary_result* result) {return result?static_cast<int>(result->buffers.output.size()):0;}
+extern "C" void gdal4k_binary_destroy(gdal4k_binary_result* result) {delete result;}

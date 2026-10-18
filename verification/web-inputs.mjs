@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 import {exerciseResources} from './web-resources.mjs';
+import {exerciseBinaryRaster} from './binary-raster.mjs';
+const binaryResults={};
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 const require=createRequire(import.meta.url);
 const {chromium}=require(config.root+'/verification/node_modules/playwright');
@@ -37,6 +39,7 @@ if(!config.browserOnly){
     if(inputs.cachedBytes!==0 || inputs.providers.size!==0)throw new Error('Input cache survived close');
     try {
         await exerciseResources(bridge);
+        binaryResults.Node=await exerciseBinaryRaster(bridge);
         const bytes=[...Buffer.from(config.zip,'base64')];
         async function call(type,handle,method,parameters={}) {
             const response=JSON.parse(await bridge.call(JSON.stringify({op:'runtime',args:{type,handle,method,parameters}})));
@@ -66,7 +69,7 @@ try{
     await page.goto(config.url.replace("127.0.0.1","localhost"));
     await page.locator('#file').setInputFiles(config.file);
     // The engine runs without COOP/COEP, SharedArrayBuffer, or Wasm GC.
-    await page.evaluate(async({url,exercise,resourceExercise})=>{
+    binaryResults.Chromium=await page.evaluate(async({url,exercise,resourceExercise,binaryExercise})=>{
         const {createGdalWorker}=await import(new URL('/assets/index.mjs', location.href).href);
         const bridge=await createGdalWorker();
         const run=(0,eval)('('+exercise+')');
@@ -85,6 +88,9 @@ try{
                 if(!failed)throw new Error('Expected HTTP input failure: '+path);
             }
             await run(bridge,url+'/large.tif');
+            return await (0,eval)('('+binaryExercise+')')(bridge);
         }finally{await bridge.close();}
-    },{url:config.url,exercise:exercise.toString(),resourceExercise:exerciseResources.toString()});
+    },{url:config.url,exercise:exercise.toString(),resourceExercise:exerciseResources.toString(),binaryExercise:exerciseBinaryRaster.toString()});
 }finally{await browser.close();}
+
+fs.writeFileSync(config.binaryOutput,JSON.stringify(binaryResults,null,2));

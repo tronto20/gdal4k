@@ -84,6 +84,13 @@ jobs:
             gdal4k/build/test-results/
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
+            verification/results/raster-transport-*.json
+            verification/results/window-memory-*.json
+            verification/results/window-memory/
+            verification/results/coordinate-memory-*.json
+            verification/results/coordinate-memory/
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CoordinateMemoryProbe*.class
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/RasterWindowMemoryProbe*.class
             verification/results/published-consumer-*/
             gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
             gdal4k-engine/build/engine/*/cmake/build.ninja
@@ -151,6 +158,9 @@ jobs:
             gdal4k-runtime/build/test-results/
             verification/results/published-consumer-*/
             verification/results/web-inputs-*/
+            verification/results/http-inputs-*/
+            verification/results/binary-transport-*/
+            verification/results/js-codec-benchmark-*.json
             verification/results/related-inputs/
             gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
 

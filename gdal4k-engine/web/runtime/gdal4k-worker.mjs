@@ -31,6 +31,31 @@ async function execute(request, control = 0) {
     if (!pointer) throw new Error('GDAL allocation failed');
     try { return module.UTF8ToString(pointer); } finally { module._gdal4k_free(pointer); }
 }
+async function executeBinary(request, bytes, control) {
+    const text = module.stringToNewUTF8(JSON.stringify(request));
+    if (!text) throw new Error('GDAL request allocation failed');
+    let input = 0, result = 0;
+    try {
+        if (bytes?.byteLength) {
+            input = module._malloc(bytes.byteLength);
+            if (!input) throw new Error('GDAL raster allocation failed');
+            module.HEAPU8.set(new Uint8Array(bytes), input);
+        }
+        result = await module.ccall('gdal4k_execute_binary', 'number', ['number','number','number','number','number'],
+            [context,text,input,bytes?.byteLength ?? 0,control ?? 0], {async:true});
+        if (!result) throw new Error('Binary GDAL bridge failed');
+        const json = module.UTF8ToString(module._gdal4k_binary_json(result));
+        const size = module._gdal4k_binary_size(result);
+        const pointer = module._gdal4k_binary_data(result);
+        // Wasm linear memory stays in the Worker. Transfer only this exact owned range.
+        const output = module.HEAPU8.slice(pointer,pointer+size);
+        return {json,bytes:output.buffer};
+    } finally {
+        if (result) module._gdal4k_binary_destroy(result);
+        if (input) module._free(input);
+        module._free(text);
+    }
+}
 function releaseInputs(response, args) {
     // Public handles may close before native VRT dependencies release their source mounts.
     const released = response.releasedDatasets ?? (!response.error && args?.method === 'close' ? [args.handle] : []);
@@ -47,7 +72,7 @@ async function cleanupAllocated(response, failure) {
         }
     }
 }
-async function dispatch({id, operation, payload, file, controlled}) {
+async function dispatch({id, operation, payload, file, controlled, binary}) {
     let mounted;
     try {
         let result = null;
@@ -60,6 +85,7 @@ async function dispatch({id, operation, payload, file, controlled}) {
             module.gdal4kInputs = inputs;
             context = await module.ccall('gdal4k_create', 'number', ['string', 'string'], ['', ''], {async: true});
             if (!context) throw inputs.lastError || new Error('Unable to initialize bundled GDAL');
+            result = {binaryRasterVersion: module._gdal4k_binary_version?.() ?? 0};
         } else if (operation === 'call') {
             if (!context) throw new Error('GDAL Worker is closed');
             activeCall = id; activeAbort = new AbortController();
@@ -90,13 +116,13 @@ async function dispatch({id, operation, payload, file, controlled}) {
                 module.gdal4kProgress = event => port.postMessage({id, progress: event});
                 if (cancelledCalls.has(id)) module._gdal4k_control_cancel(activeControl);
             }
-            try { result = await execute(request, activeControl); }
+            try { result = binary ? await executeBinary(request, binary.input, activeControl) : await execute(request, activeControl); }
             finally {
                 module.gdal4kProgress = undefined;
                 if (activeControl) module._gdal4k_control_destroy(activeControl);
                 activeControl = 0;
             }
-            const response = JSON.parse(result);
+            const response = JSON.parse(binary ? result.json : result);
             if (mounted) {
                 if (response.error) { mounted.close(); mounted = null; }
                 else { datasets.set(response.result.value, mounted); mounted = null; }
@@ -118,7 +144,7 @@ async function dispatch({id, operation, payload, file, controlled}) {
             datasets.clear();
             try { inputs?.close(); } finally { outputs?.closeAll(); }
         } else throw new Error('Unknown GDAL Worker operation');
-        port.postMessage({id, result});
+        port.postMessage({id, result}, binary && result?.bytes ? [result.bytes] : []);
     } catch (error) {
         mounted?.close();
         port.postMessage({id, error: String(error.stack || error) + (error.cleanupErrors?.length ? '\nCleanup: ' + error.cleanupErrors.join('\n') : '')});
