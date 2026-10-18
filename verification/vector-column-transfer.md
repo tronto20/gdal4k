@@ -56,3 +56,56 @@ Pinned upstream references:
 - [GDAL 3.12.4 Arrow implementation](https://github.com/OSGeo/gdal/blob/v3.12.4/ogr/ogrsf_frmts/generic/ogrlayerarrow.cpp), especially `GetArrowStream` and `ReleaseStream`.
 - [GDAL 3.12.4 Arrow C interface definitions](https://github.com/OSGeo/gdal/blob/v3.12.4/ogr/ogr_recordbatch.h).
 - [GDAL Arrow stream tutorial](https://gdal.org/en/stable/tutorials/vector_api_tut.html#reading-from-ogr-using-the-arrow-c-stream-data-interface).
+
+
+## Implemented column path and controlled local result
+
+`Layer.openColumnStream` owns a persistent GDAL Arrow C stream; `read` returns
+caller-owned typed columns with validity, exact Int64, UTF-8, binary and WKB plus
+known CRS WKT. Stream/array/schema release and layer/dataset alias guards cover
+EOF, failure, cancellation and parent close. Unsupported nested, dictionary,
+date and UInt64 schemas fail explicitly; use existing Feature iteration when
+its semantics are needed. No Arrow library is added to the default platform
+profile. Web GeoPackage uses GDAL's generic Arrow producer because its optimized
+producer can start a worker thread for non-contiguous FIDs; the Web engine is
+threadless. The per-call thread-local override is restored on all exits.
+
+The final controlled macOS ARM64 JVM experiment keeps the same compiled probe,
+API/runtime classes, fixtures, JVM 21.0.2 flags and checksums. Nine fresh baseline
+JVMs use the actual preserved PR30 native library with the current Kotlin Feature
+path. Eighteen fresh current JVMs measure both Feature and column paths. Each
+entry below is a median of three fresh JVM trials, each reading 8,192 rows three
+times. Column batches contain at most 256 rows.
+
+| Driver | Baseline Feature time | Current Feature time | Current columns time | Baseline allocation | Columns allocation | Baseline / columns OS peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| GeoJSON | 3.749 s | 3.793 s | 78.2 ms | 1,875 MB | 13.06 MB | 228.0 / 152.5 MB |
+| MEM | 3.768 s | 3.780 s | 40.8 ms | 1,875 MB | 13.05 MB | 233.3 / 148.9 MB |
+| GPKG | 3.792 s | 3.801 s | 39.3 ms | 1,879 MB | 13.05 MB | 244.1 / 158.5 MB |
+
+MB means decimal bytes. This instrumented workload reduces about 232,866 JSON
+calls to six JSON calls plus 99 binary calls, and cumulative JVM allocation by
+about 99.3%. It does not establish Native/Web/Android, cold I/O or universal
+speedups. Whole-process RSS includes fixture setup and warmup; timed reads and
+cumulative allocation exclude them. The 2 ms heap sampler can miss peaks.
+
+The original 27 measurements and 54 raw stdout/OS time logs remain immutable.
+After the Web-only conditional fix, a fresh normal Gradle Native producer emitted
+an identical JVM library, and all 874 actually selected production class bytes
+matched the measured classpath. Published JVM API/runtime classes, classifier
+payload, Native embedded archive and both Web KLIB asset sets were checked against
+their actual current producers; this identity proof does not relabel old reports.
+
+Local verification passed 1,033 source/API tests and 889 independent published
+consumer tests (JVM, macOS Native, JS/wasm Node and Chromium, plus missing-JVM-
+payload failure). Every real consumer ran all 11 new public cases. The Native
+consumer hid and restored all three producer paths. Full Web binary ownership,
+truncation rejection, bounded HTTP/retry/identity and related-input regressions
+passed from published assets. Android compiled locally; actual Android JNI and
+other host runtime verification remain required in exact-HEAD CI before Ready.
+
+Ignored local evidence: `verification/results/vector-columns-*-verified.json`,
+`vector-columns-final-source/proof.json`,
+`vector-columns-web-fixed-source/proof.json`, controlled `vector-memory` reports,
+and `verification/build/vector-baseline/final-controlled-recovery`. CI archives
+new Linux/macOS current-path diagnostics, compiled probes and raw OS logs.
