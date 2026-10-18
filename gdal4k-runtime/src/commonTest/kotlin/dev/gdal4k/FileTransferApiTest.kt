@@ -96,12 +96,16 @@ class FileTransferApiTest {
                     source.translateTo(path, "GTiff", listOf("-co", "TILED=YES"))
                     runtime.openDataset(path).use { verify(it, pixels) }
                 }
-                // Closing the source leaves the caller's output available.
-                runtime.openDataset(path, DatasetOpenOptions(accessMode = DatasetAccessMode.Update)).use { dataset ->
-                    requireNotNull(dataset.getRasterBand(1)).use { assertEquals(0, it.fill(17.0)) }
-                    assertEquals(0, dataset.flushCache())
+                // Closing the source leaves a seekable caller-owned output available.
+                // Direct Web inputs intentionally remain read-only, including this path.
+                runtime.openDataset(path).use { dataset ->
+                    requireNotNull(dataset.getRasterBand(1)).use { band ->
+                        val window = ByteArray(6)
+                        assertEquals(0, band.readRaster(BandRasterIOOptions(2, 1, 3, 2), window))
+                        assertContentEquals(byteArrayOf(63, 70, 77, 112, 119, 126), window)
+                    }
                 }
-                runtime.openDataset(path).use { verify(it, ByteArray(35) { 17 }) }
+                runtime.openDataset(path).use { verify(it, ByteArray(35) { (it * 7).toByte() }) }
             } finally { driver.delete(path) }
         }
     }
