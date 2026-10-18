@@ -80,6 +80,18 @@
     if(type=="GdalRuntime" && method=="datasetInfo_Dataset_DatasetInfoOptions") {
         return value(datasetInfo(r.arg(a["dataset"]),a["options"].GetArray("arguments"),false));
     }
+    if(type=="Dataset" && method=="grid_String_String_List_String") {
+        return gridViewshedDataset(h,a,"grid",false);
+    }
+    if(type=="Dataset" && method=="gridTo_String_String_List_String") {
+        return gridViewshedDataset(h,a,"grid",true);
+    }
+    if(type=="Dataset" && method=="viewshed_ViewshedOptions_Int_String_String_List_String") {
+        return gridViewshedDataset(h,a,"viewshed",false);
+    }
+    if(type=="Dataset" && method=="viewshedTo_String_ViewshedOptions_Int_String_List_String") {
+        return gridViewshedDataset(h,a,"viewshed",true);
+    }
     if(type=="Dataset" && method=="contour_Double_Double_Int_String_String_String_List_String") {
         return contourDataset(h,a,false);
     }

@@ -266,6 +266,38 @@ The source stays caller-owned. Direct outputs and sidecars, including partial
 outputs after failure/cancellation, belong to the caller. Direct output avoids
 copying the resulting file into a `GdalFiles` buffer.
 
+### 포인트 보간과 가시권 분석
+
+```kotlin
+val grid = points.grid("-a", "invdist:power=2", "-zfield", "height",
+    "-txe", "0", "1000", "-tye", "0", "1000", "-outsize", "100", "100")
+points.gridTo("grid.tif", "-a", "nearest", "-zfield", "height")
+
+val observer = ViewshedOptions(observerX = 500.0, observerY = 500.0,
+    observerHeight = 2.0, maxDistance = 1000.0)
+val visibility = dem.viewshed(observer)
+dem.viewshedTo("visible.tif", observer, "COMPRESS=JXL", "JXL_LOSSLESS=YES")
+val minimumHeight = dem.viewshed(observer.copy(output = ViewshedOutput.MinimumHeightFromGround))
+```
+
+`grid`는 실제 `GDALGrid` utility로 nearest/invdist/average/linear 등 보간, `-zfield`,
+레이어/SQL/where 선택, 출력 범위·해상도·타입·creation options를 처리합니다. 필터와
+읽기 cursor 동작은 GDAL 규칙을 따릅니다. `-a_srs`는 좌표 변환 없이 출력 CRS만 지정합니다.
+기본 출력 타입은 GDAL의 Float64이며 JXL 압축에는 `-ot Float32` 등 지원 타입을 명시하세요.
+
+`viewshed`는 실제 `GDALViewshedGenerate`이며 north-up, 투영 CRS가 있는 DEM을 요구합니다.
+관측점은 DEM 좌표계, 수평 거리와 DEM 고도는 서로 일치하는 단위를 사용합니다. 자동 재투영,
+scale/offset 변환, 결측값 보간은 하지 않습니다. GDAL은 입력 NoData를 특별히 제외하지 않아
+그 위치가 가시권을 왜곡할 수 있습니다. 필요하면 먼저 DEM을 정리하세요.
+`curvatureCoefficient=0.0`은 지구 곡률·굴절 보정을 끄고, 기본값은 0.85714입니다.
+일반 가시권은 Byte, 최소 목표 높이 출력은 Float64입니다. `maxDistance=0`은 무제한이며
+양수일 때 출력 범위가 잘립니다. `noDataValue` 음수는 출력 NoData 메타데이터를 생략합니다.
+
+두 API는 raster Create 지원 드라이버(예: GTiff)를 사용합니다. COG가 필요하면 결과를
+`translate`로 변환하세요. `*To`는 OS/Node 또는 browser `opfs:/`에 직접 쓰고 기존 파일은
+거부합니다. 실패 후 부분 출력은 호출자 소유입니다. memory 결과는 `GdalFiles`이며 입력은
+호출자 소유로 유지합니다. 옵션은 `List<String>` 또는 `vararg String`/`asList()`로 전달합니다.
+
 ### 래스터 정리·거리·등고선
 
 밴드 알고리즘은 이미 연 writable 대상 밴드에 직접 씁니다. 입력과 대상의 크기가 같아야

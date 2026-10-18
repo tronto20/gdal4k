@@ -314,6 +314,10 @@ special('RasterAttributeTable','getRowOfValue','auto v=CPLAtof(a["value"].ToStri
 special('RasterAttributeTable','setTableType','auto t=a.GetInteger("type");require(t==0||t==1,"Invalid RAT table type");return value(GDALRATSetTableType(h,static_cast<GDALRATTableType>(t)));')
 special('RasterAttributeTable','translateToColorTable','auto n=a.GetInteger("entryCount");require(n==-1||n>0,"Invalid color entry count");return r.result(GDALRATTranslateToColorTable(h,n),"ColorTable",true);')
 
+for op in ['grid','viewshed']:
+    special('Dataset',op,'return gridViewshedDataset(h,a,"'+op+'",false);')
+    special('Dataset',op+'To','return gridViewshedDataset(h,a,"'+op+'",true);')
+
 for op in ['sieveTo','proximityTo','fillNoData']:
     special('Band',op,'return bandAnalysis(r,h,a,"'+op+'");')
 special('Dataset','contour','return contourDataset(h,a,false);')

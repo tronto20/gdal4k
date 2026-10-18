@@ -346,6 +346,9 @@ OGR 속성 스키마는 `Layer.deleteField/reorderField/reorderFields/alterField
 필터를 무시합니다. 드라이버의 envelope 후보 판정 가능성을 포함한 정확한 계약과 예시는
 [OGR 사용법](../README.md#ogr-geometry-생성과-공간-조회)을 참고하세요.
 
+`Dataset.grid`/`gridTo`와 `viewshed`/`viewshedTo`는 포인트 보간과 DEM 가시권을
+처리합니다. [예제와 좌표계·입력 NoData 제약](../README.md#포인트-보간과-가시권-분석)을 참고하세요.
+
 `Band.sieveTo`, `proximityTo`, `fillNoData`와 `Dataset.contour`/`contourTo`로
 작은 분류 영역 제거, 거리 래스터, 결측값 보간과 등고선을 처리합니다.
 [사용법과 정밀도·제자리 수정 정책](../README.md#래스터-정리거리등고선)을 참고하세요.
