@@ -71,6 +71,14 @@ internal open class RuntimeHandle(val engine: RuntimeEngine, private val id: Str
     }
     fun encode(value: Any?): JsonElement = when(value) {
         null -> JsonNull
+        is ViewshedOptions -> buildJsonObject {
+            put("observerX", encode(value.observerX)); put("observerY", encode(value.observerY))
+            put("observerHeight", encode(value.observerHeight)); put("targetHeight", encode(value.targetHeight))
+            put("maxDistance", encode(value.maxDistance)); put("curvatureCoefficient", encode(value.curvatureCoefficient))
+            put("mode", value.mode.code); put("output", value.output.code)
+            put("visibleValue", value.visibleValue); put("invisibleValue", value.invisibleValue)
+            put("outOfRangeValue", value.outOfRangeValue); put("noDataValue", encode(value.noDataValue))
+        }
         is MDDataType -> encodeMDType(value)
         is MDValue -> encodeMDValue(value)
         is CodedFieldValue -> buildJsonObject { put("code", encode(value.code)); put("label", encode(value.label)) }

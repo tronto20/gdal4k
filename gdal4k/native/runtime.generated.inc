@@ -80,6 +80,24 @@
     if(type=="GdalRuntime" && method=="datasetInfo_Dataset_DatasetInfoOptions") {
         return value(datasetInfo(r.arg(a["dataset"]),a["options"].GetArray("arguments"),false));
     }
+    if(type=="Dataset" && method=="grid_String_String_List_String") {
+        return gridViewshedDataset(h,a,"grid",false);
+    }
+    if(type=="Dataset" && method=="gridTo_String_String_List_String") {
+        return gridViewshedDataset(h,a,"grid",true);
+    }
+    if(type=="Dataset" && method=="viewshed_ViewshedOptions_Int_String_String_List_String") {
+        return gridViewshedDataset(h,a,"viewshed",false);
+    }
+    if(type=="Dataset" && method=="viewshedTo_String_ViewshedOptions_Int_String_List_String") {
+        return gridViewshedDataset(h,a,"viewshed",true);
+    }
+    if(type=="Dataset" && method=="contour_Double_Double_Int_String_String_String_List_String") {
+        return contourDataset(h,a,false);
+    }
+    if(type=="Dataset" && method=="contourTo_String_Double_Double_Int_String_String_List_String") {
+        return contourDataset(h,a,true);
+    }
     if(type=="Dataset" && method=="polygonize_String_String_Int_Band_String_String_List_String") {
         return polygonizeDataset(r,h,a,false);
     }
@@ -367,6 +385,15 @@
     }
     if(type=="Driver" && method=="deregister") {
         apply(GDALDeregisterDriver, Arg(r,h)); return nullValue();
+    }
+    if(type=="Band" && method=="sieveTo_Band_Int_Int_Band_Boolean") {
+        return bandAnalysis(r,h,a,"sieveTo");
+    }
+    if(type=="Band" && method=="proximityTo_Band_List_String") {
+        return bandAnalysis(r,h,a,"proximityTo");
+    }
+    if(type=="Band" && method=="fillNoData_Double_Int_Band_List_String") {
+        return bandAnalysis(r,h,a,"fillNoData");
     }
     if(type=="Band" && method=="getColorTable") {
         auto p=GDALGetRasterColorTable(h);return r.result(p?GDALCloneColorTable(p):nullptr,"ColorTable",true);
@@ -890,8 +917,20 @@
     if(type=="Layer" && method=="getSpatialFilter") {
         auto g=OGR_L_GetSpatialFilter(h);return r.result(g?OGR_G_Clone(g):nullptr,"Geometry",true);
     }
+    if(type=="Layer" && method=="deleteField_Int") {
+        return changeLayerFields(r,h,a,"deleteField");
+    }
+    if(type=="Layer" && method=="reorderFields_IntArray") {
+        return changeLayerFields(r,h,a,"reorderFields");
+    }
+    if(type=="Layer" && method=="reorderField_Int_Int") {
+        return changeLayerFields(r,h,a,"reorderField");
+    }
+    if(type=="Layer" && method=="alterFieldDefn_Int_FieldDefn_Int") {
+        return changeLayerFields(r,h,a,"alterFieldDefn");
+    }
     if(type=="Layer" && method=="createField_FieldDefn_Boolean") {
-        auto out=apply(OGR_L_CreateField, Arg(r,h), Arg(r,a["field"]), Arg(r,a["approximate"]));return value(out);
+        return changeLayerFields(r,h,a,"createField");
     }
     if(type=="Layer" && method=="getDataset") {
         return r.result(apply(OGR_L_GetDataset, Arg(r,h)),"Dataset",false,id);
@@ -1198,6 +1237,9 @@
     }
     if(type=="FeatureDefn" && method=="isSame_FeatureDefn") {
         return value(apply(OGR_FD_IsSame, Arg(r,h), Arg(r,a["other"]))!=0);
+    }
+    if(type=="FieldDefn" && method=="cloneFieldDefn") {
+        auto original=OGRFieldDefn::FromHandle(h);auto copy=new OGRFieldDefn(original);copy->SetIgnored(original->IsIgnored());return r.result(OGRFieldDefn::ToHandle(copy),"FieldDefn",true);
     }
     if(type=="FieldDefn" && method=="getName") {
         auto out=apply(OGR_Fld_GetNameRef, Arg(r,h));return value(out);

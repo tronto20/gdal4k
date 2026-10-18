@@ -137,6 +137,37 @@ Band와 수명이 분리된 복사본을 반환하므로 변경을 반영하려�
 타입 변환이나 리샘플링에는 기존 `readRaster`/`writeRaster`를 사용합니다. 직접 블록 접근
 전에 대기 중인 RasterIO 쓰기를 flush하며, 직접 쓰기는 기존 블록 캐시도 비웁니다.
 
+### OGR 속성 필드 스키마 편집
+
+```kotlin
+import dev.gdal4k.runtime.*
+
+// 업데이트 가능한 Dataset의 Layer에서, 활성 Feature를 모두 닫은 뒤 실행합니다.
+layer.getLayerDefn()!!.use { definition ->
+    definition.getFieldDefn(0)!!.use { original ->
+        original.cloneFieldDefn().use { replacement ->
+            replacement.setName("label")
+            check(layer.alterFieldDefn(0, replacement, FieldAlterFlags.Name) == 0)
+        }
+    }
+}
+check(layer.reorderFields(intArrayOf(2, 0, 1)) == 0) // new[i] = old[map[i]]
+check(layer.deleteField(2) == 0)
+```
+
+`deleteField`, `reorderField(s)`, `alterFieldDefn`은 OGR 드라이버의 실제 스키마 변경을
+호출합니다. `createField`도 같은 수명 검사와 복사 정책을 따릅니다. 레이어에서 만든 Feature와
+그 clone은 모두 먼저 닫고, 속성 필터를 해제하고, 같은 Dataset의 SQL 결과도 닫아야 합니다.
+저장된 피처 자체를 삭제하는 기능은 아니며, 기존 행의 값 변환·지원 여부는 드라이버 정책입니다.
+`testCapability("DeleteField" / "ReorderFields" / "AlterFieldDefn")`로 지원 여부를 조회할 수 있습니다.
+
+잘못된 인덱스·순열·flags는 호출 전에 거부합니다. 드라이버 호출까지 진행했다면 성공 여부와
+관계없이 기존 borrowed FeatureDefn/FieldDefn 핸들을 폐기하므로 정의는 다시 조회해야 합니다.
+독립 `cloneFieldDefn()`은 원본을 닫거나 스키마를 바꿔도 사용할 수 있습니다. borrowed 정의의
+setter나 FeatureDefn 직접 구조 변경은 거부하며, clone을 편집해 Layer API에 전달합니다.
+flags는 `FieldAlterFlags`를 `or`로 조합합니다. 별도 자동 트랜잭션·형 변환 fallback·복구는 없고,
+GDAL 드라이버 실패는 nonzero 오류 코드로 반환합니다. 파일 전체를 bridge로 복사하지 않습니다.
+
 ### OGR Geometry 생성과 공간 조회
 
 ```kotlin
@@ -274,3 +305,69 @@ NoData로 전파하며 비유한 계산 결과도 동일하게 처리합니다. 
 생략합니다. 평균·분산은 Welford, 합계는 보정 합산을 사용하고 Double 누적 overflow는 예외로
 알립니다. 통계는 원시 값이며 polygon 면적 가중 통계가 아닙니다. 래스터 버퍼는 창 크기에
 비례하지만 구역 누적 메모리는 서로 다른 zone 개수에 비례합니다.
+
+### 포인트 보간과 가시권 분석
+
+```kotlin
+val grid = points.grid("-a", "invdist:power=2", "-zfield", "height",
+    "-txe", "0", "1000", "-tye", "0", "1000", "-outsize", "100", "100")
+points.gridTo("grid.tif", "-a", "nearest", "-zfield", "height")
+
+val observer = ViewshedOptions(observerX = 500.0, observerY = 500.0,
+    observerHeight = 2.0, maxDistance = 1000.0)
+val visibility = dem.viewshed(observer)
+dem.viewshedTo("visible.tif", observer, "COMPRESS=JXL", "JXL_LOSSLESS=YES")
+val minimumHeight = dem.viewshed(observer.copy(output = ViewshedOutput.MinimumHeightFromGround))
+```
+
+`grid`는 실제 `GDALGrid` utility로 nearest/invdist/average/linear 등 보간, `-zfield`,
+레이어/SQL/where 선택, 출력 범위·해상도·타입·creation options를 처리합니다. 필터와
+읽기 cursor 동작은 GDAL 규칙을 따릅니다. `-a_srs`는 좌표 변환 없이 출력 CRS만 지정합니다.
+기본 출력 타입은 GDAL의 Float64이며 JXL 압축에는 `-ot Float32` 등 지원 타입을 명시하세요.
+
+`viewshed`는 실제 `GDALViewshedGenerate`이며 north-up, 투영 CRS가 있는 DEM을 요구합니다.
+관측점은 DEM 좌표계, 수평 거리와 DEM 고도는 서로 일치하는 단위를 사용합니다. 자동 재투영,
+scale/offset 변환, 결측값 보간은 하지 않습니다. GDAL은 입력 NoData를 특별히 제외하지 않아
+그 위치가 가시권을 왜곡할 수 있습니다. 필요하면 먼저 DEM을 정리하세요.
+`curvatureCoefficient=0.0`은 지구 곡률·굴절 보정을 끄고, 기본값은 0.85714입니다.
+일반 가시권은 Byte, 최소 목표 높이 출력은 Float64입니다. `maxDistance=0`은 무제한이며
+양수일 때 출력 범위가 잘립니다. `noDataValue` 음수는 출력 NoData 메타데이터를 생략합니다.
+
+두 API는 raster Create 지원 드라이버(예: GTiff)를 사용합니다. COG가 필요하면 결과를
+`translate`로 변환하세요. `*To`는 OS/Node 또는 browser `opfs:/`에 직접 쓰고 기존 파일은
+거부합니다. 실패 후 부분 출력은 호출자 소유입니다. memory 결과는 `GdalFiles`이며 입력은
+호출자 소유로 유지합니다. 옵션은 `List<String>` 또는 `vararg String`/`asList()`로 전달합니다.
+
+### 래스터 정리·거리·등고선
+
+밴드 알고리즘은 이미 연 writable 대상 밴드에 직접 씁니다. 입력과 대상의 크기가 같아야
+하며 지오트랜스폼·CRS·NoData 메타데이터는 자동 복사하지 않습니다. 반환값 `0`은
+GDAL 성공 코드이며, 실패 시 일부 픽셀이 기록되었을 수 있습니다.
+
+```kotlin
+sourceBand.sieveTo(targetBand, threshold = 8, connectedness = 8)
+sourceBand.proximityTo(distanceBand, "VALUES=1,2", "DISTUNITS=PIXEL")
+editableBand.fillNoData("INTERPOLATION=NEAREST", maxSearchDistance = 20.0)
+val contours = dem.contour(10.0) // GPKG GdalFiles
+// large output: OS/Node file, or browser opfs:/ path
+ dem.contourTo("contours.gpkg", 10.0, "-lco", "SPATIAL_INDEX=YES")
+```
+
+- Sieve는 작은 연결 영역을 가장 큰 이웃의 값으로 바꿉니다. 기본 source mask는
+  NoData를 제외합니다. `useDefaultMask=false` 또는 명시적 `mask`로 조절합니다.
+  GDAL은 실수를 정수로 반올림합니다. UInt64와 complex 입력은 지원하지 않습니다.
+  source와 target을 같게 지정하면 제자리 수정합니다.
+- Proximity는 기본적으로 0이 아닌 픽셀까지 거리를 계산합니다. source/target은
+  다른 밴드여야 합니다. GDAL의 내부 source 분류값은 Int32이며 `VALUES`, `MAXDIST`,
+  `NODATA`, `USE_INPUT_NODATA`, `FIXED_BUF_VAL`을 지원합니다. GEO 거리는 GDAL의
+  픽셀 크기 규칙을 따르며 측지 거리 계산이나 재투영이 아닙니다.
+- FillNoData는 대상 밴드를 제자리 수정합니다. 기본 mask의 0 픽셀을 보간하며 명시적
+  mask도 가능합니다. 내부 연산은 GDAL의 Float32 정밀도이며 밴드 타입으로 변환합니다.
+  scale/offset과 NoData 메타데이터는 바꾸지 않습니다. 기본 scratch driver는 이식 가능한
+  `MEM`입니다. 큰 입력은 `TEMP_FILE_DRIVER=GTiff`와 writable `CPL_TMPDIR`이 있는 환경을
+  사용하세요. smoothing은 `NODATA=` 옵션을 고려하지 않는 GDAL 제약이 있습니다.
+- Contour는 실제 `GDALContourGenerateEx`로 선 레이어를 생성합니다. 원본 CRS와 회전
+  포함 geotransform을 사용하고 `id`/`elevation` 필드를 기록합니다. `FIXED_LEVELS=a,b`,
+  `LEVEL_EXP_BASE=n`, `NODATA=n`, `-dsco`/`-lco`를 받습니다. 기존 출력은 덮어쓰지 않습니다.
+  생성 도중 실패한 direct 파일과 sidecar는 호출자 소유입니다. `List<String>`와
+  `vararg String` 옵션 모두 제공하며 vararg는 `asList()`로 위임합니다.

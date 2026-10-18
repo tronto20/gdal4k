@@ -78,6 +78,11 @@ for m in ['cloneGeometry','centroid','pointOnSurface','boundary','convexHull','b
 SPECIAL={}
 def special(cls,name,body):SPECIAL[(cls,name)]=body
 
+OWNED.add(('FieldDefn','cloneFieldDefn'))
+special('FieldDefn','cloneFieldDefn','auto original=OGRFieldDefn::FromHandle(h);auto copy=new OGRFieldDefn(original);copy->SetIgnored(original->IsIgnored());return r.result(OGRFieldDefn::ToHandle(copy),"FieldDefn",true);')
+for method in ['createField','deleteField','reorderFields','reorderField','alterFieldDefn']:
+    special('Layer',method,f'return changeLayerFields(r,h,a,"{method}");')
+
 for method in ['createGeometryFromWkt','createGeometryFromWkb','createGeometryFromGeoJson']:
     OWNED.add(('GdalRuntime',method))
     special('GdalRuntime',method,'return createVectorGeometry(r,a,"'+method+'");')
@@ -308,6 +313,16 @@ special('RasterAttributeTable','setLinearBinning','auto lo=CPLAtof(a["rowZeroMin
 special('RasterAttributeTable','getRowOfValue','auto v=CPLAtof(a["value"].ToString().c_str());require(std::isfinite(v),"RAT lookup value must be finite");double lo=0,step=0;if(GDALRATGetLinearBinning(h,&lo,&step)){require(std::isfinite(lo)&&std::isfinite(step)&&step>0,"Invalid RAT binning");auto bin=std::floor((v-lo)/step);if(!std::isfinite(bin)||bin<0||bin>=GDALRATGetRowCount(h))return value(-1);}return value(GDALRATGetRowOfValue(h,v));')
 special('RasterAttributeTable','setTableType','auto t=a.GetInteger("type");require(t==0||t==1,"Invalid RAT table type");return value(GDALRATSetTableType(h,static_cast<GDALRATTableType>(t)));')
 special('RasterAttributeTable','translateToColorTable','auto n=a.GetInteger("entryCount");require(n==-1||n>0,"Invalid color entry count");return r.result(GDALRATTranslateToColorTable(h,n),"ColorTable",true);')
+
+
+for op in ['grid','viewshed']:
+    special('Dataset',op,'return gridViewshedDataset(h,a,"'+op+'",false);')
+    special('Dataset',op+'To','return gridViewshedDataset(h,a,"'+op+'",true);')
+
+for op in ['sieveTo','proximityTo','fillNoData']:
+    special('Band',op,'return bandAnalysis(r,h,a,"'+op+'");')
+special('Dataset','contour','return contourDataset(h,a,false);')
+special('Dataset','contourTo','return contourDataset(h,a,true);')
 
 for operation in ['setNoDataValue','setNoDataValueAsInt64','setNoDataValueAsUInt64','deleteNoDataValue']:
     special('Band',operation,'return setBandNoData(r,h,a,"'+operation+'");')
