@@ -314,6 +314,9 @@ special('RasterAttributeTable','getRowOfValue','auto v=CPLAtof(a["value"].ToStri
 special('RasterAttributeTable','setTableType','auto t=a.GetInteger("type");require(t==0||t==1,"Invalid RAT table type");return value(GDALRATSetTableType(h,static_cast<GDALRATTableType>(t)));')
 special('RasterAttributeTable','translateToColorTable','auto n=a.GetInteger("entryCount");require(n==-1||n>0,"Invalid color entry count");return r.result(GDALRATTranslateToColorTable(h,n),"ColorTable",true);')
 
+special('Layer','overlayTo','return layerOverlay(r,h,a);')
+special('Layer','getNextFeature','CPLErrorReset();auto p=OGR_L_GetNextFeature(h);fileEnsure(p||CPLGetLastErrorType()<CE_Failure,"Cannot read next feature");return r.result(p,"Feature",true);')
+
 
 for op in ['grid','viewshed']:
     special('Dataset',op,'return gridViewshedDataset(h,a,"'+op+'",false);')

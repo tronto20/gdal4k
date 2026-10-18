@@ -908,6 +908,9 @@
     if(type=="GCP" && method=="setId_String") {
         auto p=static_cast<GDAL_GCP*>(h);CPLFree(p->pszId);p->pszId=CPLStrdup(a["id"].ToString().c_str());return nullValue();
     }
+    if(type=="Layer" && method=="overlayTo_Layer_Layer_String_List_String") {
+        return layerOverlay(r,h,a);
+    }
     if(type=="Layer" && method=="setSpatialFilter_Geometry") {
         return setVectorSpatialFilter(r,h,a,false);
     }
@@ -969,7 +972,7 @@
         return r.result(apply(OGR_L_GetFeature, Arg(r,h), Arg(r,a["fid"])),"Feature",true,0);
     }
     if(type=="Layer" && method=="getNextFeature") {
-        return r.result(apply(OGR_L_GetNextFeature, Arg(r,h)),"Feature",true,0);
+        CPLErrorReset();auto p=OGR_L_GetNextFeature(h);fileEnsure(p||CPLGetLastErrorType()<CE_Failure,"Cannot read next feature");return r.result(p,"Feature",true);
     }
     if(type=="Layer" && method=="createFeature_Feature") {
         auto out=apply(OGR_L_CreateFeature, Arg(r,h), Arg(r,a["feature"]));return value(out);

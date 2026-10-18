@@ -336,6 +336,7 @@ internal class BundledGCP(engine: RuntimeEngine, id: String, parent: RuntimeHand
 }
 
 internal class BundledLayer(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Layer {
+    override suspend fun overlayTo(method: Layer, result: Layer, operation: String, arguments: List<String>): Int { val result = invoke("Layer", "overlayTo_Layer_Layer_String_List_String", mapOf("method" to handle(method), "result" to handle(result), "operation" to encode(operation), "arguments" to encode(arguments))); return result.jsonPrimitive.int }
     override suspend fun setSpatialFilter(filter: Geometry?): Int { val result = invoke("Layer", "setSpatialFilter_Geometry", mapOf("filter" to handle(filter))); return result.jsonPrimitive.int }
     override suspend fun setSpatialFilterRect(minX: Double, minY: Double, maxX: Double, maxY: Double): Int { val result = invoke("Layer", "setSpatialFilterRect_Double_Double_Double_Double", mapOf("minX" to encode(minX), "minY" to encode(minY), "maxX" to encode(maxX), "maxY" to encode(maxY))); return result.jsonPrimitive.int }
     override suspend fun getSpatialFilter(): Geometry? { val result = invoke("Layer", "getSpatialFilter", mapOf()); return engine.wrapGeometry(result, null) }
