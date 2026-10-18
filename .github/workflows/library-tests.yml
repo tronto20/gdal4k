@@ -85,6 +85,9 @@ jobs:
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
             verification/results/raster-transport-*.json
+            verification/results/window-memory-*.json
+            verification/results/window-memory/
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/RasterWindowMemoryProbe*.class
             verification/results/published-consumer-*/
             verification/tools/vcpkg/buildtrees/*/*.log
             gdal4k-engine/build/engine/*/cmake/build.ninja

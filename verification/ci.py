@@ -77,6 +77,7 @@ def main():
         if target in ['macosArm64','linuxX64','mingwX64']:tasks+=[':gdal4k:jvmTest',':gdal4k-runtime:jvmTest']
         gradle(*tasks,options=options)
         if target in ['macosArm64','linuxX64','mingwX64']:run(sys.executable,ROOT/'verification/raster-transport-report.py',PLATFORMS[target])
+        if target in ['macosArm64','linuxX64']:run(sys.executable,ROOT/'verification/window-memory-report.py','--target',PLATFORMS[target])
         run(sys.executable, ROOT/'verification/audit-engine.py', PLATFORMS[target])
         publish(target)
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))

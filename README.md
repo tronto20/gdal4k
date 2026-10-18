@@ -485,3 +485,40 @@ Native calls continue to await real GDAL completion before freeing buffers, cont
 The ordinary engine producer reuses verified prebuilt artifacts, but refuses a dependency installation through an `installed` symlink after a cache/manifest miss. Shared read-only dependency prefixes therefore require an explicit read-only rebuild rather than an implicit vcpkg install.
 
 `verification/js-codec-benchmark.cjs` records the compiled Kotlin/JS Float64/Int64 codec separately, including module hashes and exact bit checks. It isolates CPU conversion from Worker/GDAL and dispatcher scheduling; the pinned compiler friend exports are used only by this diagnostic, not by production code.
+
+### Raster window traversal and memory measurements
+
+`Band.forEachRasterWindow(buffer, windowWidth, windowHeight, window) { region, samples -> ... }`
+reads raw values into the same caller-owned Byte/Short/Int/Long/Float/Double array, in row-major
+order. Only `region.width * region.height` leading samples are valid for that callback; edge
+windows are clipped and the unused tail is unchanged. Copy samples if retaining a window.
+The callback is awaited before the next read. Cancellation is checked between windows and
+before invoking the callback; caller handles stay open. Earlier callback effects are not
+rolled back, and a native I/O call without a progress callback may finish before cancellation.
+
+```kotlin
+requireNotNull(dataset.getRasterBand(1)).use { band ->
+    val buffer = DoubleArray(256 * 256)
+    band.forEachRasterWindow(buffer, 256, 256) { region, samples ->
+        for (i in 0 until region.width * region.height) {
+            // Consume samples[i] here. The array is reused for the next window.
+        }
+    }
+}
+```
+
+Buffer capacity must cover the largest clipped window. There is no automatic NoData, scale,
+offset, CRS conversion or dataset snapshot. Do not mutate data/handles/buffer concurrently.
+Driver caches, bridge staging copies, callback allocations and retained results are additional
+memory. Whole-image reads can be faster; window traversal trades more I/O calls for bounded
+working memory. This is not zero-copy I/O.
+
+`python verification/window-memory-report.py` compares full-image reads, per-window allocation
+and caller-buffer reuse on the same 2048×2048 uncompressed tiled Float64 GTiff. It rotates order
+across three trials, three scans per trial, and starts a fresh JVM for every mode/trial. macOS
+and Linux OS peak RSS includes the whole child JVM, GDAL, caches, initialization and cleanup;
+cumulative JVM allocation, 2ms-sampled peak JVM heap used and operation elapsed time are reported separately. Heap sampling can miss brief peaks; OS peak RSS is its own whole-process high-water metric. The 16 MiB
+GDAL cache setting is isolated to these benchmark processes, not a library default. Node,
+Chromium, Wasm GC, Native and Android peak memory are not measured by this JVM probe. Correct
+sample counts/checksums and source/engine hashes are required; timing and memory are evidence,
+not a pass threshold or a cross-platform promise.

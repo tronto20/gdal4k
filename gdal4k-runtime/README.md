@@ -85,7 +85,7 @@ Android는 API 28 이상에서 `arm64-v8a`만 지원합니다. x86_64와 32비�
 
 한 런타임의 GDAL 호출과 종료는 직렬화합니다. 다른 런타임 핸들을 섞으면 실패합니다. 데이터셋을 닫은 뒤 그 밴드·레이어 핸들을 쓰면 실패합니다. `use`의 정리는 취소된 coroutine에서도 실행합니다.
 
-큰 배열에는 JSON 직렬화·복사 비용이 있으므로 래스터 window 단위로 나눠 처리하는 편이 좋습니다. 현재 응답성 테스트는 GDAL의 JXL 연산이 호출 스레드·웹 이벤트 루프 밖에서 실행되는지 검증합니다.
+내장 엔진의 래스터 배열은 바이너리 채널을 사용하지만, staging·디코딩 복사는 남아 있어 큰 입력은 window 단위 처리가 유리할 수 있습니다. 파일·다차원 값과 구형 엔진의 JSON 경로는 별도입니다. 응답성 테스트는 GDAL의 JXL 연산이 호출 스레드·웹 이벤트 루프 밖에서 실행되는지 검증합니다.
 
 대기 중인 호출은 취소할 수 있습니다. 이미 시작한 GDAL C 호출은 중간에 강제 중단하지 않고 완료한 뒤 핸들/결과를 정리합니다. 따라서 coroutine 취소가 오래 걸리는 GDAL 연산을 즉시 멈추지는 않습니다. 웹 Worker를 강제로 종료해서 데이터셋 상태를 손상시키는 동작도 하지 않습니다.
 
@@ -467,3 +467,40 @@ Native calls continue to await real GDAL completion before freeing buffers, cont
 The ordinary engine producer reuses verified prebuilt artifacts, but refuses a dependency installation through an `installed` symlink after a cache/manifest miss. Shared read-only dependency prefixes therefore require an explicit read-only rebuild rather than an implicit vcpkg install.
 
 `verification/js-codec-benchmark.cjs` records the compiled Kotlin/JS Float64/Int64 codec separately, including module hashes and exact bit checks. It isolates CPU conversion from Worker/GDAL and dispatcher scheduling; the pinned compiler friend exports are used only by this diagnostic, not by production code.
+
+### Raster window traversal and memory measurements
+
+`Band.forEachRasterWindow(buffer, windowWidth, windowHeight, window) { region, samples -> ... }`
+reads raw values into the same caller-owned Byte/Short/Int/Long/Float/Double array, in row-major
+order. Only `region.width * region.height` leading samples are valid for that callback; edge
+windows are clipped and the unused tail is unchanged. Copy samples if retaining a window.
+The callback is awaited before the next read. Cancellation is checked between windows and
+before invoking the callback; caller handles stay open. Earlier callback effects are not
+rolled back, and a native I/O call without a progress callback may finish before cancellation.
+
+```kotlin
+requireNotNull(dataset.getRasterBand(1)).use { band ->
+    val buffer = DoubleArray(256 * 256)
+    band.forEachRasterWindow(buffer, 256, 256) { region, samples ->
+        for (i in 0 until region.width * region.height) {
+            // Consume samples[i] here. The array is reused for the next window.
+        }
+    }
+}
+```
+
+Buffer capacity must cover the largest clipped window. There is no automatic NoData, scale,
+offset, CRS conversion or dataset snapshot. Do not mutate data/handles/buffer concurrently.
+Driver caches, bridge staging copies, callback allocations and retained results are additional
+memory. Whole-image reads can be faster; window traversal trades more I/O calls for bounded
+working memory. This is not zero-copy I/O.
+
+`python verification/window-memory-report.py` compares full-image reads, per-window allocation
+and caller-buffer reuse on the same 2048×2048 uncompressed tiled Float64 GTiff. It rotates order
+across three trials, three scans per trial, and starts a fresh JVM for every mode/trial. macOS
+and Linux OS peak RSS includes the whole child JVM, GDAL, caches, initialization and cleanup;
+cumulative JVM allocation, 2ms-sampled peak JVM heap used and operation elapsed time are reported separately. Heap sampling can miss brief peaks; OS peak RSS is its own whole-process high-water metric. The 16 MiB
+GDAL cache setting is isolated to these benchmark processes, not a library default. Node,
+Chromium, Wasm GC, Native and Android peak memory are not measured by this JVM probe. Correct
+sample counts/checksums and source/engine hashes are required; timing and memory are evidence,
+not a pass threshold or a cross-platform promise.
