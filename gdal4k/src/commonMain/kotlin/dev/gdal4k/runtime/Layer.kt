@@ -3,9 +3,21 @@ package dev.gdal4k.runtime
 /**
  * Shared vector layer handle.
  *
- * The first pass keeps the surface focused on layer metadata, filtering, and iteration state.
+ * Layer metadata, filtering, feature editing, cursor state and planar overlay operations.
  */
 interface Layer {
+    /** GEOS planar overlay of default geometry fields into a distinct, writable, empty result
+     * layer with no attribute fields or active filters. operation is intersection/union/
+     * symDifference/identity/update/clip/erase. Known CRS mismatches are rejected; no reprojection.
+     * Input and method must be different native layers with independent cursors, including aliases.
+     * Drivers sharing cursor state across layers may require separately opened input datasets.
+     * Output schema aliases are invalidated before native execution, even if the driver fails.
+     * Close all result Features first. Inputs remain owned; their read cursors may change.
+     * Returns the native error code. Partial output/schema changes stay caller-owned; no
+     * automatic transaction, rollback, geometry repair or failure skipping is supplied.
+     */
+    suspend fun overlayTo(method: Layer, result: Layer, operation: String, arguments: List<String>): Int
+
     /** Filters the default geometry field. Copies filter; null clears it. Changes reset reading;
      * use resetReading to rewind when the filter is already unchanged/cleared.
      * Coordinates must use the layer CRS; different explicitly assigned CRSs are rejected.
@@ -17,6 +29,19 @@ interface Layer {
     /** Independent copy, unaffected by later filter changes or layer/dataset close. */
     suspend fun getSpatialFilter(): Geometry?
 
+    /** Attribute schema changes require all Features using this layer definition (including clones)
+     * to be closed first. Clear the attribute filter and close active SQL results first. Reacquire layer/field definitions after an attempted native change,
+     * including a nonzero driver error. Driver capabilities and conversion rules apply;
+     * no automatic transaction, conversion fallback or rollback is supplied.
+     */
+    suspend fun deleteField(index: Int): Int
+    /** newToOld[i] is the old index of the field at new position i; requires a full permutation. */
+    suspend fun reorderFields(newToOld: IntArray): Int
+    suspend fun reorderField(oldIndex: Int, newIndex: Int): Int
+    /** Changes only attributes selected by explicit FieldAlterFlags. The input is copied. */
+    suspend fun alterFieldDefn(index: Int, definition: FieldDefn, flags: Int): Int
+
+    /** Copies the definition; the schema lifetime rule above also applies to adding a field. */
     suspend fun createField(field: FieldDefn, approximate: Boolean = true): Int
 
     suspend fun close()
