@@ -10,7 +10,14 @@ async function exercise(createGdalWorker, url, host) {
     const base=url+'/policy/'+host+'/';
     const policy={requestTimeoutMillis:5000,maxRetries:0,retryDelayMillis:0,maxRetryDelayMillis:100,requireStrongETag:true};
     async function call(type,handle,method,parameters={},cancelled) {
-        const response=JSON.parse(await bridge.call(JSON.stringify({op:'runtime',args:{type,handle,method,parameters}}),null,()=>{},method==='close'?undefined:cancelled??(()=>false)));
+        let response;
+        if (/^read(Raster|Block)_/.test(method)) {
+            if (bridge.binaryVersion!==1) throw new Error('HTTP regression requires binary raster capability');
+            parameters={...parameters,bufferSize:parameters.buffer?.length??parameters.bufferSize};delete parameters.buffer;
+            const packet=await bridge.callBinary(JSON.stringify({op:'runtime',args:{type,handle,method,parameters}}),null,()=>{},cancelled??(()=>false));
+            response=JSON.parse(packet.json);
+            if(response.result?.value?.code===0)response.result.value.buffer=Array.from(new Uint8Array(packet.bytes));
+        } else response=JSON.parse(await bridge.call(JSON.stringify({op:'runtime',args:{type,handle,method,parameters}}),null,()=>{},method==='close'?undefined:cancelled??(()=>false)));
         if(response.error)throw new Error(response.error);
         return response.result.value;
     }
@@ -70,6 +77,7 @@ async function exercise(createGdalWorker, url, host) {
         const reopened=await open('changed');try{await read(await band(reopened),16382,16382,255);}finally{await close(reopened);}
         const final=await open('healthy');try{await read(await band(final),0,0,42);}finally{await close(final);}
     }finally{await bridge.close();}
+    console.log('GDAL4K_HTTP_BINARY_RASTER_OK',host);
     return 'passed';
 }
 const {createGdalWorker}=await import(pathToFileURL(config.assets+'/index.mjs'));

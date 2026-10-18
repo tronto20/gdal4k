@@ -13,23 +13,28 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
 
 internal class RuntimeEngine(private val transport: GdalTransport) {
+    val supportsBinaryRaster: Boolean get() = transport.supportsBinaryRaster
     val supportsHttpInputPolicy: Boolean get() = transport.supportsHttpInputPolicy
     private val mutex = Mutex()
     private var closed = false
     suspend fun close() = withContext(NonCancellable) { mutex.withLock {
         if (!closed) { transport.close(); closed = true }
     } }
-    suspend fun invoke(type: String, handle: String, method: String, parameters: Map<String, JsonElement>, attachment: Any? = null): JsonElement {
+    suspend fun invoke(type: String, handle: String, method: String, parameters: Map<String, JsonElement>, attachment: Any? = null, binary: GdalBinaryCall? = null): JsonElement {
         val caller = currentCoroutineContext()
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
         val cancellable = transport.supportsHttpInputPolicy || name in setOf("openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
-            "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster")
+            "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
         val control = if (method != "close" && (cancellable || caller[GdalProgressContext] != null))
             GdalCallControl(caller[Job], caller[GdalProgressContext], "$type.$name") else null
-        return mutex.withLock { withContext(NonCancellable) {
+        return mutex.withLock {
+        if (method != "close") { caller.ensureActive(); check(!closed) { "GDAL runtime is closed" } }
+        // Queued calls hold only caller references and metadata, never eagerly packed large buffers.
+        val input = binary?.prepare?.invoke()
+        val value = withContext(NonCancellable) {
         if (closed) {
             check(method == "close") { "GDAL runtime is closed" }
             return@withContext JsonNull
@@ -47,10 +52,14 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
                 "HTTP input policy requires a direct HTTP(S) URL"
             }
         }
-        val response = try { Json.parseToJsonElement(transport.call(request.toString(), attachment, control)).jsonObject }
+        val response = try {
+            val text = if (binary == null) transport.call(request.toString(), attachment, control)
+                else transport.callBinary(request.toString(), input, control).let { binary.output = it.bytes; it.json }
+            Json.parseToJsonElement(text).jsonObject
+        }
         catch (transportFailure: Throwable) {
             val cancelled = control?.cancellation()
-            if (cancelled != null) { cancelled.addSuppressed(transportFailure); throw cancelled }
+            if (cancelled != null) { if (cancelled !== transportFailure) cancelled.addSuppressed(transportFailure); throw cancelled }
             throw transportFailure
         }
         val failure = control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
@@ -68,12 +77,18 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
             throw failure
         }
         response.getValue("result").jsonObject.getValue("value")
-    } }
+        }
+        // Decode under the same lock in the original cancellable context. Multiple queued
+        // reads cannot accumulate one decoded staging buffer each while another read starts.
+        if (binary != null) binary.complete(value, binary.output)
+        value
+    }
     }
 }
 
 internal open class RuntimeHandle(val engine: RuntimeEngine, private val id: String, private val parent: RuntimeHandle?) {
     @kotlin.concurrent.Volatile private var closed = false
+    internal val runtimeId: String get() = id
     fun checkOpen() { check(!closed) { "GDAL handle is closed" }; parent?.checkOpen() }
     suspend fun invoke(type: String, method: String, parameters: Map<String, JsonElement>): JsonElement {
         checkOpen()

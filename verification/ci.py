@@ -76,6 +76,7 @@ def main():
         tasks=[f':gdal4k-runtime:linkDebugTest{target[0].upper()+target[1:]}'] if cross else [f':gdal4k-runtime:{target}Test']
         if target in ['macosArm64','linuxX64','mingwX64']:tasks+=[':gdal4k:jvmTest',':gdal4k-runtime:jvmTest']
         gradle(*tasks,options=options)
+        if target in ['macosArm64','linuxX64','mingwX64']:run(sys.executable,ROOT/'verification/raster-transport-report.py',PLATFORMS[target])
         run(sys.executable, ROOT/'verification/audit-engine.py', PLATFORMS[target])
         publish(target)
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))
@@ -84,6 +85,7 @@ def main():
         run('node', ROOT/'verification/web-output-modes.mjs')
         gradle(':gdal4k-runtime:jsNodeTest',':gdal4k-runtime:wasmJsNodeTest',':gdal4k-runtime:jsBrowserTest',':gdal4k-runtime:wasmJsBrowserTest')
         run('node', '--test', ROOT/'verification/http-input-policy.test.mjs')
+        run('node', ROOT/'verification/js-codec-benchmark.cjs', 'after')
         run(sys.executable, ROOT/'verification/audit-engine.py', 'web')
         for t in ['js','wasmJs']:
             publish(t);consumer(t);consumer(t,'--browser')

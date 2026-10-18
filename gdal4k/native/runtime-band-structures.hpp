@@ -76,9 +76,10 @@ struct BandBlock {
     }
 };
 inline CPLJSONObject bandBlock(void* h,const CPLJSONObject& a,bool write) {
-    BandBlock block(h,a);auto array=a.GetArray("buffer");auto count=write?array.Size():a.GetInteger("bufferSize");
+    BandBlock block(h,a);auto array=a.GetArray("buffer");auto count=write&&!activeBinary?array.Size():a.GetInteger("bufferSize");
     require(count>=0&&static_cast<size_t>(count)>=block.size,"Buffer is smaller than native block");
-    std::vector<GByte> data(block.size,0);if(write)for(size_t i=0;i<block.size;++i)data[i]=static_cast<GByte>(array[static_cast<int>(i)].ToInteger());
+    validateBinary(block.size,1,write);
+    std::vector<GByte> data(block.size,0);if(write&&activeBinary)binaryInput(data.data(),block.size);else if(write)for(size_t i=0;i<block.size;++i)data[i]=static_cast<GByte>(array[static_cast<int>(i)].ToInteger());
     auto code=GDALFlushRasterCache(h);
     if(code==CE_None&&write)code=GDALDropRasterCache(h);
     if(code==CE_None)code=write?GDALWriteBlock(h,block.x,block.y,data.data()):GDALReadBlock(h,block.x,block.y,data.data());
@@ -86,6 +87,6 @@ inline CPLJSONObject bandBlock(void* h,const CPLJSONObject& a,bool write) {
         auto start=(static_cast<size_t>(row)*block.width+(row<block.validHeight?block.validWidth:0))*block.bytes;
         auto end=static_cast<size_t>(row+1)*block.width*block.bytes;std::fill(data.begin()+start,data.begin()+end,0);
     }
-    CPLJSONObject out;out.Add("code",code);if(!write&&code==CE_None)out.Add("buffer",numbers(data.data(),data.size())["value"]);
+    CPLJSONObject out;out.Add("code",code);if(!write&&code==CE_None){if(activeBinary)binaryOutput(data.data(),data.size());else out.Add("buffer",numbers(data.data(),data.size())["value"]);}
     CPLJSONObject result;result.Add("value",out);return result;
 }

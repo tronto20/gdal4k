@@ -19,6 +19,7 @@
 #include <type_traits>
 #include <vector>
 #include <atomic>
+#include "binary.hpp"
 
 #include <cstring>
 #include <cctype>
@@ -197,13 +198,15 @@ template<class T> CPLJSONObject rasterTyped(GDALRasterBandH h,const CPLJSONObjec
     require(x>=0&&y>=0&&width>0&&height>0&&x<=GDALGetRasterBandXSize(h)-width&&y<=GDALGetRasterBandYSize(h)-height,"Raster window is outside the band");
     // size_t is 32-bit in Wasm. Validate before narrowing
     // so a huge virtual raster cannot wrap into a small allocation passed to GDAL.
-    const auto capacity = !write && a["bufferSize"].IsValid() ? a.GetLong("bufferSize") : json.Size();
+    const auto capacity = (activeBinary || !write) && a["bufferSize"].IsValid() ? a.GetLong("bufferSize") : json.Size();
     uint64_t count=static_cast<uint64_t>(bw)*bh;
     require(capacity>=0 && count<=static_cast<uint64_t>(capacity),"Raster buffer is too small");
     require(count<=INT_MAX,"Raster buffer exceeds bridge limit; read smaller windows");
     require(count<=SIZE_MAX/sizeof(T),"Raster buffer exceeds addressable memory");
+    validateBinary(count,sizeof(T),write);
     std::vector<T> data(count);
-    if(write)for(size_t i=0;i<count;i++){
+    if(write && activeBinary)binaryInput(data.data(),count);
+    else if(write)for(size_t i=0;i<count;i++){
         if constexpr(std::is_floating_point_v<T>)data[i]=static_cast<T>(CPLAtof(json[static_cast<int>(i)].ToString().c_str()));
         else data[i]=static_cast<T>(std::stoll(json[static_cast<int>(i)].ToString()));
     }
@@ -213,7 +216,7 @@ template<class T> CPLJSONObject rasterTyped(GDALRasterBandH h,const CPLJSONObjec
     extra.eResampleAlg=static_cast<GDALRIOResampleAlg>(alg);
     extra.pfnProgress=progress;extra.pProgressData=activeProgress;
     auto code=GDALRasterIOEx(h,write?GF_Write:GF_Read,x,y,width,height,data.data(),bw,bh,type,0,0,&extra);
-    CPLJSONObject out;out.Add("code",code);if(!write)out.Add("buffer",numbers(data.data(),data.size())["value"]);CPLJSONObject result;result.Add("value",out);return result;
+    CPLJSONObject out;out.Add("code",code);if(!write && code==CE_None){if(activeBinary)binaryOutput(data.data(),data.size());else out.Add("buffer",numbers(data.data(),data.size())["value"]);}CPLJSONObject result;result.Add("value",out);return result;
 }
 inline CPLJSONObject raster(GDALRasterBandH h,const CPLJSONObject& a,bool write,const std::string& method){
     if(method.find("_ByteArray")!=std::string::npos)return rasterTyped<unsigned char>(h,a,write,GDT_Byte);
@@ -238,11 +241,13 @@ template<class T> CPLJSONObject datasetRasterTyped(GDALDatasetH h,const CPLJSONO
     auto pixels=static_cast<uint64_t>(bw)*bh;
     require(pixels<=static_cast<uint64_t>(INT_MAX)/bands.size(),"Raster buffer exceeds bridge limit; read smaller windows");
     auto count=pixels*bands.size();auto json=a.GetArray("buffer");
-    auto capacity=write?json.Size():a.GetLong("bufferSize");
+    auto capacity=write&&!activeBinary?json.Size():a.GetLong("bufferSize");
     require(capacity>=0 && count<=static_cast<uint64_t>(capacity),"Raster buffer is too small");
     require(count<=SIZE_MAX/sizeof(T),"Raster buffer exceeds addressable memory");
+    validateBinary(count,sizeof(T),write);
     std::vector<T> data(static_cast<size_t>(count));
-    if(write)for(size_t i=0;i<count;++i) {
+    if(write && activeBinary)binaryInput(data.data(),count);
+    else if(write)for(size_t i=0;i<count;++i) {
         if constexpr(std::is_floating_point_v<T>)data[i]=static_cast<T>(CPLAtof(json[static_cast<int>(i)].ToString().c_str()));
         else data[i]=static_cast<T>(std::stoll(json[static_cast<int>(i)].ToString()));
     }
@@ -255,7 +260,7 @@ template<class T> CPLJSONObject datasetRasterTyped(GDALDatasetH h,const CPLJSONO
         static_cast<int>(bands.size()),bands.data(),sizeof(T),static_cast<GSpacing>(bw)*sizeof(T),
         static_cast<GSpacing>(pixels)*sizeof(T),&extra);
     CPLJSONObject out;out.Add("code",code);
-    if(!write && code==CE_None)out.Add("buffer",numbers(data.data(),data.size())["value"]);
+    if(!write && code==CE_None){if(activeBinary)binaryOutput(data.data(),data.size());else out.Add("buffer",numbers(data.data(),data.size())["value"]);}
     CPLJSONObject result;result.Add("value",out);return result;
 }
 inline CPLJSONObject datasetRaster(GDALDatasetH h,const CPLJSONObject& a,bool write,const std::string& method) {

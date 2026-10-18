@@ -35,7 +35,7 @@ export function createGdalWorker() {
         worker.onmessage = event => receive(event.data);
         worker.onerror = event => fail(new Error(event.message || 'GDAL Worker failed'));
     }
-    function send(operation, payload, file, progress, cancelled) {
+    function send(operation, payload, file, progress, cancelled, binary) {
         if (closed) return Promise.reject(new Error('GDAL Worker is closed'));
         if (node) worker.ref();
         return new Promise((resolve, reject) => {
@@ -44,12 +44,22 @@ export function createGdalWorker() {
                 if (cancelled()) worker.postMessage({id, operation: 'cancel'});
             }, 20) : undefined;
             pending.set(id, {resolve, reject, progress, cancelled, timer});
-            try { worker.postMessage({id, operation, payload, file, controlled: !!cancelled}); }
+            try {
+                const input = binary?.input;
+                worker.postMessage({id, operation, payload, file, controlled: !!cancelled, binary}, input ? [input] : []);
+            }
             catch (error) { clearInterval(timer); pending.delete(id); if (node && !pending.size) worker.unref(); reject(error); }
         });
     }
-    return send('init').then(() => ({
+    return send('init').then(capabilities => ({
+        binaryVersion: capabilities?.binaryRasterVersion ?? 0,
         call: (request, file, progress, cancelled) => send('call', request, file, progress, cancelled),
+        callBinary: (request, bytes, progress, cancelled) => {
+            // Packed bytes are private staging memory; caller-owned raster arrays stay attached.
+            const input = bytes == null ? null : bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+                ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+            return send('call', request, undefined, progress, cancelled, {input});
+        },
         close: () => send('close').finally(() => { closed = true; return worker.terminate(); }),
     }), error => { fail(error); throw error; });
 }

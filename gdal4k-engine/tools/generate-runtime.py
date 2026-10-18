@@ -342,8 +342,8 @@ for cls in TYPES:
                          else '"'+n+'" to '+kt_arg(n,t) for n,t in params)
         call=f'invoke("{cls}", "{sig}", mapOf({payload}))'
         if cls in ['Band','Dataset'] and name in ['readRaster','writeRaster','readBlock','writeBlock']:
-            typ=dict(params)['buffer'];cv={'ByteArray':'toInt().toByte','ShortArray':'toInt().toShort','IntArray':'toInt','LongArray':'toLong','FloatArray':'toFloat','DoubleArray':'toDouble'}[typ]
-            body=f'val result = {call}.jsonObject; '+('if (result["code"]!!.jsonPrimitive.int == 0) result["buffer"]!!.jsonArray.forEachIndexed { i, v -> buffer[i] = v.jsonPrimitive.content.'+cv+'() }; ' if name in ['readRaster','readBlock'] else '')+'return result["code"]!!.jsonPrimitive.int'
+            payload=', '.join('"'+n+'" to '+kt_arg(n,t) for n,t in params if n!='buffer')
+            body=f'return rasterCall("{cls}", "{sig}", buffer, mapOf({payload}), {str(name.startswith("write")).lower()})'
         elif cls=='CoordinateTransformation' and name=='transformPoints':
             body=f'val result = {call}.jsonArray; result.forEachIndexed {{ i, p -> p.jsonArray.forEachIndexed {{ j, v -> points[i][j] = v.jsonPrimitive.content.toDouble() }} }}'
         elif cls=='CoordinateTransformation' and name=='transformBounds':
