@@ -266,6 +266,8 @@ The source stays caller-owned. Direct outputs and sidecars, including partial
 outputs after failure/cancellation, belong to the caller. Direct output avoids
 copying the resulting file into a `GdalFiles` buffer.
 
+선택적 HDF5·netCDF, Parquet, PostgreSQL 엔진은 [드라이버 프로필](gdal4k-engine/DRIVER-PROFILES.md)에서 별도 버전·로컬 Maven 아카이브로 빌드합니다. 기본 패키지와 타깃은 유지하며, 추가 드라이버 지원은 해당 프로필의 실제 CI 검증 범위에 한정합니다.
+
 ### OGR 레이어 연산과 제한된 피처 일괄 처리
 
 `overlayTo`는 두 입력 레이어를 새 결과 레이어로 Intersection/Union/SymDifference/Identity/Update/Clip/Erase 합니다. 두 입력은 독립된 native 레이어 커서여야 합니다. 같은 Dataset.getLayer로 다시 얻은 핸들도 같은 레이어이면 거부합니다. 서로 다른 레이어 사이에서도 커서를 공유하는 드라이버는 별도로 연 입력 Dataset을 사용해야 합니다. 결과도 두 입력과 달라야 하며, 쓰기·필드 생성이 가능하고 속성 필드·피처·필터가 없어야 합니다. 먼저 결과 레이어의 살아 있는 Feature와 같은 데이터셋의 SQL 결과를 닫습니다. 결과 스키마의 빌린 정의 핸들은 드라이버 호출 전에 무효화되므로 실패 코드 이후에도 다시 조회합니다. 좌표계가 양쪽에 알려져 있는데 다르면 거절합니다. GEOS 평면 연산이며 자동 재투영·도형 복구·트랜잭션은 없습니다. 기본 geometry field를 사용하고 입력 커서/필터에는 GDAL 의미가 적용됩니다.
