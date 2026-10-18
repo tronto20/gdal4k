@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify published Maven artifacts from a fresh, unrelated Kotlin consumer build."""
 import argparse
+import errno
 import json
 import os
 import shutil
@@ -207,8 +208,30 @@ tasks.named("jvmTest") { dependsOn(recordJvmRuntime) }
   case = '-compile' if target=='android' and a.compile_only else '-missing' if a.expect_missing_jvm_binary and not binaries else '-wrong' if a.expect_missing_jvm_binary else '-multiple' if len(binaries)>1 else ''
   destination=ROOT/'verification/results'/('published-consumer-'+target+('-browser' if a.browser else '')+case)
   destination.mkdir(parents=True,exist_ok=True)
+  preservation={'hardlinked_files':0,'copied_files':0}
+  def preserve_completed_file(source, output):
+   """Retain completed own temporary artifacts without duplicating their data blocks.
+
+   No task writes these files again. Removing the temporary directory only unlinks
+   its names; the complete evidence remains. External/symlink sources and filesystems
+   without hard links use the ordinary copy. Never link user SDK/cache files.
+   """
+   source,output=Path(source),Path(output)
+   if output.is_symlink():raise RuntimeError('Refusing symlinked consumer evidence file: '+str(output))
+   if output.exists():output.unlink()
+   if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(consumer.resolve()):
+    preservation['copied_files']+=1
+    return shutil.copy2(source,output)
+   try:
+    os.link(source,output)
+    preservation['hardlinked_files']+=1
+    return str(output)
+   except OSError as failure:
+    if failure.errno not in {errno.EXDEV,errno.EPERM,errno.EACCES,errno.ENOTSUP,errno.EINVAL}:raise
+    preservation['copied_files']+=1
+    return shutil.copy2(source,output)
   for folder in ['build/test-results','build/outputs/androidTest-results','build/bin']:
-   if (consumer/folder).exists():shutil.copytree(consumer/folder,destination/Path(folder).name,dirs_exist_ok=True)
-  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed'},indent=2)+'\n')
+   if (consumer/folder).exists():shutil.copytree(consumer/folder,destination/Path(folder).name,dirs_exist_ok=True,copy_function=preserve_completed_file)
+  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed'},indent=2)+'\n')
  finally:
   for original,moved in reversed(hidden):moved.rename(original)
