@@ -108,6 +108,16 @@ template<class T> inline T columnScalar(const void* buffer, size_t index) {
 inline CPLJSONObject readColumnBatch(VectorColumnStream& state) {
     require(activeBinary && activeBinary->length == 0, "Column reads require binary transport with no input payload");
     if (state.eof) return nullValue();
+#if defined(__EMSCRIPTEN__)
+    // GDAL 3.12.4's optimized GPKG path can start an asynchronous std::thread even with a
+    // single consumer (e.g. FIDs have holes). Our Web engine is threadless. Select GDAL's own
+    // generic Arrow producer for GPKG during this call; never change caller/global config.
+    struct ThreadlessGeoPackageArrow {
+        char** previous = CPLGetThreadLocalConfigOptions();
+        ThreadlessGeoPackageArrow() { CPLSetThreadLocalConfigOption("OGR_GPKG_STREAM_BASE_IMPL", "YES"); }
+        ~ThreadlessGeoPackageArrow() { CPLSetThreadLocalConfigOptions(previous); CSLDestroy(previous); }
+    } threadlessGeoPackageArrow;
+#endif
     struct Array { ArrowArray value{}; ~Array() { if (value.release) value.release(&value); } } array;
     while (true) {
         binaryCheckpoint(); CPLErrorReset();

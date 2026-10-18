@@ -383,7 +383,7 @@ layer.forEachColumnBatch(1024) { batch ->
 
 한 native 레이어에는 stream 하나만 열 수 있습니다. stream을 닫기 전 다른 핸들로 같은 레이어의 커서·필터·스키마를 바꾸거나 관련 Dataset 연산을 실행하면 오류가 납니다. 레이어 별칭 또는 Dataset을 닫으면 stream도 닫힙니다. 종료 시 GDAL이 커서를 재설정할 수 있으므로 Feature 순회와 혼용하지 않습니다. 수동 stream은 EOF 후에도 닫아야 합니다.
 
-primitive 정수·실수·boolean·문자열·binary와 WKB geometry를 지원합니다. nested/list/dictionary/date 등 지원하지 않는 Arrow 스키마는 명시적으로 거부하며 기존 Feature API를 사용합니다. `valid=false`는 unset과 명시적 null을 구분하지 않습니다. FID를 포함한 Arrow 컬럼 순서·이름을 유지하며 이름이 중복될 수 있습니다. batchSize는 1–65,536이고 응답은 64 MiB까지입니다. 큰 값은 더 작은 batchSize로 읽어야 하며, 단일 값에 대한 GDAL의 native 할당 크기는 별도입니다. 이 API는 zero-copy가 아닙니다. binary protocol 3 엔진이 필요하며 이전 엔진의 기존 Feature 경로는 유지됩니다.
+primitive 정수·실수·boolean·문자열·binary와 WKB geometry를 지원합니다. nested/list/dictionary/date 등 지원하지 않는 Arrow 스키마는 명시적으로 거부하며 기존 Feature API를 사용합니다. `valid=false`는 unset과 명시적 null을 구분하지 않습니다. FID를 포함한 Arrow 컬럼 순서·이름을 유지하며 이름이 중복될 수 있습니다. batchSize는 1–65,536이고 응답은 64 MiB까지입니다. 큰 값은 더 작은 batchSize로 읽어야 하며, 단일 값에 대한 GDAL의 native 할당 크기는 별도입니다. 이 API는 zero-copy가 아닙니다. binary protocol 3 엔진이 필요하며 이전 엔진의 기존 Feature 경로는 유지됩니다. 스레드가 없는 Web 엔진에서는 GeoPackage의 GDAL generic Arrow 구현을 사용하며 호출 후 thread-local 설정을 복원합니다.
 
 ### OGR 레이어 연산과 제한된 피처 일괄 처리
 
