@@ -128,4 +128,63 @@ class GdalProgressApiTest {
             } finally { requireNotNull(Gdal4k.runtime().getDriver("GTiff")).use { it.delete(path) } }
         }
     }
+    @Test fun newBandAnalysisCancellationKeepsCallerBandsAndContourInputUsable() = runTest(timeout = 120.seconds) {
+        raster().use { source -> raster().use { target ->
+            requireNotNull(source.getRasterBand(1)).use { band -> requireNotNull(target.getRasterBand(1)).use { out ->
+                val operations: List<suspend () -> Int> = listOf(
+                    { band.sieveTo(out, 2) }, { band.proximityTo(out) }, { band.fillNoData(maxSearchDistance = 2.0) })
+                for (operation in operations) {
+                    assertFailsWith<CancellationException> { withGdalProgress({ false }) { operation() } }
+                    assertEquals(0, operation())
+                    assertEquals(128, source.getRasterXSize()); assertEquals(128, target.getRasterYSize())
+                }
+            } }
+            assertFailsWith<CancellationException> { withGdalProgress({ false }) { source.contour(interval = 100.0) } }
+            Gdal4k.runtime().openDataset(source.contour(interval = 100.0)).use { ds ->
+                requireNotNull(ds.getLayer(0)).use { assertTrue(it.getFeatureCount(true) > 0) }
+            }
+        } }
+    }
+
+    @Test fun gridAndViewshedCancellationReleaseOutputsAndKeepInputs() = runTest(timeout = 120.seconds) {
+        val runtime = Gdal4k.runtime()
+        val json = """{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0,3]}}]}"""
+        runtime.openDataset(GdalFiles(GdalFile("progress-points.geojson", json.encodeToByteArray()))).use { points ->
+            val args = listOf("-a", "nearest", "-txe", "0", "2", "-tye", "0", "2", "-outsize", "2", "2")
+            assertFailsWith<CancellationException> { withGdalProgress({ false }) { points.grid(arguments = args) } }
+            runtime.openDataset(points.grid(arguments = args)).use { assertEquals(2, it.getRasterXSize()) }
+            requireNotNull(points.getLayer(0)).use { assertEquals(1L, it.getFeatureCount(true)) }
+        }
+        raster().use { source ->
+            val options = ViewshedOptions(64.5, 64.5, curvatureCoefficient = 0.0)
+            assertFailsWith<CancellationException> { withGdalProgress({ false }) { source.viewshed(options) } }
+            runtime.openDataset(source.viewshed(options)).use { assertEquals(128, it.getRasterYSize()) }
+            assertEquals(128, source.getRasterXSize())
+        }
+    }
+
+    @Test fun overlayCancellationPreservesInputHandlesAndAllowsFreshOutput() = runTest(timeout = 120.seconds) {
+        val runtime = Gdal4k.runtime()
+        requireNotNull(runtime.getDriver("MEM")).use { driver -> requireNotNull(driver.createVector("")).use { ds ->
+            suspend fun layer(name: String, x: Int?): Layer {
+                val layer = requireNotNull(ds.createLayer(name, geometryType = 0))
+                if (x != null) requireNotNull(layer.getLayerDefn()).use { schema -> runtime.createFeature(schema).use { feature ->
+                    runtime.createGeometryFromWkt("POLYGON (($x 0,${x+2} 0,${x+2} 2,$x 2,$x 0))").use { feature.setGeometry(it) }
+                    assertEquals(0, layer.createFeature(feature))
+                } }
+                return layer
+            }
+            layer("input", 0).use { input -> layer("method", 1).use { method ->
+                for (operation in LayerOverlayOperation.entries) {
+                    layer("cancel-${operation.name}", null).use { output ->
+                        assertFailsWith<CancellationException> { withGdalProgress({ false }) { input.overlayTo(method, output, operation) } }
+                        // Cancellation does not roll back schema/cursor/partial output: use a fresh output.
+                    }
+                    layer("ok-${operation.name}", null).use { output -> assertEquals(0, input.overlayTo(method, output, operation)) }
+                    assertEquals(1L, input.getFeatureCount(true)); assertEquals(1L, method.getFeatureCount(true))
+                }
+            } }
+        } }
+    }
+
 }

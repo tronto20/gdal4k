@@ -67,3 +67,48 @@ inline CPLJSONObject setVectorSpatialFilter(Runtime& runtime, OGRLayerH layer, c
     }
     return value(native->SetSpatialFilter(OGRGeometry::FromHandle(filter)));
 }
+
+inline CPLJSONObject layerOverlay(Runtime& runtime, OGRLayerH source, const CPLJSONObject& args) {
+    auto method = runtime.arg(args["method"]), result = runtime.arg(args["result"]);
+    require(source != method, "Overlay inputs require independent native layer cursors; obtaining another handle to the same layer does not create one");
+    require(result != source && result != method, "Overlay result must differ from both inputs");
+    auto operation = args.GetString("operation");
+    require(operation == "intersection" || operation == "union" || operation == "symDifference" || operation == "identity" || operation == "update" || operation == "clip" || operation == "erase", "Unsupported layer overlay operation");
+    vectorSameCrs(OGR_L_GetSpatialRef(source), OGR_L_GetSpatialRef(method));
+    vectorSameCrs(OGR_L_GetSpatialRef(source), OGR_L_GetSpatialRef(result));
+    vectorSameCrs(OGR_L_GetSpatialRef(method), OGR_L_GetSpatialRef(result));
+    require(OGR_L_TestCapability(result, OLCSequentialWrite) && OGR_L_TestCapability(result, OLCCreateField), "Overlay result must support writes and schema creation");
+    auto filter = OGRLayer::FromHandle(result)->GetAttrQueryString();
+    require((!filter || !*filter) && !OGR_L_GetSpatialFilter(result), "Clear result filters before overlay");
+    auto schema = OGR_L_GetLayerDefn(result);
+    require(schema && OGR_FD_GetFieldCount(schema) == 0 && OGR_L_GetFeatureCount(result, TRUE) == 0, "Overlay result must have no attribute fields or features");
+    for (const auto& item : runtime.handles) {
+        const auto& entry = item.second;
+        require(entry.type != "Feature" || OGR_F_GetDefnRef(entry.pointer) != schema, "Close all result Features before overlay");
+        if (entry.type == "Layer" && entry.owned) {
+            auto parent = runtime.handles.find(entry.parent);
+            require(parent == runtime.handles.end() || parent->second.pointer != OGR_L_GetDataset(result), "Close active SQL result layers on the output dataset before overlay");
+        }
+    }
+    FileOptions options(CPLJSONArray{}); std::set<std::string> seen;
+    const bool bothFields = operation == "intersection" || operation == "union" || operation == "symDifference" || operation == "identity";
+    const bool prepared = operation == "intersection" || operation == "union" || operation == "identity";
+    for (auto entry : args.GetArray("arguments")) {
+        auto text = entry.ToString(); auto equal = text.find('=');
+        require(text.find('\0') == std::string::npos && equal != std::string::npos && equal > 0, "Overlay option requires KEY=VALUE");
+        auto key = text.substr(0, equal), val = text.substr(equal + 1);
+        require(seen.insert(key).second, "Duplicate overlay option");
+        const bool prefix = bothFields && (key == "INPUT_PREFIX" || key == "METHOD_PREFIX");
+        require(prefix || key == "SKIP_FAILURES" || key == "PROMOTE_TO_MULTI" || (prepared && (key == "USE_PREPARED_GEOMETRIES" || key == "KEEP_LOWER_DIMENSION_GEOMETRIES")) || (operation == "intersection" && key == "PRETEST_CONTAINMENT"), "Unsupported option for this layer overlay");
+        require(prefix || val == "YES" || val == "NO", "Overlay boolean option must be YES or NO");
+        options.add(text);
+    }
+    runtime.invalidatePointer(schema);
+    if (operation == "intersection") return value(OGR_L_Intersection(source, method, result, options.list, progress, activeProgress));
+    if (operation == "union") return value(OGR_L_Union(source, method, result, options.list, progress, activeProgress));
+    if (operation == "symDifference") return value(OGR_L_SymDifference(source, method, result, options.list, progress, activeProgress));
+    if (operation == "identity") return value(OGR_L_Identity(source, method, result, options.list, progress, activeProgress));
+    if (operation == "update") return value(OGR_L_Update(source, method, result, options.list, progress, activeProgress));
+    if (operation == "clip") return value(OGR_L_Clip(source, method, result, options.list, progress, activeProgress));
+    return value(OGR_L_Erase(source, method, result, options.list, progress, activeProgress));
+}
