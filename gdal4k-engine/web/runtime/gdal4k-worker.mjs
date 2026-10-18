@@ -81,7 +81,7 @@ async function dispatch({id, operation, payload, file, controlled}) {
                     throw new Error('Browser paths require a selected File; use openDataset(file) or an HTTP(S) URL');
                 }
             } else if (file) throw new Error('A browser File can only be attached to openDataset');
-            if ((args?.type === 'Dataset' || args?.type === 'GdalRuntime') && /^(translateTo|warpTo|translateVectorTo|rasterizeTo|demProcessingTo|polygonizeTo)_/.test(args.method)) args.parameters.path = outputs.path(args.parameters.path);
+            if ((args?.type === 'Dataset' || args?.type === 'GdalRuntime') && /^(translateTo|warpTo|translateVectorTo|rasterizeTo|demProcessingTo|polygonizeTo|gridTo|viewshedTo|contourTo)_/.test(args.method)) args.parameters.path = outputs.path(args.parameters.path);
             if (args?.type === 'Driver' && args.method === 'delete_String') args.parameters.name = outputs.path(args.parameters.name);
             inputs.lastError = null; outputs.lastError = null;
             if (controlled) {

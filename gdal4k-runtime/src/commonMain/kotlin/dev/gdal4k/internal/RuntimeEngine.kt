@@ -25,6 +25,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val name = method.substringBefore('_')
         val cancellable = transport.supportsHttpInputPolicy || name in setOf("openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "buildVRT",
+            "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster")
         val control = if (method != "close" && (cancellable || caller[GdalProgressContext] != null))
             GdalCallControl(caller[Job], caller[GdalProgressContext], "$type.$name") else null
@@ -104,6 +105,14 @@ internal open class RuntimeHandle(val engine: RuntimeEngine, private val id: Str
     }
     fun encode(value: Any?): JsonElement = when(value) {
         null -> JsonNull
+        is ViewshedOptions -> buildJsonObject {
+            put("observerX", encode(value.observerX)); put("observerY", encode(value.observerY))
+            put("observerHeight", encode(value.observerHeight)); put("targetHeight", encode(value.targetHeight))
+            put("maxDistance", encode(value.maxDistance)); put("curvatureCoefficient", encode(value.curvatureCoefficient))
+            put("mode", value.mode.code); put("output", value.output.code)
+            put("visibleValue", value.visibleValue); put("invisibleValue", value.invisibleValue)
+            put("outOfRangeValue", value.outOfRangeValue); put("noDataValue", encode(value.noDataValue))
+        }
         is MDDataType -> encodeMDType(value)
         is MDValue -> encodeMDValue(value)
         is CodedFieldValue -> buildJsonObject { put("code", encode(value.code)); put("label", encode(value.label)) }

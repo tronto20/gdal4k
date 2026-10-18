@@ -1,6 +1,7 @@
 #pragma once
 #include <gdal_priv.h>
 #include <gdal_alg.h>
+#include <gdal_maskbands.h>
 #include <ogrsf_frmts.h>
 #include <gdal_utils.h>
 #include <cpl_vsi.h>
@@ -11,6 +12,7 @@
 #include <cpl_string.h>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <limits>
 #include <stdexcept>
@@ -289,12 +291,18 @@ inline CPLJSONObject mdRaster(GDALMDArrayH h,const CPLJSONObject& a,bool write) 
 #include "runtime-md.hpp"
 #include "runtime-band.hpp"
 #include "runtime-band-structures.hpp"
+#include "runtime-schema.hpp"
+
 #include "runtime-vector.hpp"
 inline CPLJSONObject Runtime::execute(const CPLJSONObject& request){
     Runtime& r=*this;const auto type=request.GetString("type"),method=request.GetString("method");
     auto id=std::stoull(request.GetString("handle","0"));
     if(method=="close"){close(id);return nullValue();}
     auto a=request.GetObj("parameters");void* h=type=="GdalRuntime"?nullptr:get(id,type);
+    if(type=="FieldDefn" && method.rfind("set",0)==0)
+        require(handles.at(id).owned,"Borrowed field definitions are read-only; cloneFieldDefn before editing");
+    if(type=="FeatureDefn" && (method.rfind("addFieldDefn",0)==0 || method.rfind("addGeomFieldDefn",0)==0 || method.rfind("setGeomType",0)==0))
+        require(handles.at(id).owned,"Do not modify a layer definition directly; use Layer schema operations");
     // A mutation can replace native children while their Kotlin wrappers still exist.
     // Invalidate aliases after arguments have been resolved and the C call has finished.
     std::string invalidated;
