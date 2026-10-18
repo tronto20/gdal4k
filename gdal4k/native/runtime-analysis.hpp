@@ -36,7 +36,7 @@ inline CPLJSONObject bandAnalysis(Runtime& runtime, GDALRasterBandH source, cons
         require(GDALGetRasterAccess(target) == GA_Update, "Sieve target is read-only");
         auto mask = analysisMask(runtime, source, args, args.GetBool("useDefaultMask"));
         require(!mask || mask != target, "Sieve mask cannot be the target band");
-        return value(GDALSieveFilter(source, mask, target, threshold, connectedness, nullptr, nullptr, nullptr));
+        return value(GDALSieveFilter(source, mask, target, threshold, connectedness, nullptr, progress, activeProgress));
     }
     FileOptions options(CPLJSONArray{});
     std::vector<std::string> seen;
@@ -69,7 +69,27 @@ inline CPLJSONObject bandAnalysis(Runtime& runtime, GDALRasterBandH source, cons
         require(source != target, "Proximity source and target must differ");
         analysisBand(target); analysisSameSize(source, target);
         require(GDALGetRasterAccess(target) == GA_Update, "Proximity target is read-only");
-        return value(GDALComputeProximity(source, target, options.list, nullptr, nullptr));
+        // GDAL uses a signed temporary GTiff for unsigned proximity targets.
+        // Android's cwd may be read-only. Preserve an explicit CPL_TMPDIR;
+        // otherwise use the real output filesystem, or a scoped /vsimem workspace
+        // for an in-memory target. RAII restores thread-local config and removes
+        // any scratch files on success, error or cooperative cancellation.
+        auto type = GDALGetRasterDataType(target);
+        const bool scratchNeeded = type == GDT_Byte || type == GDT_UInt16 || type == GDT_UInt32;
+        std::unique_ptr<Directory> scratch;
+        std::string temporaryPath;
+        if (scratchNeeded && !CPLGetConfigOption("CPL_TMPDIR", nullptr)) {
+            auto dataset = GDALGetBandDataset(target);
+            char** files = dataset ? GDALGetFileList(dataset) : nullptr;
+            if (files && files[0]) temporaryPath = files[0];
+            CSLDestroy(files);
+            if (temporaryPath.empty()) {
+                scratch = std::make_unique<Directory>();
+                temporaryPath = scratch->path + "/proximity.tif";
+            }
+        }
+        OutputTemporaryDirectory temporary(temporaryPath, !temporaryPath.empty());
+        return value(GDALComputeProximity(source, target, options.list, progress, activeProgress));
     }
     auto distance = analysisNumber(args["maxSearchDistance"].ToString());
     auto smoothing = args.GetInteger("smoothingIterations");
@@ -78,7 +98,7 @@ inline CPLJSONObject bandAnalysis(Runtime& runtime, GDALRasterBandH source, cons
     auto mask = analysisMask(runtime, source, args, true);
     require(mask != source, "FillNoData mask cannot be its target band");
     if (!CSLFetchNameValue(options.list, "TEMP_FILE_DRIVER")) options.add("TEMP_FILE_DRIVER=MEM");
-    return value(GDALFillNodata(source, mask, distance, 0, smoothing, options.list, nullptr, nullptr));
+    return value(GDALFillNodata(source, mask, distance, 0, smoothing, options.list, progress, activeProgress));
 }
 inline void contourDatasetPath(GDALDatasetH source, const CPLJSONObject& args, const std::string& path) {
     auto bandIndex = args.GetInteger("band");
@@ -136,7 +156,7 @@ inline void contourDatasetPath(GDALDatasetH source, const CPLJSONObject& args, c
     fileEnsure(GDALFlushCache(output.handle) == CE_None, "Cannot flush Contour schema");
     const bool transactional = OGR_L_TestCapability(layer, OLCTransactions);
     if (transactional) fileEnsure(OGR_L_StartTransaction(layer) == OGRERR_NONE, "Cannot start Contour transaction");
-    auto code = GDALContourGenerateEx(band, layer, options.list, nullptr, nullptr);
+    auto code = GDALContourGenerateEx(band, layer, options.list, progress, activeProgress);
     auto transactionCode = transactional ? (code == CE_None ? OGR_L_CommitTransaction(layer) : OGR_L_RollbackTransaction(layer)) : OGRERR_NONE;
     auto closeCode = output.close();
     fileEnsure(code == CE_None && transactionCode == OGRERR_NONE && closeCode == CE_None, "GDAL Contour failed");

@@ -104,11 +104,11 @@ inline CPLJSONObject layerOverlay(Runtime& runtime, OGRLayerH source, const CPLJ
         options.add(text);
     }
     runtime.invalidatePointer(schema);
-    if (operation == "intersection") return value(OGR_L_Intersection(source, method, result, options.list, nullptr, nullptr));
-    if (operation == "union") return value(OGR_L_Union(source, method, result, options.list, nullptr, nullptr));
-    if (operation == "symDifference") return value(OGR_L_SymDifference(source, method, result, options.list, nullptr, nullptr));
-    if (operation == "identity") return value(OGR_L_Identity(source, method, result, options.list, nullptr, nullptr));
-    if (operation == "update") return value(OGR_L_Update(source, method, result, options.list, nullptr, nullptr));
-    if (operation == "clip") return value(OGR_L_Clip(source, method, result, options.list, nullptr, nullptr));
-    return value(OGR_L_Erase(source, method, result, options.list, nullptr, nullptr));
+    if (operation == "intersection") return value(OGR_L_Intersection(source, method, result, options.list, progress, activeProgress));
+    if (operation == "union") return value(OGR_L_Union(source, method, result, options.list, progress, activeProgress));
+    if (operation == "symDifference") return value(OGR_L_SymDifference(source, method, result, options.list, progress, activeProgress));
+    if (operation == "identity") return value(OGR_L_Identity(source, method, result, options.list, progress, activeProgress));
+    if (operation == "update") return value(OGR_L_Update(source, method, result, options.list, progress, activeProgress));
+    if (operation == "clip") return value(OGR_L_Clip(source, method, result, options.list, progress, activeProgress));
+    return value(OGR_L_Erase(source, method, result, options.list, progress, activeProgress));
 }

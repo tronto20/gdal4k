@@ -339,7 +339,7 @@
         auto p=GDALGetFileList(h);auto out=strings(p);CSLDestroy(p);return out;
     }
     if(type=="Dataset" && method=="buildOverviews_String_IntArray") {
-        auto v=ints(a.GetArray("overviewBands"));return value(GDALBuildOverviews(h,a["resampling"].ToString().c_str(),static_cast<int>(v.size()),v.data(),0,nullptr,nullptr,nullptr));
+        auto v=ints(a.GetArray("overviewBands"));return value(GDALBuildOverviews(h,a["resampling"].ToString().c_str(),static_cast<int>(v.size()),v.data(),0,nullptr,progress,activeProgress));
     }
     if(type=="Dataset" && method=="resetReading") {
         apply(GDALDatasetResetReading, Arg(r,h)); return nullValue();
@@ -363,7 +363,7 @@
         Strings list(a.GetArray("options"));return r.result(GDALCreate(h,a["name"].ToString().c_str(),a.GetInteger("xSize"),a.GetInteger("ySize"),a.GetInteger("bandCount"),static_cast<GDALDataType>(a.GetInteger("dataType")),list.data()),"Dataset",true);
     }
     if(type=="Driver" && method=="createCopy_String_Dataset_Int_List_String") {
-        Strings list(a.GetArray("options"));return r.result(GDALCreateCopy(h,a["name"].ToString().c_str(),r.arg(a["dataset"]),a.GetInteger("strict"),list.data(),nullptr,nullptr),"Dataset",true);
+        Strings list(a.GetArray("options"));return r.result(GDALCreateCopy(h,a["name"].ToString().c_str(),r.arg(a["dataset"]),a.GetInteger("strict"),list.data(),progress,activeProgress),"Dataset",true);
     }
     if(type=="Driver" && method=="createVector_String_List_String") {
         Strings list(a.GetArray("options"));return r.result(GDALCreate(h,a["name"].ToString().c_str(),0,0,0,GDT_Unknown,list.data()),"Dataset",true);

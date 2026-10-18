@@ -128,12 +128,15 @@ inline void convertDatasetPath(GDALDatasetH dataset, const CPLJSONObject& args, 
     OutputTemporaryDirectory temporary(path, operation == "warp");
     if (operation == "translate") {
         auto opts = GDALTranslateOptionsNew(options.list, nullptr); fileEnsure(opts != nullptr, "Invalid translate options");
+    GDALTranslateOptionsSetProgress(opts, progress, activeProgress);
         result = GDALTranslate(path.c_str(), dataset, opts, &usageError); GDALTranslateOptionsFree(opts);
     } else if (operation == "warp") {
         auto opts = GDALWarpAppOptionsNew(options.list, nullptr); fileEnsure(opts != nullptr, "Invalid warp options");
+    GDALWarpAppOptionsSetProgress(opts, progress, activeProgress);
         result = GDALWarp(path.c_str(), nullptr, 1, &dataset, opts, &usageError); GDALWarpAppOptionsFree(opts);
     } else {
         auto opts = GDALVectorTranslateOptionsNew(options.list, nullptr); fileEnsure(opts != nullptr, "Invalid vector translate options");
+    GDALVectorTranslateOptionsSetProgress(opts, progress, activeProgress);
         result = GDALVectorTranslate(path.c_str(), nullptr, 1, &dataset, opts, &usageError); GDALVectorTranslateOptionsFree(opts);
     }
     auto closeCode = result ? GDALClose(result) : CE_Failure;
@@ -167,6 +170,7 @@ inline void demProcessingPath(GDALDatasetH source, const CPLJSONObject& args, co
     options.add("-of"); options.add(driver);
     auto opts = GDALDEMProcessingOptionsNew(options.list, nullptr);
     fileEnsure(opts != nullptr, "Invalid DEM processing options");
+    GDALDEMProcessingOptionsSetProgress(opts, progress, activeProgress);
     int usageError = 0;
     auto result = GDALDEMProcessing(path.c_str(), source, mode, nullptr, opts, &usageError);
     GDALDEMProcessingOptionsFree(opts);
@@ -190,6 +194,7 @@ inline void rasterizeDatasetPath(GDALDatasetH source, const CPLJSONObject& args,
     options.add("-of"); options.add(driver);
     auto opts = GDALRasterizeOptionsNew(options.list, nullptr);
     fileEnsure(opts != nullptr, "Invalid rasterize options");
+    GDALRasterizeOptionsSetProgress(opts, progress, activeProgress);
     int usageError = 0;
     auto result = GDALRasterize(path.c_str(), nullptr, source, opts, &usageError);
     GDALRasterizeOptionsFree(opts);
@@ -226,6 +231,7 @@ inline CPLJSONObject buildVirtualDataset(Runtime& r,const CPLJSONObject& a) {
     for(auto arg:arguments)if(arg.ToString()=="-non_strict")permissive=true;
     FileOptions options(arguments);if(!permissive)options.add("-strict");
     auto opts=GDALBuildVRTOptionsNew(options.list,nullptr);fileEnsure(opts!=nullptr,"Invalid VRT options");
+    GDALBuildVRTOptionsSetProgress(opts, progress, activeProgress);
     int usage=0;auto p=GDALBuildVRT("",static_cast<int>(sources.datasets.size()),sources.datasets.data(),nullptr,opts,&usage);
     GDALBuildVRTOptionsFree(opts);
     if(!p||usage){if(p)GDALClose(p);fileEnsure(false,"Cannot build VRT");}
@@ -239,6 +245,7 @@ inline void warpDatasetPath(Runtime& r,const CPLJSONObject& a,const std::string&
     require(!EQUAL(driver.c_str(),"VRT")&&!EQUAL(driver.c_str(),"MEM"),"Warp file output requires a concrete format, not VRT or MEM");
     FileOptions options(a.GetArray("arguments"));options.add("-t_srs");options.add(target);options.add("-of");options.add(driver);
     auto opts=GDALWarpAppOptionsNew(options.list,nullptr);fileEnsure(opts!=nullptr,"Invalid warp options");
+    GDALWarpAppOptionsSetProgress(opts, progress, activeProgress);
     OutputTemporaryDirectory temporary(path);
     int usage=0;auto p=GDALWarp(path.c_str(),nullptr,static_cast<int>(sources.datasets.size()),sources.datasets.data(),opts,&usage);
     GDALWarpAppOptionsFree(opts);auto code=p?GDALClose(p):CE_Failure;

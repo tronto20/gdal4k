@@ -15,10 +15,10 @@ static std::string bytes(JNIEnv *env, jbyteArray input) {
 extern "C" JNIEXPORT jlong JNICALL Java_dev_gdal4k_JniBridge_create(JNIEnv *env, jobject, jbyteArray proj, jbyteArray data) {
     return reinterpret_cast<jlong>(gdal4k_create(bytes(env, proj).c_str(), bytes(env, data).c_str()));
 }
-extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_gdal4k_JniBridge_execute(JNIEnv *env, jobject, jlong handle, jbyteArray request) {
+static jbyteArray executeJni(JNIEnv *env, jlong handle, jbyteArray request, gdal4k_control* control) {
     const auto input = bytes(env, request);
     auto* context = reinterpret_cast<gdal4k_context *>(handle);
-    char *result = gdal4k_execute(context, input.c_str());
+    char *result = gdal4k_execute_controlled(context, input.c_str(), control);
     if (auto failure = g4k_jni_inputs::takeFailure(handle)) {
         // A driver may ignore an optional sidecar error and still return a live dataset.
         // Close that new dataset before the caller releases its directory descriptors.
@@ -43,4 +43,17 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_gdal4k_JniBridge_execute(JNIEnv
     if (output) env->SetByteArrayRegion(output, 0, static_cast<jsize>(value.size()), reinterpret_cast<const jbyte *>(value.data()));
     return output;
 }
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_gdal4k_JniBridge_execute(JNIEnv *env, jobject, jlong handle, jbyteArray request) { return executeJni(env, handle, request, nullptr); }
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_gdal4k_JniBridge_executeControlled(JNIEnv *env, jobject, jlong handle, jbyteArray request, jlong control) { return executeJni(env, handle, request, reinterpret_cast<gdal4k_control*>(control)); }
+extern "C" JNIEXPORT jlong JNICALL Java_dev_gdal4k_JniBridge_controlCreate(JNIEnv*, jobject) { return reinterpret_cast<jlong>(gdal4k_control_create()); }
+extern "C" JNIEXPORT void JNICALL Java_dev_gdal4k_JniBridge_controlCancel(JNIEnv*, jobject, jlong control) { gdal4k_control_cancel(reinterpret_cast<gdal4k_control*>(control)); }
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_gdal4k_JniBridge_controlSnapshot(JNIEnv* env, jobject, jlong control) {
+    auto text = gdal4k_control_snapshot(reinterpret_cast<gdal4k_control*>(control));
+    if (!text) { env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"), "GDAL progress allocation failed"); return nullptr; }
+    const auto length = static_cast<jsize>(std::strlen(text));
+    auto result = env->NewByteArray(length);
+    if (result) env->SetByteArrayRegion(result, 0, length, reinterpret_cast<const jbyte*>(text));
+    gdal4k_free(text); return result;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_gdal4k_JniBridge_controlDestroy(JNIEnv*, jobject, jlong control) { gdal4k_control_destroy(reinterpret_cast<gdal4k_control*>(control)); }
 extern "C" JNIEXPORT void JNICALL Java_dev_gdal4k_JniBridge_destroy(JNIEnv *, jobject, jlong handle) { gdal4k_destroy(reinterpret_cast<gdal4k_context *>(handle)); }

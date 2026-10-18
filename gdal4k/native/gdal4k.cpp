@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #include "resources.h"
+#include "progress.hpp"
 #include "runtime.hpp"
 
 #ifdef __EMSCRIPTEN__
@@ -65,6 +66,9 @@ extern "C" gdal4k_context *gdal4k_create(const char *proj, const char *data) {
     } catch (...) { return nullptr; }
 }
 extern "C" char *gdal4k_execute(gdal4k_context *ctx, const char *request) {
+    return gdal4k_execute_controlled(ctx, request, nullptr);
+}
+extern "C" char *gdal4k_execute_controlled(gdal4k_context *ctx, const char *request, gdal4k_control* control) {
     if (!ctx) return CPLStrdup("{\"error\":\"GDAL session is closed\"}");
     std::lock_guard<std::mutex> configLock(configurationMutex);
     std::lock_guard<std::mutex> lock(ctx->mutex);
@@ -81,12 +85,29 @@ extern "C" char *gdal4k_execute(gdal4k_context *ctx, const char *request) {
     CPLErrorReset();
     CPLJSONObject response;
     ctx->runtime.releasedDatasets.clear();
-    try { response.Add("result", execute(*ctx, parse(request))); }
+    const auto firstHandle = ctx->runtime.next;
+    struct ProgressScope {
+        gdal4k_control* previous;
+        explicit ProgressScope(gdal4k_control* value) : previous(g4k::activeProgress) { g4k::activeProgress = value; }
+        ~ProgressScope() { g4k::activeProgress = previous; }
+    } progressScope(control);
+    try {
+        g4k::require(g4k::progress(0, "", control), "GDAL operation cancelled");
+        response.Add("result", execute(*ctx, parse(request)));
+        g4k::progress(1, "", control);
+    }
     catch (const std::exception &e) { response.Add("error", e.what()); }
     catch (...) { response.Add("error", "Unknown GDAL error"); }
     CPLJSONArray released;
     for(auto id:ctx->runtime.releasedDatasets)released.Add(std::to_string(id));
     response.Add("releasedDatasets",released);
+    if (control) {
+        // A late cancellation/callback error can arrive after native work completed. Let the
+        // caller close every newly registered handle before propagating that error.
+        CPLJSONArray allocated;
+        for (const auto& entry : ctx->runtime.handles) if (entry.first > firstHandle) allocated.Add(std::to_string(entry.first));
+        response.Add("allocatedHandles", allocated);
+    }
     if (!ctx->gdalData.empty()) CPLPopFinderLocation();
     if (previousPaths) { OSRSetPROJSearchPaths(previousPaths); CSLDestroy(previousPaths); }
     CPLSetThreadLocalConfigOptions(previous);
@@ -94,6 +115,16 @@ extern "C" char *gdal4k_execute(gdal4k_context *ctx, const char *request) {
     return CPLStrdup(response.Format(CPLJSONObject::PrettyFormat::Plain).c_str());
 }
 extern "C" void gdal4k_free(char *s) { CPLFree(s); }
+extern "C" gdal4k_control* gdal4k_control_create() { try { return new gdal4k_control; } catch (...) { return nullptr; } }
+extern "C" void gdal4k_control_cancel(gdal4k_control* control) { if (control) control->cancelled.store(true); }
+extern "C" char* gdal4k_control_snapshot(gdal4k_control* control) {
+    if (!control) return nullptr;
+    std::lock_guard<std::mutex> lock(control->mutex);
+    CPLJSONObject value;
+    value.Add("sequence", static_cast<GIntBig>(control->sequence)); value.Add("fraction", control->fraction); value.Add("message", control->message);
+    return CPLStrdup(value.Format(CPLJSONObject::PrettyFormat::Plain).c_str());
+}
+extern "C" void gdal4k_control_destroy(gdal4k_control* control) { delete control; }
 extern "C" void gdal4k_destroy(gdal4k_context *ctx) {
     std::lock_guard<std::mutex> lock(configurationMutex);
     delete ctx;

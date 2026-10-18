@@ -10,13 +10,19 @@ export function createGdalWorker() {
     let sequence = 0, closed = false;
     function fail(error) {
         closed = true;
-        for (const task of pending.values()) task.reject(error);
+        for (const task of pending.values()) { clearInterval(task.timer); task.reject(error); }
         pending.clear();
         worker.terminate();
     }
     function receive(message) {
         const task = pending.get(message.id);
         if (!task) return;
+        if (message.progress) {
+            task.progress?.(JSON.stringify(message.progress));
+            if (task.cancelled?.()) worker.postMessage({id: message.id, operation: 'cancel'});
+            return;
+        }
+        clearInterval(task.timer);
         pending.delete(message.id);
         if (node && pending.size === 0) worker.unref();
         if (message.error) task.reject(new Error(message.error)); else task.resolve(message.result);
@@ -29,18 +35,21 @@ export function createGdalWorker() {
         worker.onmessage = event => receive(event.data);
         worker.onerror = event => fail(new Error(event.message || 'GDAL Worker failed'));
     }
-    function send(operation, payload, file) {
+    function send(operation, payload, file, progress, cancelled) {
         if (closed) return Promise.reject(new Error('GDAL Worker is closed'));
         if (node) worker.ref();
         return new Promise((resolve, reject) => {
             const id = ++sequence;
-            pending.set(id, {resolve, reject});
-            try { worker.postMessage({id, operation, payload, file}); }
-            catch (error) { pending.delete(id); if (node && !pending.size) worker.unref(); reject(error); }
+            const timer = cancelled ? setInterval(() => {
+                if (cancelled()) worker.postMessage({id, operation: 'cancel'});
+            }, 20) : undefined;
+            pending.set(id, {resolve, reject, progress, cancelled, timer});
+            try { worker.postMessage({id, operation, payload, file, controlled: !!cancelled}); }
+            catch (error) { clearInterval(timer); pending.delete(id); if (node && !pending.size) worker.unref(); reject(error); }
         });
     }
     return send('init').then(() => ({
-        call: (request, file) => send('call', request, file),
+        call: (request, file, progress, cancelled) => send('call', request, file, progress, cancelled),
         close: () => send('close').finally(() => { closed = true; return worker.terminate(); }),
     }), error => { fail(error); throw error; });
 }

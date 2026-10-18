@@ -7,6 +7,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
@@ -18,7 +19,15 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         if (!closed) { transport.close(); closed = true }
     } }
     suspend fun invoke(type: String, handle: String, method: String, parameters: Map<String, JsonElement>, attachment: Any? = null): JsonElement {
-        if (method != "close") currentCoroutineContext().ensureActive()
+        val caller = currentCoroutineContext()
+        if (method != "close") caller.ensureActive()
+        val name = method.substringBefore('_')
+        val cancellable = name in setOf("translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+            "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "buildVRT",
+            "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
+            "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster")
+        val control = if (method != "close" && (cancellable || caller[GdalProgressContext] != null))
+            GdalCallControl(caller[Job], caller[GdalProgressContext], "$type.$name") else null
         return mutex.withLock { withContext(NonCancellable) {
         if (closed) {
             check(method == "close") { "GDAL runtime is closed" }
@@ -31,8 +40,21 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
                 put("parameters", JsonObject(parameters))
             }
         }
-        val response = Json.parseToJsonElement(transport.call(request.toString(), attachment)).jsonObject
-        response["error"]?.let { throw GdalException(it.jsonPrimitive.content) }
+        val response = Json.parseToJsonElement(transport.call(request.toString(), attachment, control)).jsonObject
+        val failure = control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
+        if (failure != null) {
+            for (id in response["allocatedHandles"]?.jsonArray.orEmpty().asReversed()) {
+                try {
+                    val close = buildJsonObject {
+                        put("op", "runtime")
+                        putJsonObject("args") { put("type", "Handle"); put("handle", id); put("method", "close"); putJsonObject("parameters") {} }
+                    }
+                    val closed = Json.parseToJsonElement(transport.call(close.toString())).jsonObject
+                    closed["error"]?.let { throw GdalException(it.jsonPrimitive.content) }
+                } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+            }
+            throw failure
+        }
         response.getValue("result").jsonObject.getValue("value")
     } }
     }

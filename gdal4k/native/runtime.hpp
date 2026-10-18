@@ -211,6 +211,7 @@ template<class T> CPLJSONObject rasterTyped(GDALRasterBandH h,const CPLJSONObjec
     int alg=options?o.GetInteger("resampling"):0;require((alg>=0 && alg<=7)||alg==14,"Unknown raster resampling algorithm");
     require(!write || alg==0,"Resampling selection is only supported for reads");
     extra.eResampleAlg=static_cast<GDALRIOResampleAlg>(alg);
+    extra.pfnProgress=progress;extra.pProgressData=activeProgress;
     auto code=GDALRasterIOEx(h,write?GF_Write:GF_Read,x,y,width,height,data.data(),bw,bh,type,0,0,&extra);
     CPLJSONObject out;out.Add("code",code);if(!write)out.Add("buffer",numbers(data.data(),data.size())["value"]);CPLJSONObject result;result.Add("value",out);return result;
 }
@@ -249,6 +250,7 @@ template<class T> CPLJSONObject datasetRasterTyped(GDALDatasetH h,const CPLJSONO
     int alg=o.GetInteger("resampling");require((alg>=0 && alg<=7)||alg==14,"Unknown raster resampling algorithm");
     require(!write || alg==0,"Resampling selection is only supported for reads");
     extra.eResampleAlg=static_cast<GDALRIOResampleAlg>(alg);
+    extra.pfnProgress=progress;extra.pProgressData=activeProgress;
     auto code=GDALDatasetRasterIOEx(h,write?GF_Write:GF_Read,x,y,w,v,data.data(),bw,bh,type,
         static_cast<int>(bands.size()),bands.data(),sizeof(T),static_cast<GSpacing>(bw)*sizeof(T),
         static_cast<GSpacing>(pixels)*sizeof(T),&extra);

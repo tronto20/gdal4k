@@ -173,4 +173,47 @@ class RasterAnalysisApiTest {
             band.close(); assertFails { band.fillNoData() }
         } }
     }
+    @Test fun unsignedProximityTargetsUseScopedScratchAndPreserveInputs() = runTest(timeout = 120.seconds) {
+        val runtime = Gdal4k.runtime()
+        val input = DoubleArray(9) { if (it == 4) 1.0 else 0.0 }
+        val expected = DoubleArray(9) { if (it == 4) 0.0 else 1.0 }
+        raster(input) { _, source ->
+            for (type in listOf(GdalDataType.Byte, GdalDataType.UInt16, GdalDataType.UInt32)) {
+                requireNotNull(runtime.getDriver("MEM")).use { driver ->
+                    requireNotNull(driver.create("", 3, 3, 1, type)).use { ds -> requireNotNull(ds.getRasterBand(1)).use { target ->
+                        repeat(2) {
+                            assertEquals(0, source.proximityTo(target), "MEM $type")
+                            assertContentEquals(expected, values(target))
+                        }
+                    } }
+                }
+                val name = "unsigned-proximity-$type.tif"
+                val web = GdalPlatform.current().osName == "web"
+                // Raw Driver.create uses GDAL's filesystem; host/OPFS outputs use translateTo.
+                val path = if (web) "/vsimem/$datasetOutputPrefix-$name" else datasetOutputPath(name)
+                requireNotNull(runtime.getDriver("GTiff")).use { driver -> try {
+                    requireNotNull(driver.create(path, 3, 3, 1, type)).use { ds -> requireNotNull(ds.getRasterBand(1)).use { target ->
+                        assertEquals(0, source.proximityTo(target), "GTiff $type")
+                        assertContentEquals(expected, values(target))
+                    } }
+                    runtime.openDataset(path).use { ds ->
+                        requireNotNull(ds.getRasterBand(1)).use { target ->
+                            assertEquals(type, target.getRasterDataType()); assertContentEquals(expected, values(target))
+                        }
+                        if (web) {
+                            val exported = datasetOutputPath("export-$name")
+                            try {
+                                ds.translateTo(exported, driver = "GTiff")
+                                runtime.openDataset(exported).use { reopened -> requireNotNull(reopened.getRasterBand(1)).use { target ->
+                                    assertEquals(type, target.getRasterDataType()); assertContentEquals(expected, values(target))
+                                } }
+                            } finally { driver.delete(exported) }
+                        }
+                    }
+                } finally { driver.delete(path) } }
+            }
+            assertContentEquals(input, values(source))
+        }
+    }
+
 }

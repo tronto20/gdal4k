@@ -130,10 +130,10 @@ inline void polygonizeDatasetPath(Runtime& runtime, GDALDatasetH source, const C
     CPLErr code;
     if (type == GDT_Int64) {
         ExactIntegerPolygonLayer exact(layer, band, fieldIndex, source);
-        code = GDALPolygonize(band, mask, OGRLayer::ToHandle(&exact), -1, options.algorithm.list, nullptr, nullptr);
+        code = GDALPolygonize(band, mask, OGRLayer::ToHandle(&exact), -1, options.algorithm.list, progress, activeProgress);
     } else {
-        code = floating ? GDALFPolygonize(band, mask, layer, fieldIndex, options.algorithm.list, nullptr, nullptr)
-                        : GDALPolygonize(band, mask, layer, fieldIndex, options.algorithm.list, nullptr, nullptr);
+        code = floating ? GDALFPolygonize(band, mask, layer, fieldIndex, options.algorithm.list, progress, activeProgress)
+                        : GDALPolygonize(band, mask, layer, fieldIndex, options.algorithm.list, progress, activeProgress);
     }
     auto transactionCode = transactional ? (code == CE_None ? OGR_L_CommitTransaction(layer) : OGR_L_RollbackTransaction(layer)) : OGRERR_NONE;
     auto closeCode = output.close();

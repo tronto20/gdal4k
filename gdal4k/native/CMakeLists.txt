@@ -53,8 +53,8 @@ if(EMSCRIPTEN)
         -sEXPORT_NAME=createGdal4kModule -sENVIRONMENT=web,worker
         -sALLOW_MEMORY_GROWTH=1 -sINITIAL_HEAP=1048576 -sMAXIMUM_MEMORY=2147483648
         -sSTACK_SIZE=1048576 -sFILESYSTEM=1 -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536
-        "-sEXPORTED_FUNCTIONS=['_gdal4k_create','_gdal4k_execute','_gdal4k_free','_gdal4k_destroy','_malloc','_free']"
-        "-sEXPORTED_RUNTIME_METHODS=['ccall','UTF8ToString']")
+        "-sEXPORTED_FUNCTIONS=['_gdal4k_create','_gdal4k_execute','_gdal4k_execute_controlled','_gdal4k_control_create','_gdal4k_control_cancel','_gdal4k_control_snapshot','_gdal4k_control_destroy','_gdal4k_free','_gdal4k_destroy','_malloc','_free']"
+        "-sEXPORTED_RUNTIME_METHODS=['ccall','UTF8ToString','stringToNewUTF8']")
 else()
     add_library(gdal4k SHARED gdal4k.cpp "${GDAL4K_RESOURCE_CPP}")
     add_library(gdal4k_static STATIC gdal4k.cpp "${GDAL4K_RESOURCE_CPP}")

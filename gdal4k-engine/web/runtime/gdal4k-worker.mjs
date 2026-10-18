@@ -8,6 +8,8 @@ const port = node ? process.getBuiltinModule('worker_threads').parentPort : glob
 const wasmUrl = new URL('./gdal4k.wasm', import.meta.url);
 let module, context, inputs, outputs, queue = Promise.resolve();
 const datasets = new Map();
+const pendingCalls = new Set(), cancelledCalls = new Set();
+let activeControl, activeCall;
 function nodeWasmBinary() {
     const bytes = process.getBuiltinModule('fs').readFileSync(wasmUrl);
     // Emscripten makes a copy of a Buffer/Uint8Array, but only a view of an
@@ -15,12 +17,21 @@ function nodeWasmBinary() {
     return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
         ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
-async function execute(request) {
-    const pointer = await module.ccall('gdal4k_execute', 'number', ['number', 'string'], [context, JSON.stringify(request)], {async: true});
+async function execute(request, control = 0) {
+    // ccall's string conversion uses the C stack. A valid memory dataset request can be
+    // several MiB; keep its UTF-8 bytes on the heap across every Asyncify suspension.
+    const input = module.stringToNewUTF8(JSON.stringify(request));
+    if (!input) throw new Error('GDAL request allocation failed');
+    let pointer;
+    try {
+        pointer = control
+            ? await module.ccall('gdal4k_execute_controlled', 'number', ['number', 'number', 'number'], [context, input, control], {async: true})
+            : await module.ccall('gdal4k_execute', 'number', ['number', 'number'], [context, input], {async: true});
+    } finally { module._free(input); }
     if (!pointer) throw new Error('GDAL allocation failed');
     try { return module.UTF8ToString(pointer); } finally { module._gdal4k_free(pointer); }
 }
-async function dispatch({id, operation, payload, file}) {
+async function dispatch({id, operation, payload, file, controlled}) {
     let mounted;
     try {
         let result = null;
@@ -52,7 +63,18 @@ async function dispatch({id, operation, payload, file}) {
             if ((args?.type === 'Dataset' || args?.type === 'GdalRuntime') && /^(translateTo|warpTo|translateVectorTo|rasterizeTo|demProcessingTo|polygonizeTo|gridTo|viewshedTo|contourTo)_/.test(args.method)) args.parameters.path = outputs.path(args.parameters.path);
             if (args?.type === 'Driver' && args.method === 'delete_String') args.parameters.name = outputs.path(args.parameters.name);
             inputs.lastError = null; outputs.lastError = null;
-            result = await execute(request);
+            if (controlled) {
+                activeControl = module._gdal4k_control_create(); activeCall = id;
+                if (!activeControl) throw new Error('Unable to allocate GDAL control');
+                module.gdal4kProgress = event => port.postMessage({id, progress: event});
+                if (cancelledCalls.has(id)) module._gdal4k_control_cancel(activeControl);
+            }
+            try { result = await execute(request, activeControl); }
+            finally {
+                module.gdal4kProgress = undefined;
+                if (activeControl) module._gdal4k_control_destroy(activeControl);
+                activeControl = 0; activeCall = undefined;
+            }
             const response = JSON.parse(result);
             if (inputs.lastError || outputs.lastError) {
                 // RasterIO can return a numeric error; keep the transport error actionable.
@@ -84,7 +106,19 @@ async function dispatch({id, operation, payload, file}) {
     } catch (error) {
         mounted?.close();
         port.postMessage({id, error: String(error.stack || error)});
+    } finally {
+        pendingCalls.delete(id); cancelledCalls.delete(id);
     }
 }
-const receive = message => { queue = queue.then(() => dispatch(message)); };
+const receive = message => {
+    // Native progress yields ordinary single-thread Wasm. Cancellation must bypass the serial
+    // GDAL call queue and touches only the independent atomic control, never the context.
+    if (message.operation === 'cancel') {
+        if (pendingCalls.has(message.id)) cancelledCalls.add(message.id);
+        if (activeCall === message.id && activeControl) module._gdal4k_control_cancel(activeControl);
+        return;
+    }
+    if (message.operation === 'call') pendingCalls.add(message.id);
+    queue = queue.then(() => dispatch(message));
+};
 if (node) port.on('message', receive); else port.onmessage = event => receive(event.data);

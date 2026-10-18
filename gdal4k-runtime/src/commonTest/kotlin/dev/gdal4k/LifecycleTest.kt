@@ -49,12 +49,18 @@ class LifecycleTest {
             val source = requireNotNull(memory.create("", 2048, 2048, 1, GdalDataType.Byte))
             val jxl = requireNotNull(runtime.getDriver("JPEGXL"))
             var completed: Dataset? = null
+            var cancellationObserved = false
             val job = launch(start = CoroutineStart.UNDISPATCHED) {
-                completed = jxl.createCopy("/vsimem/gdal4k-cancellation/image.jxl", source, options = listOf("LOSSLESS=YES", "EFFORT=7"))
+                try { completed = jxl.createCopy("/vsimem/gdal4k-cancellation/image.jxl", source, options = listOf("LOSSLESS=YES", "EFFORT=7")) }
+                catch (cancelled: CancellationException) { cancellationObserved = true; throw cancelled }
             }
-            // This call has already entered the engine before cancellation. Native code must finish safely.
+            // Wait for native cancellation/completion and cleanup before touching inputs. A call
+            // that won the completion race can return; otherwise cancellation owns no result.
             job.cancelAndJoin()
-            requireNotNull(completed).use { assertEquals(2048, it.getRasterXSize()) }
+            val result = completed
+            if (result != null) result.use { assertEquals(2048, it.getRasterXSize()) }
+            else assertTrue(cancellationObserved)
+            assertEquals(2048, source.getRasterXSize())
             runtime.deleteMemoryFile("/vsimem/gdal4k-cancellation")
             source.close()
             val cancelled = launch(start = CoroutineStart.UNDISPATCHED) {

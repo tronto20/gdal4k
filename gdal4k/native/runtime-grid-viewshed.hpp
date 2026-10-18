@@ -16,6 +16,7 @@ inline void gridViewshedPath(GDALDatasetH source, const CPLJSONObject& args, con
         require(GDALDatasetGetLayerCount(source) > 0, "Grid requires a vector dataset");
         FileOptions options(args.GetArray("arguments")); options.add("-of"); options.add(driverName);
         auto opts = GDALGridOptionsNew(options.list, nullptr); fileEnsure(opts != nullptr, "Invalid Grid options");
+        GDALGridOptionsSetProgress(opts, progress, activeProgress);
         int usage = 0; result = GDALGrid(path.c_str(), source, opts, &usage); GDALGridOptionsFree(opts);
         auto closeCode = result ? GDALClose(result) : CE_Failure;
         fileEnsure(result != nullptr && closeCode == CE_None && !usage, "GDAL Grid failed"); return;
@@ -43,7 +44,7 @@ inline void gridViewshedPath(GDALDatasetH source, const CPLJSONObject& args, con
         auto text = entry.ToString(); auto equal = text.find('='); require(equal != std::string::npos && equal > 0, "Viewshed creation option requires KEY=VALUE");
     }
     result = GDALViewshedGenerate(band, driverName.c_str(), path.c_str(), creation.list, x, y, observerHeight, targetHeight,
-        visible, invisible, outOfRange, noData, curvature, static_cast<GDALViewshedMode>(mode), distance, nullptr, nullptr,
+        visible, invisible, outOfRange, noData, curvature, static_cast<GDALViewshedMode>(mode), distance, progress, activeProgress,
         static_cast<GDALViewshedOutputType>(output), nullptr);
     auto closeCode = result ? GDALClose(result) : CE_Failure;
     fileEnsure(result != nullptr && closeCode == CE_None, "GDAL Viewshed failed");
