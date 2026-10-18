@@ -51,7 +51,33 @@ Reports and raw logs are under `verification/results/file-memory-before-macos-ar
 and `verification/results/file-memory/`; `file-before-baseline-verified.json`
 checks raw values, OS units, source/classes and preserved baseline identities.
 
-No improvement has been measured yet. A potential binary file path must preserve
+The implementation now negotiates private binary protocol 4 independently from
+raster (1–4), coordinates (2–4) and columns (3–4). Existing public memory/bundle
+APIs keep their signatures and old file engines retain numeric JSON/Base64 paths.
+File names and sizes stay in small JSON metadata; exact bytes are concatenated in
+metadata order. Native input writes directly from the received frame into the
+owned isolated workspace. Queued callers defer packing until the runtime lock;
+copying and decoding yield/check cancellation in 256 KiB pieces. This is bounded
+copy work per checkpoint, not a chunk-streaming API or a bound on total memory.
+
+Final memory reads return their detached binary reply directly; bundles allocate
+their final per-file buffers after validating the full metadata/length plan.
+Individual output files retain the existing Int-sized bridge limit; an aggregate
+larger than one Int-sized binary frame keeps the legacy encoding, selected from
+the completed output without rerunning processing. Input bundles exceeding that
+aggregate limit also keep the legacy path. Native workspace/file RAII and newly
+allocated-handle rollback cover native failures, cancellation and invalid reply
+decoding. Explicit memory-file writes and direct outputs retain caller-owned
+partial contents on failure. Existing direct `*To` operations still bypass output
+byte transfer and keep their random-access filesystem behavior.
+
+All 190 local JVM source tests passed with the current normal fresh Gradle Native
+producer, including seven new public cases, five internal controls and two real
+native malformed-frame/method-gating cases. Native, Web, independent consumers,
+current packaged identities, controlled after measurements and full CI remain
+unverified at this checkpoint. No improvement has been measured yet.
+
+A binary file path must preserve
 isolated input workspaces, file basename and sidecar rules, exact bytes, existing
 direct APIs, cancellation cleanup and caller-owned partial direct outputs. It
 must reject malformed/overflowing buffers and negotiate compatibility separately

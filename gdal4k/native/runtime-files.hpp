@@ -20,6 +20,58 @@ struct FileOptions {
     }
     ~FileOptions() { CSLDestroy(list); }
 };
+struct OpenFile {
+    VSILFILE* file;
+    explicit OpenFile(const std::string& path): file(VSIFOpenL(path.c_str(), "wb")) {
+        fileEnsure(file != nullptr, "Cannot create file");
+    }
+    ~OpenFile() { if (file) VSIFCloseL(file); }
+    void finish() { auto closing = file; file = nullptr; fileEnsure(VSIFCloseL(closing) == 0, "Cannot close file"); }
+};
+inline void writeFileBytes(const std::string& path, const unsigned char* data, size_t size) {
+    OpenFile output(path);
+    for (size_t offset = 0; offset < size;) {
+        binaryCheckpoint();
+        auto count = std::min<size_t>(262144, size - offset);
+        fileEnsure(VSIFWriteL(data + offset, 1, count, output.file) == count, "Cannot write file");
+        offset += count;
+    }
+    output.finish();
+}
+inline GIntBig fileByteSize(const CPLJSONObject& object, const char* field) {
+    const auto type = object[field].GetType();
+    require(type == CPLJSONObject::Type::Integer || type == CPLJSONObject::Type::Long, "File byte size must be an integer");
+    const auto size = object.GetLong(field, -1);
+    require(size >= 0, "Invalid file byte size"); return size;
+}
+inline CPLJSONObject writeMemoryFile(const CPLJSONObject& args) {
+    const auto path = args.GetString("path");
+    require(path.rfind("/vsimem/", 0) == 0 && path.find('\0') == std::string::npos, "Memory file path must start with /vsimem/");
+    if (activeBinary) {
+        auto size = fileByteSize(args, "byteSize");
+        require(size >= 0 && static_cast<uint64_t>(size) == activeBinary->length, "Invalid memory file input length");
+        VSIMkdirRecursive(path.substr(0, path.find_last_of('/')).c_str(), 0700);
+        writeFileBytes(path, activeBinary->input, activeBinary->length);
+    } else {
+        auto input = args.GetArray("bytes"); std::vector<GByte> data;
+        data.reserve(input.Size());
+        for (auto value : input) data.push_back(static_cast<GByte>(value.ToInteger()));
+        VSIMkdirRecursive(path.substr(0, path.find_last_of('/')).c_str(), 0700);
+        writeFileBytes(path, data.data(), data.size());
+    }
+    return nullValue();
+}
+inline CPLJSONObject readMemoryFile(const CPLJSONObject& args) {
+    const auto path = args.GetString("path");
+    require(path.rfind("/vsimem/", 0) == 0 && path.find('\0') == std::string::npos, "Memory file path must start with /vsimem/");
+    if (activeBinary) require(activeBinary->length == 0, "Memory file reads cannot have an input payload");
+    VSIStatBufL info;
+    require(VSIStatL(path.c_str(), &info) == 0 && !VSI_ISDIR(info.st_mode), "Memory file does not exist");
+    vsi_l_offset size = 0; auto data = VSIGetMemFileBuffer(path.c_str(), &size, FALSE);
+    require((data || size == 0) && size <= static_cast<vsi_l_offset>(INT_MAX), "Invalid or oversized memory file");
+    if (activeBinary) { binaryOutput(data, static_cast<size_t>(size)); return value(static_cast<int>(size)); }
+    return numbers(data, size);
+}
 // GDALWarp's CreateCopy path (including COG) materializes a temporary GTiff.
 // Without CPL_TMPDIR it can use the process cwd, which is read-only on Android.
 // Use the output filesystem rather than staging a direct output in memory.
@@ -56,16 +108,34 @@ inline CPLJSONObject openMemoryDataset(Runtime& runtime, const CPLJSONObject& ar
     Directory workspace;
     auto files = args.GetObj("files");
     auto main = files.GetString("main"); fileBasename(main);
-    for (const auto& file : files.GetArray("files")) {
+    const auto entries = files.GetArray("files");
+    std::set<std::string> names; size_t total = 0;
+    for (const auto& file : entries) {
         auto name = file.GetString("name"); fileBasename(name);
+        require(names.insert(name).second, "Duplicate input file name");
+        if (activeBinary) {
+            const auto count = fileByteSize(file, "size");
+            require(count >= 0 && static_cast<uint64_t>(count) <= activeBinary->length - total, "Invalid file input length");
+            total += static_cast<size_t>(count);
+        }
+    }
+    require(names.count(main) != 0, "Missing main input file");
+    if (activeBinary) require(total == activeBinary->length, "Trailing file input payload");
+    size_t offset = 0;
+    for (const auto& file : entries) {
+        auto name = file.GetString("name"); fileBasename(name);
+        auto path = workspace.path + "/" + name;
+        if (activeBinary) {
+            const auto count = static_cast<size_t>(file.GetLong("size"));
+            writeFileBytes(path, count ? activeBinary->input + offset : nullptr, count);
+            offset += count;
+            continue;
+        }
         auto base64 = file.GetString("data");
         std::vector<GByte> data(base64.begin(), base64.end()); data.push_back(0);
         int count = CPLBase64DecodeInPlace(data.data());
-        auto path = workspace.path + "/" + name;
-        auto output = VSIFOpenL(path.c_str(), "wb"); fileEnsure(output != nullptr, "Cannot create input file");
-        auto written = VSIFWriteL(data.data(), 1, count, output);
-        auto code = VSIFCloseL(output);
-        fileEnsure(written == static_cast<size_t>(count) && code == 0, "Cannot write input file");
+        require(count >= 0, "Invalid Base64 input");
+        writeFileBytes(path, data.data(), static_cast<size_t>(count));
     }
     auto options = args.GetObj("options");
     FileOptions list(options.GetArray("options"));
@@ -97,6 +167,9 @@ inline CPLJSONObject outputFiles(const Directory& directory, const std::string& 
     CPLJSONArray files;
     char** names = VSIReadDir(directory.path.c_str());
     try {
+        struct File { std::string name; const GByte* bytes; size_t size; };
+        std::vector<File> entries; uint64_t total = 0;
+        if (activeBinary) require(activeBinary->length == 0, "File output cannot have an input payload");
         bool found = false;
         for (int i = 0; names && names[i]; ++i) {
             const std::string name(names[i]);
@@ -104,19 +177,41 @@ inline CPLJSONObject outputFiles(const Directory& directory, const std::string& 
             fileBasename(name);
             vsi_l_offset size = 0;
             auto data = VSIGetMemFileBuffer((directory.path + "/" + name).c_str(), &size, FALSE);
-            fileEnsure(data != nullptr, "Output must be a flat set of files");
+            VSIStatBufL info;
+            fileEnsure(VSIStatL((directory.path + "/" + name).c_str(), &info) == 0 && !VSI_ISDIR(info.st_mode) && (data || size == 0), "Output must be a flat set of files");
             require(size <= static_cast<vsi_l_offset>(INT_MAX), "Output file exceeds bridge size limit");
-            char* encoded = CPLBase64Encode(static_cast<int>(size), data);
-            fileEnsure(encoded != nullptr, "Cannot encode output file");
-            CPLJSONObject file;
-            file.Add("name", name); file.Add("data", encoded); CPLFree(encoded);
-            files.Add(file); found = found || name == main;
+            entries.push_back({name, data, static_cast<size_t>(size)}); total += size;
+            found = found || name == main;
         }
         require(found, "GDAL did not create the main output file");
+        // Keep the legacy per-file limit when an aggregate exceeds one addressable frame.
+        // The fallback is selected from the completed output; processing is never rerun.
+        const bool binary = activeBinary && total <= static_cast<uint64_t>(INT_MAX);
+        if (binary) activeBinary->output.resize(static_cast<size_t>(total));
+        size_t offset = 0;
+        for (const auto& entry : entries) {
+            CPLJSONObject file;
+            file.Add("name", entry.name);
+            if (binary) {
+                file.Add("size", static_cast<int>(entry.size));
+                for (size_t position = 0; position < entry.size;) {
+                    binaryCheckpoint();
+                    const auto count = std::min<size_t>(262144, entry.size - position);
+                    std::memcpy(activeBinary->output.data() + offset + position, entry.bytes + position, count);
+                    position += count;
+                }
+                offset += entry.size;
+            } else {
+                char* encoded = CPLBase64Encode(static_cast<int>(entry.size), entry.bytes);
+                fileEnsure(encoded != nullptr, "Cannot encode output file");
+                file.Add("data", encoded); CPLFree(encoded);
+            }
+            files.Add(file);
+        }
+        CPLJSONObject result; result.Add("main", main); result.Add("files", files);
+        if (binary) result.Add("binaryFiles", true);
+        CSLDestroy(names); names = nullptr; return objectValue(result);
     } catch (...) { CSLDestroy(names); throw; }
-    CSLDestroy(names);
-    CPLJSONObject result; result.Add("main", main); result.Add("files", files);
-    return objectValue(result);
 }
 inline void convertDatasetPath(GDALDatasetH dataset, const CPLJSONObject& args, const std::string& operation, const std::string& path) {
     require(!path.empty() && path.find('\0')==std::string::npos,"Invalid output path");

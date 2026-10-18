@@ -63,7 +63,9 @@ def main():
             record = json.loads(matches[0])
             assert record['mode'] == mode and record['side'] == args.side and record['rounds'] == 3
             assert all(record[k] > 0 for k in ['payloadBytes', 'elapsedNanos', 'jvmAllocatedBytes',
-                                              'sampledPeakHeapUsedBytes', 'jsonCalls', 'bridgeBytes', 'largestJsonBytes'])
+                                              'sampledPeakHeapUsedBytes', 'bridgeBytes', 'largestJsonBytes'])
+            assert record['jsonCalls'] >= 0 and record['binaryCalls'] >= 0
+            assert record['jsonCalls'] + record['binaryCalls'] > 0
             record.update(trial=trial, peakRssBytes=rss_units.peak_rss_bytes(rss.read_text(), system),
                           log=str(log.relative_to(ROOT)), logSha256=sha(log),
                           rssLog=str(rss.relative_to(ROOT)), rssLogSha256=sha(rss))
@@ -81,7 +83,9 @@ def main():
                'gdal4k/src/commonMain/kotlin/dev/gdal4k/GdalFiles.kt',
                'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/RuntimeEngine.kt',
                'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/BundledRuntime.generated.kt',
-               'gdal4k/native/runtime.generated.inc', 'gdal4k/native/runtime-files.hpp']
+               'gdal4k/native/runtime.generated.inc', 'gdal4k/native/runtime-files.hpp',
+               'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/BinaryFiles.kt',
+               'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/GdalTransport.kt']
     report = dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(), label=args.label,
                   testedHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                   platform=platform.platform(), target=target, records=records,
