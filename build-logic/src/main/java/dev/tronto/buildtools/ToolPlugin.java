@@ -32,8 +32,10 @@ abstract class ToolPlugin implements Plugin<Project> {
         extension.getVersion().convention(project.getProviders().gradleProperty(prefix + "version").orElse(defaultVersion));
         var rootDirectory = project.getLayout().getProjectDirectory();
         String rootPath = rootDirectory.getAsFile().getAbsolutePath();
+        var defaultStore = new java.io.File(project.getGradle().getGradleUserHomeDir(), "build-tools/" +
+            (tool.equals("emscripten") ? "emsdk" : tool));
         extension.getDirectory().convention(project.getLayout().dir(project.getProviders().gradleProperty(prefix + "directory")
-            .map(path -> resolve(rootPath, path)).orElse(rootDirectory.dir(".gradle/" + (tool.equals("emscripten") ? "emsdk" : tool)).getAsFile())));
+            .map(path -> resolve(rootPath, path)).orElse(defaultStore)));
         extension.getLocalDirectory().convention(project.getLayout().dir(project.getProviders().gradleProperty(prefix + "localDirectory")
             .map(path -> resolve(rootPath, path))));
         extension.getInstallationDirectory().convention(extension.getLocalDirectory().orElse(

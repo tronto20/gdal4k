@@ -69,7 +69,7 @@ def main():
     if target in PLATFORMS:
         gradle(f':gdal4k:compileKotlin{target[0].upper()+target[1:]}') # initialize matching K/N toolchain
         if a.build_engine_only:
-            run(sys.executable,ROOT/'gdal4k-engine/tools/build-engine.py',PLATFORMS[target])
+            gradle(':gdal4k-engine:buildEngine'+''.join(part.title() for part in PLATFORMS[target].split('-')))
             return
         cross=target in ['iosArm64','linuxArm64']
         options=[f'-PiosDevice={a.ios_device}'] if a.ios_device else []
@@ -92,7 +92,7 @@ def main():
             run(sys.executable, ROOT/'verification/related-inputs.py', '--repo', REPO, '--target', t)
         stage('web',['web'],['js','wasmJs'])
     elif target.startswith('android-'):
-        run(sys.executable,ROOT/'gdal4k-engine/tools/build-engine.py',target)
+        gradle(':gdal4k-engine:buildEngine'+''.join(part.title() for part in target.split('-')))
         run(sys.executable,ROOT/'verification/audit-engine.py',target)
         stage(target,[target])
     elif target=='aggregate':

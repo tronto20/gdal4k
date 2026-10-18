@@ -48,9 +48,33 @@ class ConfiguredToolsTest(unittest.TestCase):
                 self.assertIn('-DCMAKE_MAKE_PROGRAM=' + ninja, configure)
                 self.assertIn('-G', configure)
                 self.assertIn('Ninja', configure)
+                options = [f'--x-buildtrees-root={out/"vcpkg-buildtrees"}', f'--x-packages-root={out/"vcpkg-packages"}']
+                self.assertTrue(all(option in commands[0] for option in options))
+                self.assertIn('-DVCPKG_INSTALL_OPTIONS=' + ';'.join(options), configure)
                 if target == 'web':
                     self.assertIn('-DCMAKE_SYSTEM_NAME=Emscripten', configure)
                     self.assertIn('-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=' + str(root / 'custom sdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake'), configure)
+
+    @unittest.skipIf(os.name == 'nt', 'Creating directory symlinks needs Windows privileges')
+    def test_workspace_symlinks_are_rejected_without_modifying_shared_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            out = root/'producer/build/engine/web'
+            out.mkdir(parents=True)
+            shared = root/'shared'
+            shared.mkdir()
+            marker = shared/'keep'
+            marker.write_text('untouched')
+            with patch.object(builder, 'ROOT', root/'producer'):
+                for name in ['installed','vcpkg-buildtrees','vcpkg-packages']:
+                    link = out/name
+                    link.symlink_to(shared, target_is_directory=True)
+                    with self.assertRaisesRegex(RuntimeError, 'shared or symlinked'):
+                        builder.vcpkg_work_options(out)
+                    link.unlink()
+                with self.assertRaisesRegex(RuntimeError, 'outside the producer'):
+                    builder.vcpkg_work_options(shared)
+            self.assertEqual('untouched', marker.read_text())
 
 
 if __name__ == '__main__':

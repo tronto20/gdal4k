@@ -40,6 +40,17 @@ def reusable(out,source_hash):
  if data.get('source_fingerprint')!=source_hash:return False
  return all((BINARY/'build'/name).is_file() and hashlib.sha256((BINARY/'build'/name).read_bytes()).hexdigest()==digest for name,digest in data.get('artifacts',{}).items()) and bool(data.get('artifacts'))
 
+def vcpkg_work_options(out):
+ # Only immutable tool sources/downloads/binary caches are shared across projects.
+ # Both direct installation and CMake's manifest install use this same workspace.
+ if not out.resolve().is_relative_to(ROOT.resolve()):
+  raise RuntimeError('Refusing vcpkg workspace outside the producer checkout: '+str(out))
+ for name in ('installed','vcpkg-buildtrees','vcpkg-packages'):
+  path=out/name
+  if path.is_symlink() or not path.resolve().is_relative_to(out.resolve()):
+   raise RuntimeError('Refusing shared or symlinked vcpkg workspace: '+str(path))
+ return [f'--x-buildtrees-root={out/"vcpkg-buildtrees"}',f'--x-packages-root={out/"vcpkg-packages"}']
+
 def main():
  p=argparse.ArgumentParser();p.add_argument('target',choices=TARGETS);p.add_argument('--jobs',type=int,default=4);p.add_argument('--vcpkg',type=Path);p.add_argument('--build-tools',type=Path);a=p.parse_args()
  source_hash=fingerprint()
@@ -63,6 +74,7 @@ def main():
   build(a,vcpkg,out,source_hash,cmake,ninja)
 
 def build(a,vcpkg,out,source_hash,cmake,ninja):
+ work_options=vcpkg_work_options(out)
  if not (vcpkg/'.git').exists():
   vcpkg.parent.mkdir(parents=True,exist_ok=True);run('git','init',vcpkg);run('git','-C',vcpkg,'fetch','--depth','1','https://github.com/microsoft/vcpkg.git',VCPKG_REV);run('git','-C',vcpkg,'checkout','--detach','FETCH_HEAD')
  rev=subprocess.check_output(['git','-C',str(vcpkg),'rev-parse','HEAD'],text=True).strip()
@@ -96,13 +108,13 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
  if target.startswith('android'):
   env.setdefault('ANDROID_NDK_HOME',str(ROOT/'verification/tools/android-ndk-r28c'))
  installed=out/'installed'
- run(exe,'install','--x-wait-for-lock',f'--x-manifest-root={BINARY/"engine"}',f'--overlay-ports={BINARY/"ports"}',f'--overlay-triplets={triplets}',f'--triplet={triplet}',f'--x-install-root={installed}','--disable-metrics',env=env)
+ run(exe,'install','--x-wait-for-lock',f'--x-manifest-root={BINARY/"engine"}',f'--overlay-ports={BINARY/"ports"}',f'--overlay-triplets={triplets}',f'--triplet={triplet}',f'--x-install-root={installed}',*work_options,'--disable-metrics',env=env)
  extra=out/'toolchain-licenses'
  if extra.exists():
   notice=installed/triplet/'share/gdal4k-toolchain/copyright';notice.parent.mkdir(parents=True,exist_ok=True)
   notice.write_text('\n\n'.join(f.name+'\n'+f.read_text(errors='replace') for f in sorted(extra.iterdir())))
  build=out/'cmake' 
- cmd=[cmake,'--fresh','-S',ROOT/'gdal4k/native','-B',build,'-G','Ninja',f'-DCMAKE_MAKE_PROGRAM={ninja}',f'-DCMAKE_TOOLCHAIN_FILE={vcpkg/"scripts/buildsystems/vcpkg.cmake"}',f'-DVCPKG_INSTALLED_DIR={installed}',f'-DVCPKG_TARGET_TRIPLET={triplet}',f'-DVCPKG_OVERLAY_TRIPLETS={triplets}',f'-DVCPKG_OVERLAY_PORTS={BINARY/"ports"}',f'-DVCPKG_MANIFEST_DIR={BINARY/"engine"}','-DCMAKE_BUILD_TYPE=Release']
+ cmd=[cmake,'--fresh','-S',ROOT/'gdal4k/native','-B',build,'-G','Ninja',f'-DCMAKE_MAKE_PROGRAM={ninja}',f'-DCMAKE_TOOLCHAIN_FILE={vcpkg/"scripts/buildsystems/vcpkg.cmake"}',f'-DVCPKG_INSTALLED_DIR={installed}',f'-DVCPKG_TARGET_TRIPLET={triplet}',f'-DVCPKG_OVERLAY_TRIPLETS={triplets}',f'-DVCPKG_OVERLAY_PORTS={BINARY/"ports"}',f'-DVCPKG_MANIFEST_DIR={BINARY/"engine"}','-DVCPKG_INSTALL_OPTIONS='+';'.join(work_options),'-DCMAKE_BUILD_TYPE=Release']
  if target.startswith(('linux','windows')):cmd += [f'-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE={chain}']
  if target=='web':
   emsdk=Path(os.environ['EMSDK'])

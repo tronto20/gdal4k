@@ -86,7 +86,7 @@ jobs:
             build/driver-profiles/**/source/gdal4k-runtime/build/test-results/
             build/driver-profiles/**/source/verification/results/
             build/driver-profiles/**/source/verification/tools/vcpkg/buildtrees/*/*.log
-            build/driver-profiles/**/source/.gradle/vcpkg/**/buildtrees/*/*.log
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
           if-no-files-found: warn
   database:
     name: Profile postgresql on linux-amd64
@@ -146,5 +146,5 @@ jobs:
             build/driver-profiles/**/source/gdal4k-runtime/build/test-results/
             build/driver-profiles/**/source/verification/results/
             build/driver-profiles/**/source/verification/tools/vcpkg/buildtrees/*/*.log
-            build/driver-profiles/**/source/.gradle/vcpkg/**/buildtrees/*/*.log
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
           if-no-files-found: warn
