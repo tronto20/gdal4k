@@ -105,7 +105,7 @@ internal suspend fun RuntimeHandle.readMemoryFileCall(path: String): ByteArray {
     checkOpen(); currentCoroutineContext().ensureActive()
     val method = "readMemoryFile_String"
     if (!engine.supportsBinaryFiles) return invoke("GdalRuntime", method, mapOf("path" to encode(path)))
-        .jsonArray.map { it.jsonPrimitive.int.toByte() }.toByteArray()
+        .jsonArray.map { it.jsonPrimitive.content.toInt().toByte() }.toByteArray()
     var result: ByteArray? = null
     engine.invoke("GdalRuntime", runtimeId, method, mapOf("path" to encode(path)),
         binary = GdalBinaryCall(prepare = { null }, complete = { value, bytes ->
