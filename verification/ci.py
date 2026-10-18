@@ -79,6 +79,12 @@ def main():
         if target in ['macosArm64','linuxX64','mingwX64']:run(sys.executable,ROOT/'verification/raster-transport-report.py',PLATFORMS[target])
         if target in ['macosArm64','linuxX64']:run(sys.executable,ROOT/'verification/window-memory-report.py','--target',PLATFORMS[target])
         if target in ['macosArm64','linuxX64']:run(sys.executable,ROOT/'verification/coordinate-memory-report.py','after','--target',PLATFORMS[target],'--skip-compile')
+        if target in ['macosArm64','linuxX64']:
+            library='libgdal4k.dylib' if target=='macosArm64' else 'libgdal4k.so'
+            run(sys.executable, ROOT/'verification/vector-memory-report.py',
+                '--library', BUILD/f'jvm-resources/gdal4k/{PLATFORMS[target]}/{library}',
+                '--manifest', BUILD/f'engine/{PLATFORMS[target]}/manifest.json',
+                '--label', 'ci-current', '--modes', 'features', 'columns')
         run(sys.executable, ROOT/'verification/audit-engine.py', PLATFORMS[target])
         publish(target)
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))

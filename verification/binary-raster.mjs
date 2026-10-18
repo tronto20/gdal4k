@@ -1,6 +1,6 @@
 // Self-contained: the same protocol and fixed MEM workload run in Node and Chromium.
 export async function exerciseBinaryRaster(bridge) {
-    if (![1,2].includes(bridge.binaryVersion)) throw new Error('Published engine lacks binary raster capability');
+    if (![1,2,3].includes(bridge.binaryVersion)) throw new Error('Published engine lacks binary raster capability');
     const request=(type,handle,method,parameters={})=>JSON.stringify({op:'runtime',args:{type,handle,method,parameters}});
     async function call(type,handle,method,parameters={}) {
         const text=await bridge.call(request(type,handle,method,parameters));const reply=JSON.parse(text);

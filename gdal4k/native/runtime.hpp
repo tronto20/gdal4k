@@ -7,6 +7,7 @@
 #include <cpl_vsi.h>
 #include <ogr_api.h>
 #include <ogr_srs_api.h>
+#include <ogr_recordbatch.h>
 #include <ogrsf_frmts.h>
 #include <cpl_json.h>
 #include <cpl_string.h>
@@ -56,6 +57,7 @@ struct Strings {
     ~Strings(){CSLDestroy(list);}
     char** data(){return list;}
 };
+#include "runtime-columns-state.hpp"
 struct Runtime {
     struct Entry {void* pointer;std::string type;bool owned;unsigned long long parent;};
     std::map<unsigned long long,Entry> handles;
@@ -66,6 +68,22 @@ struct Runtime {
     std::map<unsigned long long,std::vector<unsigned long long>> datasetSources;
     std::vector<unsigned long long> releasedDatasets;
     unsigned long long next=0;
+    void requireNoColumnStream(void* layer = nullptr, void* dataset = nullptr) {
+        for (const auto& item : handles) if (item.second.type == "FeatureColumnStream") {
+            const auto* stream = static_cast<VectorColumnStream*>(item.second.pointer);
+            require((!layer || stream->layer != layer) && (!dataset || stream->dataset != dataset),
+                    "Close the active column stream before layer cursor/filter/schema or dataset operations");
+        }
+    }
+    void requireNoColumnSchemaMutation(void* definition) {
+        for (const auto& item : handles) if (item.second.type == "FeatureColumnStream") {
+            const auto* stream = static_cast<VectorColumnStream*>(item.second.pointer);
+            const auto schema = OGR_L_GetLayerDefn(stream->layer);
+            require(definition != schema, "Close column stream before changing its schema");
+            for (int i = 0; i < OGR_FD_GetGeomFieldCount(schema); ++i)
+                require(definition != OGR_FD_GetGeomFieldDefn(schema, i), "Close column stream before changing geometry field schema");
+        }
+    }
     ~Runtime(){while(!handles.empty())close(handles.rbegin()->first);}
     void* get(unsigned long long id,const std::string& type="") {
         auto it=handles.find(id);require(it!=handles.end(),"GDAL handle is closed");
@@ -132,6 +150,17 @@ struct Runtime {
     }
     void close(unsigned long long id) {
         auto found=handles.find(id);if(found==handles.end())return;
+        // A stream may have been opened through a different borrowed alias of this layer/dataset.
+        // Release it before the underlying SQL result layer or owning dataset can be destroyed.
+        if (found->second.type == "Layer" || found->second.type == "Dataset") {
+            std::vector<unsigned long long> streams;
+            for (const auto& item : handles) if (item.second.type == "FeatureColumnStream") {
+                auto* stream = static_cast<VectorColumnStream*>(item.second.pointer);
+                if ((found->second.type == "Layer" && stream->layer == found->second.pointer) ||
+                    (found->second.type == "Dataset" && stream->dataset == found->second.pointer)) streams.push_back(item.first);
+            }
+            for (auto stream : streams) close(stream);
+        }
         std::vector<unsigned long long> children;for(auto& item:handles)if(item.second.parent==id)children.push_back(item.first);
         for(auto child:children)close(child);
         auto e=found->second;handles.erase(found);if(!e.owned)return;
@@ -153,6 +182,7 @@ struct Runtime {
         else if(e.type=="FieldDomain")OGR_FldDomain_Destroy(static_cast<OGRFieldDomainH>(e.pointer));
         else if(e.type=="Relationship")GDALDestroyRelationship(e.pointer);
         else if(e.type=="Feature")OGR_F_Destroy(e.pointer);
+        else if(e.type=="FeatureColumnStream")delete static_cast<VectorColumnStream*>(e.pointer);
         else if(e.type=="Geometry")OGR_G_DestroyGeometry(e.pointer);
         else if(e.type=="SpatialReference")OSRRelease(e.pointer);
         else if(e.type=="CoordinateTransformation")OCTDestroyCoordinateTransformation(e.pointer);
@@ -299,12 +329,27 @@ inline CPLJSONObject mdRaster(GDALMDArrayH h,const CPLJSONObject& a,bool write) 
 #include "runtime-schema.hpp"
 
 #include "runtime-vector.hpp"
+#include "runtime-columns.hpp"
 #include "runtime-coordinates.hpp"
 inline CPLJSONObject Runtime::execute(const CPLJSONObject& request){
     Runtime& r=*this;const auto type=request.GetString("type"),method=request.GetString("method");
     auto id=std::stoull(request.GetString("handle","0"));
     if(method=="close"){close(id);return nullValue();}
     auto a=request.GetObj("parameters");void* h=type=="GdalRuntime"?nullptr:get(id,type);
+    if (type == "Layer" && method != "getName" && method != "getGeomType" && method != "getGeometryColumn" &&
+        method != "getFIDColumn" && method != "getRefCount" && method != "getDataset" && method != "getLayerDefn" &&
+        method != "getSpatialFilter" && method.rfind("testCapability_", 0) != 0) requireNoColumnStream(h);
+    if (type == "Dataset" && method.rfind("getLayer_", 0) != 0 && method != "getLayerCount" &&
+        method != "getDriver" && method != "getDescription" && method != "getMetadataDomainList" &&
+        method.rfind("getMetadata", 0) != 0) requireNoColumnStream(nullptr, h);
+    if ((type == "GeomFieldDefn" || type == "FeatureDefn") &&
+        (method.rfind("set", 0) == 0 || method.rfind("add", 0) == 0)) requireNoColumnSchemaMutation(h);
+    // Inputs reached via utilities/overlays/copy APIs must obey the same native alias guard.
+    for (const auto& parameter : a.GetChildren()) if (parameter.GetType() == CPLJSONObject::Type::Object) {
+        const auto argumentType = parameter.GetString("type");
+        if (argumentType == "Layer") requireNoColumnStream(arg(parameter));
+        if (argumentType == "Dataset") requireNoColumnStream(nullptr, arg(parameter));
+    }
     if(type=="FieldDefn" && method.rfind("set",0)==0)
         require(handles.at(id).owned,"Borrowed field definitions are read-only; cloneFieldDefn before editing");
     if(type=="FeatureDefn" && (method.rfind("addFieldDefn",0)==0 || method.rfind("addGeomFieldDefn",0)==0 || method.rfind("setGeomType",0)==0))
