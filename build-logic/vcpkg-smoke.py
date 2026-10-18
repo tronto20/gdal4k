@@ -76,6 +76,7 @@ def main():
     triplet = arch + '-' + {'Darwin': 'osx', 'Linux': 'linux', 'Windows': 'windows'}[platform.system()]
     command = [str(vcpkg), 'install', '--disable-metrics', '--x-wait-for-lock', '--triplet=' + triplet,
                '--x-manifest-root=' + str(manifest), '--overlay-ports=' + str(overlay.parent),
+               '--x-buildtrees-root=' + str(work / 'buildtrees'), '--x-packages-root=' + str(work / 'packages'),
                '--binarysource=clear', '--binarysource=files,' + str(work / 'binary cache') + ',readwrite']
     logs = []
     try:

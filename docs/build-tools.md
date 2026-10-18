@@ -6,15 +6,36 @@ They do not depend on Komple and do not require a Gradle upgrade.
 
 | Plugin ID | Extension | Task | Default store |
 | --- | --- | --- | --- |
-| `dev.tronto.buildtools.cmake` | `cmakeTool` | `prepareCmake` | `.gradle/cmake` |
-| `dev.tronto.buildtools.ninja` | `ninjaTool` | `prepareNinja` | `.gradle/ninja` |
-| `dev.tronto.buildtools.emscripten` | `emscriptenTool` | `prepareEmscripten` | `.gradle/emsdk` |
-| `dev.tronto.buildtools.vcpkg` | `vcpkgTool` | `prepareVcpkg` | `.gradle/vcpkg` |
+| `dev.tronto.buildtools.cmake` | `cmakeTool` | `prepareCmake` | `<Gradle User Home>/build-tools/cmake` |
+| `dev.tronto.buildtools.ninja` | `ninjaTool` | `prepareNinja` | `<Gradle User Home>/build-tools/ninja` |
+| `dev.tronto.buildtools.emscripten` | `emscriptenTool` | `prepareEmscripten` | `<Gradle User Home>/build-tools/emsdk` |
+| `dev.tronto.buildtools.vcpkg` | `vcpkgTool` | `prepareVcpkg` | `<Gradle User Home>/build-tools/vcpkg` |
 
-Paths are relative to the project root. Each store contains `<version>/<host>` installations,
+The default uses Gradle's actual User Home (`~/.gradle` unless `GRADLE_USER_HOME` or
+`--gradle-user-home` selects another directory), shared across projects and worktrees.
+Explicit relative directory overrides remain relative to the project root.
+Each store contains `<version>/<host>` installations,
 so versions and host architectures do not overwrite each other. CMake/Ninja archives are kept
 in the tool's `downloads/` directory under their SHA-256. `clean` preserves these stores.
 Applying a plugin or running `help` does not install anything.
+
+Installation receipts check the configured revision, URLs and hashes. A conflicting tool
+identity at the same version/host path is rejected without replacing it; select a separate
+store for custom builds with the same version label. Installation/download file locks protect
+concurrent preparation from separate projects. Gradle's task cache does not restore or clean
+these tool stores.
+
+GDAL dependency outputs remain project-local: each target owns `installed`,
+`vcpkg-buildtrees`, `vcpkg-packages` and `cmake` below `gdal4k-engine/build/engine/<target>`.
+Both the vcpkg command and CMake's manifest installation use those same private paths;
+symlinked workspace directories are rejected. vcpkg's download and ABI-keyed binary caches
+may be shared. Emscripten's version/host-specific sysroot cache stays with its SDK and uses
+the pinned SDK's own multiprocess cache lock; project objects and link outputs stay local.
+
+Existing project-local stores are not moved or deleted automatically. To migrate an idle
+installation, move its complete verified store to the selected User Home and rerun preparation.
+Older checkouts can use their existing directory override or a compatibility link to that store.
+Do not relocate tools while a producer using them is running.
 
 ## Use
 

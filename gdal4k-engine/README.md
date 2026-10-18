@@ -133,8 +133,10 @@ Snapshot은 PGP 서명 없이 Snapshot 저장소에 직접 게시하며 해당 n
 ## Gradle 도구 준비
 
 `prepareNativeBuildTools`는 CMake·Ninja·vcpkg를, `prepareWebBuildTools`는 Emscripten까지 준비합니다.
-`buildEngine*` Gradle task에도 연결되어 있습니다. 기본 경로는 루트의 `.gradle/cmake`,
-`.gradle/ninja`, `.gradle/vcpkg`, `.gradle/emsdk`이며 도구별로 변경할 수 있습니다.
+`buildEngine*` Gradle task에도 연결되어 있습니다. 기본 경로는 Gradle User Home의
+`build-tools/{cmake,ninja,vcpkg,emsdk}`이며 프로젝트·워크트리 간 버전별 설치를 공유합니다.
+`GRADLE_USER_HOME`과 `--gradle-user-home`을 따르며 도구별 경로도 변경할 수 있습니다.
+vcpkg 설치 결과·buildtrees·packages와 CMake 빌드 출력은 각 프로젝트에 분리합니다.
 기존 설치는 `localDirectory`로 명시하면 버전 검증 후 수정 없이 사용합니다.
 설정·오프라인 동작·호스트 지원 범위는 [도구 준비 문서](../docs/build-tools.md)를 참고하세요.
 

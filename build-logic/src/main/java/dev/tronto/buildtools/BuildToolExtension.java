@@ -5,7 +5,7 @@ import org.gradle.api.file.RegularFile;
 import org.gradle.api.provider.Property;
 import org.gradle.api.provider.Provider;
 
-/** A tool's private store, independent of build/ and of the user's system installation. */
+/** A versioned tool store shared through Gradle User Home unless explicitly overridden. */
 public abstract class BuildToolExtension {
     public abstract Property<String> getVersion();
     public abstract DirectoryProperty getDirectory();

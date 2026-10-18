@@ -227,6 +227,44 @@ class InstallerTest(unittest.TestCase):
 
 class GradlePluginTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('GRADLE_EXECUTABLE'), 'Run through build-logic check for Gradle functional verification')
+    def test_default_store_is_shared_by_projects_in_selected_gradle_user_home(self):
+        # Use the real Gradle User Home selected for this test run, avoiding any
+        # assumptions about HOME or the location of the checked-out repository.
+        with tempfile.TemporaryDirectory(prefix='shared tool projects ') as tmp:
+            roots = [Path(tmp)/name for name in ['first project','second project']]
+            locations = []
+            for root in roots:
+                root.mkdir()
+                (root/'settings.gradle.kts').write_text('pluginManagement { includeBuild(' + json.dumps(str(PROJECT)) + ') }\nrootProject.name="shared-store-fixture"\n')
+                (root/'build.gradle.kts').write_text('''
+plugins { id("dev.tronto.buildtools.ninja") }
+val home = gradle.gradleUserHomeDir.absolutePath
+val store = ninjaTool.directory.get().asFile.absolutePath
+val installation = ninjaTool.installationDirectory.get().asFile.absolutePath
+tasks.register("locations") {
+    val expectedHome = home
+    val sharedStore = store
+    val sharedInstallation = installation
+    doLast {
+        println("USER_HOME=" + expectedHome)
+        println("TOOL_STORE=" + sharedStore)
+        println("TOOL_LOCATION=" + sharedInstallation)
+    }
+}
+''')
+                command = (['cmd.exe','/d','/c'] if os.name == 'nt' else []) + [os.environ['GRADLE_EXECUTABLE'], '--gradle-user-home', os.environ['TEST_GRADLE_USER_HOME'], '-p', str(root), 'locations', '--offline', '--configuration-cache', '--max-workers=1', '--console=plain', '-Dorg.gradle.jvmargs=-Xmx256m']
+                for attempt in range(2):
+                    result = subprocess.run(command, text=True, capture_output=True)
+                    self.assertEqual(0, result.returncode, result.stdout+result.stderr)
+                    values = dict(line.split('=',1) for line in result.stdout.splitlines() if line.startswith(('USER_HOME=','TOOL_STORE=','TOOL_LOCATION=')))
+                    self.assertEqual((Path(values['USER_HOME'])/'build-tools/ninja').resolve(), Path(values['TOOL_STORE']).resolve())
+                    if attempt:
+                        self.assertIn('Reusing configuration cache', result.stdout)
+                locations.append(values['TOOL_LOCATION'])
+                self.assertFalse((root/'.gradle/ninja').exists())
+            self.assertEqual(locations[0], locations[1])
+
+    @unittest.skipUnless(os.environ.get('GRADLE_EXECUTABLE'), 'Run through build-logic check for Gradle functional verification')
     def test_lazy_configuration_custom_locations_and_configuration_cache(self):
         with tempfile.TemporaryDirectory(prefix='gradle tool fixture ') as tmp:
             root = Path(tmp)

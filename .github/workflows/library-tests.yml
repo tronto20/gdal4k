@@ -92,7 +92,7 @@ jobs:
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CoordinateMemoryProbe*.class
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/RasterWindowMemoryProbe*.class
             verification/results/published-consumer-*/
-            verification/tools/vcpkg/buildtrees/*/*.log
+            gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
             gdal4k-engine/build/engine/*/cmake/build.ninja
             gdal4k-engine/build/engine/*/cmake/CMakeCache.txt
             gdal4k-engine/build/engine/*/cmake/gdal4k-static-dependencies.txt
@@ -162,7 +162,7 @@ jobs:
             verification/results/binary-transport-*/
             verification/results/js-codec-benchmark-*.json
             verification/results/related-inputs/
-            verification/tools/vcpkg/buildtrees/*/*.log
+            gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
 
   android:
     name: Android ${{ matrix.abi }}
@@ -233,7 +233,7 @@ jobs:
             gdal4k-runtime/build/outputs/androidTest-results/
             gdal4k-runtime/build/results/
             verification/results/published-consumer-*/
-            verification/tools/vcpkg/buildtrees/*/*.log
+            gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
 
   assemble:
     needs: [native, web, android]
