@@ -74,6 +74,12 @@ class ConfiguredToolsTest(unittest.TestCase):
                     link.unlink()
                 with self.assertRaisesRegex(RuntimeError, 'outside the producer'):
                     builder.vcpkg_work_options(shared)
+                local_link = root/'producer/linked-target'
+                local_link.symlink_to(out, target_is_directory=True)
+                with self.assertRaisesRegex(RuntimeError, 'shared or symlinked'):
+                    builder.vcpkg_work_options(local_link)
+                with self.assertRaisesRegex(RuntimeError, 'shared or symlinked'):
+                    builder.vcpkg_work_options(local_link/'nested')
             self.assertEqual('untouched', marker.read_text())
 
 

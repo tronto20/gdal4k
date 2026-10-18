@@ -45,6 +45,10 @@ def vcpkg_work_options(out):
  # Both direct installation and CMake's manifest install use this same workspace.
  if not out.resolve().is_relative_to(ROOT.resolve()):
   raise RuntimeError('Refusing vcpkg workspace outside the producer checkout: '+str(out))
+ for parent in (out,*out.parents):
+  if parent==ROOT:break
+  if parent.is_symlink():
+   raise RuntimeError('Refusing shared or symlinked vcpkg workspace: '+str(parent))
  for name in ('installed','vcpkg-buildtrees','vcpkg-packages'):
   path=out/name
   if path.is_symlink() or not path.resolve().is_relative_to(out.resolve()):
