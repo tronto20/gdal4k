@@ -6,7 +6,7 @@ remain the large-output path; this work must not duplicate them or claim they
 currently stage complete outputs. Random access, sidecars and caller ownership
 of partial direct outputs remain required.
 
-The current in-memory APIs have two separate candidate costs:
+The measured legacy in-memory paths have two separate costs:
 
 - `writeMemoryFile`/`readMemoryFile` encode every byte as a JSON number. This
   creates JSON arrays/strings, parsed native objects and additional byte buffers.
@@ -78,9 +78,17 @@ malformed-frame/method-gating cases. Current normal fresh Gradle Native/Web
 producers verified all 24 + 34 artifact hashes and real owned install prefixes.
 The direct-output test respects Web's existing read-only external input policy
 and verifies positional window reads after the source closes. All 37 offline
-tests, actionlint and generator idempotence passed. Independent consumers,
-current published package identities, Android compilation and full CI remain
-unverified at this checkpoint.
+tests, actionlint and generator idempotence passed. Independent published
+consumers passed 930 tests across the same six contexts plus one missing-JVM
+engine case, for 2,038 source/API/consumer tests overall with no failures or skips.
+Every full consumer ran all seven new public cases. All three Native producer
+paths were hidden and restored. The actual published JVM API/runtime JARs match
+the 878 measured production classes and selected JNI library; the Native embedded
+archive and all 20 JS/wasm KLIB assets match current producers. Published raw
+binary raster ownership/truncation, bounded HTTP, retry/timeout/identity/cancellation
+and related-input sidecars also passed on Node and Chromium for both Web targets.
+Android API/runtime compilation passed locally; actual Android ARM64 JNI runtime,
+other hosts, full publication assembly and exact-HEAD CI remain separate gates.
 
 ## Final controlled JVM comparison
 

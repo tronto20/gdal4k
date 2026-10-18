@@ -85,7 +85,7 @@ Android는 API 28 이상에서 `arm64-v8a`만 지원합니다. x86_64와 32비�
 
 한 런타임의 GDAL 호출과 종료는 직렬화합니다. 다른 런타임 핸들을 섞으면 실패합니다. 데이터셋을 닫은 뒤 그 밴드·레이어 핸들을 쓰면 실패합니다. `use`의 정리는 취소된 coroutine에서도 실행합니다.
 
-내장 엔진의 래스터 배열은 바이너리 채널을 사용하지만, staging·디코딩 복사는 남아 있어 큰 입력은 window 단위 처리가 유리할 수 있습니다. 파일·다차원 값과 구형 엔진의 JSON 경로는 별도입니다. 응답성 테스트는 GDAL의 JXL 연산이 호출 스레드·웹 이벤트 루프 밖에서 실행되는지 검증합니다.
+내장 엔진의 래스터 배열은 바이너리 채널을 사용하지만, staging·디코딩 복사는 남아 있어 큰 입력은 window 단위 처리가 유리할 수 있습니다. 메모리 파일·파일 묶음은 별도 바이너리 기능을 협상하며, 다차원 값과 구형 엔진의 JSON 경로는 별도입니다. 응답성 테스트는 GDAL의 JXL 연산이 호출 스레드·웹 이벤트 루프 밖에서 실행되는지 검증합니다.
 
 대기 중인 호출은 취소할 수 있습니다. 이미 시작한 GDAL C 호출은 중간에 강제 중단하지 않고 완료한 뒤 핸들/결과를 정리합니다. 따라서 coroutine 취소가 오래 걸리는 GDAL 연산을 즉시 멈추지는 않습니다. 웹 Worker를 강제로 종료해서 데이터셋 상태를 손상시키는 동작도 하지 않습니다.
 
@@ -181,7 +181,7 @@ suspend fun toCog(bytes: ByteArray): ByteArray {
 
 `GdalFile`은 이름과 바이트, `GdalFiles`는 Shapefile 같은 다중 파일 묶음을 담는 값입니다. 두 타입 모두 `gdal4k`에 있으며, 별도 엔진이나 데이터셋 핸들이 아닙니다. 바이트 입력은 서로 다른 임시 `/vsimem/` 디렉터리를 사용하고 데이터셋을 닫을 때 정리됩니다. 직접 지정한 경로나 `writeMemoryFile`의 파일은 호출자가 관리합니다.
 
-JSON/Base64 전송 코드는 binary 모듈 내부에만 있습니다. 공개 `GdalOptions` 없이 내장 엔진을 사용합니다. GDAL·PROJ 경로나 웹 엔진 URL을 앱에서 지정하지 않습니다.
+바이너리 파일 전송과 구형 엔진의 JSON/Base64 호환 코드는 런타임 내부에서 처리합니다. 공개 `GdalOptions` 없이 내장 엔진을 사용합니다. GDAL·PROJ 경로나 웹 엔진 URL을 앱에서 지정하지 않습니다.
 
 ## 검증
 
@@ -477,11 +477,11 @@ This policy covers direct JS/wasmJs HTTP inputs and related sidecars. Explicit s
 
 Large buffer preparation and decoding run while holding the runtime operation lock; queued calls do not allocate staging arrays, and concurrent reads do not accumulate decoded buffers outside that lock. Encoding and decoding check coroutine cancellation between bounded chunks and yield to other work. Read data is decoded in private storage and committed to the caller array only after the final cancellation check. The final copy is not interrupted; cancellation racing with that commit may observe a fully updated array. A cancelled or failed read before commit leaves the destination unchanged. Once GDAL starts writing, cancellation does not roll back data, cursor/metadata changes or partial output files. Do not modify input/output arrays concurrently with an operation.
 
-Native calls continue to await real GDAL completion before freeing buffers, controls or input leases. Algorithms with GDAL progress callbacks can stop cooperatively during work. A driver call without such callbacks may finish its current native I/O before cancellation is delivered; no thread or Worker is forcibly terminated. Older dynamic JNI/web engines without the negotiated capability retain the JSON path. `GdalFiles`, geometry coordinates and multidimensional/attribute arrays still use their existing serialization paths.
+Native calls continue to await real GDAL completion before freeing buffers, controls or input leases. Algorithms with GDAL progress callbacks can stop cooperatively during work. A driver call without such callbacks may finish its current native I/O before cancellation is delivered; no thread or Worker is forcibly terminated. Older dynamic JNI/web engines without the negotiated capability retain the JSON path. Coordinate and column transfers negotiate their own binary capabilities. File buffers use the separately negotiated channel described below; multidimensional/attribute values retain their existing serialization paths.
 
 `verification/raster-transport-report.py <engine-target>` summarizes the JVM same-engine JSON/binary comparison (8 MiB Float64 MEM raster, three alternating trials of three write/read roundtrips for Float64 and Byte arrays), cumulative JVM allocation and cancellation observations. Published JS/wasm KLIB verification also measures the raw Worker protocol on Node and Chromium with a 2 MiB Float64 MEM raster. Those Worker measurements exclude Kotlin/Wasm GC interop copies. Timing is reported as evidence, never used as a test pass threshold or a cross-platform performance promise.
 
-The ordinary engine producer reuses verified prebuilt artifacts, but refuses a dependency installation through an `installed` symlink after a cache/manifest miss. Shared read-only dependency prefixes therefore require an explicit read-only rebuild rather than an implicit vcpkg install.
+The ordinary Gradle engine producer reuses artifacts only after fingerprint/hash verification. On a cache miss it provisions pinned dependencies into real, owned per-target installed/buildtrees/packages directories; dependency installation through a shared-prefix symlink is rejected.
 
 `verification/js-codec-benchmark.cjs` records the compiled Kotlin/JS Float64/Int64 codec separately, including module hashes and exact bit checks. It isolates CPU conversion from Worker/GDAL and dispatcher scheduling; the pinned compiler friend exports are used only by this diagnostic, not by production code.
 
@@ -538,3 +538,21 @@ operation time, cumulative JVM allocation, sampled heap and actual OS peak RSS. 
 x64 and macOS ARM64 CI; no timing threshold or Native/web/Android performance guarantee is implied.
 An optional `before` phase needs a separately preserved, hash-verified old engine; historical baseline
 results must not be relabelled as a current-source run.
+
+### Memory and portable file transfer
+
+Existing `writeMemoryFile`, `readMemoryFile`, `openDataset(GdalFiles)` and
+file-returning utilities use a separately negotiated binary file channel in the
+bundled engines. Small name/size metadata accompanies exact bytes, avoiding
+numeric JSON and Base64 conversion. Older dynamic engines retain the legacy
+encoding. Public signatures, isolated input workspaces, sidecar names and detached
+result ownership are unchanged. Queued calls pack only after acquiring the runtime
+lock; copy checkpoints allow cancellation, while complete input/result buffers
+still require memory. Do not mutate supplied bytes during an operation.
+
+Large outputs should continue to use the existing `*To` path APIs, which write
+directly to the selected filesystem and leave partial outputs under caller
+ownership on failure/cancellation. Binary buffers are not a streaming or zero-copy
+API. [The file transfer report](../verification/file-transfer.md) records controlled
+macOS ARM64 JVM measurements and their limits; it does not establish Native, Web
+or Android performance.

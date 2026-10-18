@@ -495,11 +495,11 @@ This policy covers direct JS/wasmJs HTTP inputs and related sidecars. Explicit s
 
 Large buffer preparation and decoding run while holding the runtime operation lock; queued calls do not allocate staging arrays, and concurrent reads do not accumulate decoded buffers outside that lock. Encoding and decoding check coroutine cancellation between bounded chunks and yield to other work. Read data is decoded in private storage and committed to the caller array only after the final cancellation check. The final copy is not interrupted; cancellation racing with that commit may observe a fully updated array. A cancelled or failed read before commit leaves the destination unchanged. Once GDAL starts writing, cancellation does not roll back data, cursor/metadata changes or partial output files. Do not modify input/output arrays concurrently with an operation.
 
-Native calls continue to await real GDAL completion before freeing buffers, controls or input leases. Algorithms with GDAL progress callbacks can stop cooperatively during work. A driver call without such callbacks may finish its current native I/O before cancellation is delivered; no thread or Worker is forcibly terminated. Older dynamic JNI/web engines without the negotiated capability retain the JSON path. `GdalFiles`, geometry coordinates and multidimensional/attribute arrays still use their existing serialization paths.
+Native calls continue to await real GDAL completion before freeing buffers, controls or input leases. Algorithms with GDAL progress callbacks can stop cooperatively during work. A driver call without such callbacks may finish its current native I/O before cancellation is delivered; no thread or Worker is forcibly terminated. Older dynamic JNI/web engines without the negotiated capability retain the JSON path. Coordinate and column transfers negotiate their own binary capabilities. File buffers use the separately negotiated channel described below; multidimensional/attribute values retain their existing serialization paths.
 
 `verification/raster-transport-report.py <engine-target>` summarizes the JVM same-engine JSON/binary comparison (8 MiB Float64 MEM raster, three alternating trials of three write/read roundtrips for Float64 and Byte arrays), cumulative JVM allocation and cancellation observations. Published JS/wasm KLIB verification also measures the raw Worker protocol on Node and Chromium with a 2 MiB Float64 MEM raster. Those Worker measurements exclude Kotlin/Wasm GC interop copies. Timing is reported as evidence, never used as a test pass threshold or a cross-platform performance promise.
 
-The ordinary engine producer reuses verified prebuilt artifacts, but refuses a dependency installation through an `installed` symlink after a cache/manifest miss. Shared read-only dependency prefixes therefore require an explicit read-only rebuild rather than an implicit vcpkg install.
+The ordinary Gradle engine producer reuses artifacts only after fingerprint/hash verification. On a cache miss it provisions pinned dependencies into real, owned per-target installed/buildtrees/packages directories; dependency installation through a shared-prefix symlink is rejected.
 
 `verification/js-codec-benchmark.cjs` records the compiled Kotlin/JS Float64/Int64 codec separately, including module hashes and exact bit checks. It isolates CPU conversion from Worker/GDAL and dispatcher scheduling; the pinned compiler friend exports are used only by this diagnostic, not by production code.
 
@@ -539,3 +539,21 @@ GDAL cache setting is isolated to these benchmark processes, not a library defau
 Chromium, Wasm GC, Native and Android peak memory are not measured by this JVM probe. Correct
 sample counts/checksums and source/engine hashes are required; timing and memory are evidence,
 not a pass threshold or a cross-platform promise.
+
+### Memory and portable file transfer
+
+Existing `writeMemoryFile`, `readMemoryFile`, `openDataset(GdalFiles)` and
+file-returning utilities use a separately negotiated binary file channel in the
+bundled engines. Small name/size metadata accompanies exact bytes, avoiding
+numeric JSON and Base64 conversion. Older dynamic engines retain the legacy
+encoding. Public signatures, isolated input workspaces, sidecar names and detached
+result ownership are unchanged. Queued calls pack only after acquiring the runtime
+lock; copy checkpoints allow cancellation, while complete input/result buffers
+still require memory. Do not mutate supplied bytes during an operation.
+
+Large outputs should continue to use the existing `*To` path APIs, which write
+directly to the selected filesystem and leave partial outputs under caller
+ownership on failure/cancellation. Binary buffers are not a streaming or zero-copy
+API. [The file transfer report](verification/file-transfer.md) records controlled
+macOS ARM64 JVM measurements and their limits; it does not establish Native, Web
+or Android performance.
