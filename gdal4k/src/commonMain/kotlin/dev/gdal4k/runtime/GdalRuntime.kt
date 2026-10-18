@@ -119,6 +119,18 @@ interface Dataset {
     /** Writes a new direct file; partial output belongs to the caller on failure. */
     suspend fun viewshedTo(path: String, options: ViewshedOptions, band: Int = 1, driver: String = "GTiff", creationOptions: List<String>)
 
+    /** Generates a new contour line layer using GDALContourGenerateEx. Raw band values,
+     * source CRS and geotransform are used, without scale/offset or reprojection.
+     * Output fields are id (Integer64) and elevation (Real). interval must be positive.
+     * KEY=VALUE arguments: FIXED_LEVELS, LEVEL_EXP_BASE, NODATA; -dsco/-lco KEY=VALUE.
+     * FIXED_LEVELS overrides interval; otherwise LEVEL_EXP_BASE overrides interval.
+     * Default NoData comes from the source. Input and partial outputs remain caller-owned.
+     */
+    suspend fun contour(interval: Double, base: Double = 0.0, band: Int = 1, driver: String = "GPKG", name: String = "contours.gpkg", layerName: String = "contours", arguments: List<String>): GdalFiles
+
+    /** Direct OS/Node/opfs:/ output. Existing files are rejected. No full-output staging. */
+    suspend fun contourTo(path: String, interval: Double, base: Double = 0.0, band: Int = 1, driver: String = "GPKG", layerName: String = "contours", arguments: List<String>)
+
     /** Polygonizes a numeric raster band into a new vector file. Default mask excludes NoData.
      * Integer values use Int64 fields; floating values use Real fields without integer truncation.
      * UInt64 and complex bands are rejected. Output layer uses the source CRS and geotransform.

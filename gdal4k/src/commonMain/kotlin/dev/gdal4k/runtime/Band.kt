@@ -15,6 +15,32 @@ object BlockAccessPattern {
  * Provides band metadata, overview/mask access, and full-band or windowed raster I/O.
  */
 interface Band {
+    /** Replaces connected regions smaller than [threshold] with their largest neighbour.
+     * Source and target must have identical dimensions. Source may equal target for in-place use.
+     * Default mask excludes source NoData; an explicit mask overrides it. Floating values are
+     * rounded to integers by GDAL. No georeferencing/metadata is copied to the target.
+     * Returns GDAL's error code; target may be partially changed on failure.
+     */
+    suspend fun sieveTo(target: Band, threshold: Int, connectedness: Int = 4, mask: Band? = null, useDefaultMask: Boolean = true): Int
+
+    /** Distances to nonzero source pixels, or VALUES=n[,n] targets. Distinct, equally sized
+     * target must be writable. GDAL processes source values as Int32; use a classified band.
+     * Options are KEY=VALUE: VALUES, DISTUNITS=PIXEL/GEO, MAXDIST, NODATA,
+     * USE_INPUT_NODATA=YES/NO, FIXED_BUF_VAL. No metadata is copied to the target.
+     * Returns GDAL's error code; partial writes belong to the caller.
+     */
+    suspend fun proximityTo(target: Band, arguments: List<String>): Int
+
+    /** Modifies this band in place, filling zero pixels in [mask] (default: this band's mask).
+     * Search distance is in pixels; zero searches the full raster. GDAL interpolates Float32
+     * values and converts them to this band's type; scale/offset are not applied.
+     * KEY=VALUE options: INTERPOLATION=INV_DIST/NEAREST, NODATA, TEMP_FILE_DRIVER.
+     * Scratch defaults to MEM for portable execution. Select GTiff with a writable GDAL
+     * temporary directory for large rasters. NODATA is ignored by GDAL's smoothing pass.
+     * NoData metadata is retained. Returns the GDAL error code; partial writes remain.
+     */
+    suspend fun fillNoData(maxSearchDistance: Double = 100.0, smoothingIterations: Int = 0, mask: Band? = null, arguments: List<String>): Int
+
     /** Detached caller-owned copy, unaffected by later palette replacement. */
     suspend fun getColorTable(): ColorTable?
     /** Copies the table; null removes the palette if the driver supports it. */
@@ -111,6 +137,9 @@ interface Band {
 
     suspend fun setColorInterpretation(colorInterpretation: Int): Int
 
+    /** Reacquire borrowed masks after a native NoData mutation attempt. Generated masks
+     * are refreshed; explicit mask data is retained. Validation errors leave masks untouched.
+     */
     suspend fun getNoDataValue(): Double?
 
     suspend fun setNoDataValue(value: Double): Int
