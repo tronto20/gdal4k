@@ -341,6 +341,9 @@ struct Mount {
         }
     }
     std::shared_ptr<Source> source(const std::string& name) {
+        // Drivers can reopen/stat the same path after a failed callback. Preserve
+        // the enclosing operation's failure so those probes cannot restart retries.
+        check();
         require(validName(name), "Invalid related HTTP file name");
         auto found = sources.find(name); if (found != sources.end()) return found->second;
         if (missing.count(name)) return nullptr;
