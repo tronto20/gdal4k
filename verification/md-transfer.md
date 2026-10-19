@@ -38,6 +38,34 @@ and parent/child lifetimes. Avoid per-element metadata traffic and speculative
 operation retries. Public `List<MDValue>` results still allocate values and
 strings; no zero-copy or universal speed/memory claim is justified.
 
-No baseline or effect has been measured for this workstream yet. Optional
-scientific drivers require their own actual profile fixtures; this MEM probe
-does not establish HDF5/netCDF availability or performance on other hosts.
+The committed harness `d68b822` was compiled with normal Gradle, then all three
+small smoke cases passed. The original baseline uses the preserved normal Gradle
+PR32 macOS ARM64 native engine (fingerprint `19e4ee13...`) with unchanged runtime
+code, JDK 21.0.2, `-Xms32m -Xmx1536m -XX:+UseG1GC`, three rounds/trials and nine
+fresh JVMs. Slices contain 65,536 values in a nonzero two-dimensional window;
+the attribute contains 1,024 values. Every returned Float64 bit or exact integer
+string and an independently recomputed checksum matched.
+
+| Existing API, three write/read rounds | Median elapsed | Cumulative JVM allocation | Whole-process OS peak RSS | Bridge bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Float64 numeric slice | 219.19 ms | 123.16 MB | 231.23 MB | 3.34 MB |
+| Exact Int64 typed slice | 511.67 ms | 694.41 MB | 746.80 MB | 25.76 MB |
+| UInt64 metadata attribute | 15.03 ms | 11.39 MB | 117.44 MB | 406.42 KB |
+
+All cases made six JSON calls and zero binary calls. The typed Int64 case's
+largest JSON message was 4,292,785 bytes. This is measured candidate overhead;
+no optimization or before/after improvement has been established. MB/KB are
+decimal; allocation, sampled heap and OS RSS are distinct. Validation/checksum
+work is included in measured elapsed/allocation on both future comparison sides.
+
+The 18 raw stdout/OS logs, original 878 production classes and 14 probe classes,
+source/harness hashes, native library/manifest and byte identities are retained
+under `verification/results/md-memory/` and `verification/build/md-baseline`.
+The selected native library is hardlinked to the frozen retained PR32 producer
+in a separate checkout; neither name/inode may be rebuilt or modified. Future
+native producers run in the new MD checkout. The complete raw/value/source/class/
+OS-unit proof is `verification/results/md-transfer-stage1/before-baseline-verified.json`.
+Do not overwrite, relabel or repeat this original baseline absent a concrete
+failure or changed harness. Optional scientific drivers require their own actual
+profile fixtures; MEM does not establish HDF5/netCDF availability or performance
+on other hosts.
