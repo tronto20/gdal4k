@@ -1,5 +1,6 @@
 package dev.gdal4k
 
+import dev.gdal4k.GdalException
 import dev.gdal4k.runtime.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.runTest
