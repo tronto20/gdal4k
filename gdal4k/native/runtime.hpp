@@ -315,13 +315,18 @@ inline CPLJSONObject mdRaster(GDALMDArrayH h,const CPLJSONObject& a,bool write) 
         start.push_back(s);count.push_back(static_cast<size_t>(c));n*=static_cast<size_t>(c);
     }
     require(n<=SIZE_MAX/sizeof(double),"Slice exceeds addressable memory");
-    auto values=a.GetArray("values");require(!write||values.Size()==n,"Slice values size does not match count");
-    std::vector<double> data(n);if(write)for(size_t i=0;i<n;++i)data[i]=CPLAtof(values[static_cast<int>(i)].ToString().c_str());
+    auto values=a.GetArray("values");require(!write||activeBinary||values.Size()==n,"Slice values size does not match count");
+    if(activeBinary) {
+        auto kind=a["valueCount"].GetType();require((kind==CPLJSONObject::Type::Integer||kind==CPLJSONObject::Type::Long)&&a.GetLong("valueCount",-1)==static_cast<GIntBig>(n),"Slice value count does not match shape");
+        validateBinary(n,sizeof(double),write);
+        require(activeBinary->length==(write?n*sizeof(double):0),"Invalid binary MD slice length");
+    }
+    std::vector<double> data(n);if(write&&activeBinary)binaryInput(data.data(),n);else if(write)for(size_t i=0;i<n;++i)data[i]=CPLAtof(values[static_cast<int>(i)].ToString().c_str());
     auto edt=GDALExtendedDataTypeCreate(GDT_Float64);
     int ok=write?GDALMDArrayWrite(h,start.data(),count.data(),nullptr,nullptr,edt,data.data(),data.data(),n*sizeof(double)):
         GDALMDArrayRead(h,start.data(),count.data(),nullptr,nullptr,edt,data.data(),data.data(),n*sizeof(double));
     GDALExtendedDataTypeRelease(edt);if(write)return value(ok!=0);
-    require(ok!=0,"Multidimensional read failed");return numbers(data.data(),data.size());
+    require(ok!=0,"Multidimensional read failed");if(activeBinary){binaryOutput(data.data(),data.size());return value(static_cast<int>(n));}return numbers(data.data(),data.size());
 }
 #include "runtime-md.hpp"
 #include "runtime-band.hpp"

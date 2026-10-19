@@ -86,7 +86,8 @@ def main():
                'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/MDCodec.kt',
                'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/BundledRuntime.generated.kt',
                'gdal4k/native/runtime.hpp', 'gdal4k/native/runtime-md.hpp',
-               'gdal4k/native/runtime.generated.inc', 'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/GdalTransport.kt']
+               'gdal4k/native/runtime.generated.inc', 'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/GdalTransport.kt',
+               'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/BinaryMD.kt']
     report = dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(), label=args.label,
                   testedHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                   platform=platform.platform(), target=target, records=records,

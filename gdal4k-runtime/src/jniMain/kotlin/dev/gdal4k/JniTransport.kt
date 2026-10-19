@@ -27,10 +27,11 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     check(handle != 0L) { "Unable to initialize GDAL" }
     object : GdalTransport {
         private val binaryVersion = try { bridge.binaryVersion() } catch (_: UnsatisfiedLinkError) { 0 }
-        override val supportsBinaryRaster = binaryVersion in 1..4
-        override val supportsBinaryCoordinates = binaryVersion in 2..4
-        override val supportsBinaryColumns = binaryVersion in 3..4
-        override val supportsBinaryFiles = binaryVersion == 4
+        override val supportsBinaryRaster = binaryVersion in 1..5
+        override val supportsBinaryCoordinates = binaryVersion in 2..5
+        override val supportsBinaryColumns = binaryVersion in 3..5
+        override val supportsBinaryFiles = binaryVersion in 4..5
+        override val supportsBinaryMD = binaryVersion == 5
         private var closed = false
         private val inputs = JniInputs({ bridge.mount(handle, it) }, bridge::unmount)
         @Synchronized private fun callNow(request: String, attachment: Any?, control: Long = 0): String {

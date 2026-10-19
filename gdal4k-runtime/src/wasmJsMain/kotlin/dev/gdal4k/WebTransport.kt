@@ -15,14 +15,16 @@ private external fun controlledInvoke(bridge: JsAny, request: String, file: JsAn
 @JsFun("(bridge, success, failure) => bridge.close().then(success, e => failure(String(e.stack || e)))")
 private external fun dispose(bridge: JsAny, success: () -> Unit, failure: (String) -> Unit)
 
-@JsFun("bridge => bridge.binaryVersion === 1 || bridge.binaryVersion === 2 || bridge.binaryVersion === 3 || bridge.binaryVersion === 4")
+@JsFun("bridge => bridge.binaryVersion === 1 || bridge.binaryVersion === 2 || bridge.binaryVersion === 3 || bridge.binaryVersion === 4 || bridge.binaryVersion === 5")
 private external fun supportsBinary(bridge: JsAny): Boolean
-@JsFun("bridge => bridge.binaryVersion === 2 || bridge.binaryVersion === 3 || bridge.binaryVersion === 4")
+@JsFun("bridge => bridge.binaryVersion === 2 || bridge.binaryVersion === 3 || bridge.binaryVersion === 4 || bridge.binaryVersion === 5")
 private external fun supportsCoordinates(bridge: JsAny): Boolean
-@JsFun("bridge => bridge.binaryVersion === 3 || bridge.binaryVersion === 4")
+@JsFun("bridge => bridge.binaryVersion === 3 || bridge.binaryVersion === 4 || bridge.binaryVersion === 5")
 private external fun supportsColumns(bridge: JsAny): Boolean
-@JsFun("bridge => bridge.binaryVersion === 4")
+@JsFun("bridge => bridge.binaryVersion === 4 || bridge.binaryVersion === 5")
 private external fun supportsFiles(bridge: JsAny): Boolean
+@JsFun("bridge => bridge.binaryVersion === 5")
+private external fun supportsMD(bridge: JsAny): Boolean
 @JsFun("(bridge, request, bytes, progress, cancelled, success, failure) => bridge.callBinary(request, bytes, progress, cancelled).then(success, e => failure(String(e.stack || e)))")
 private external fun binaryInvoke(bridge: JsAny, request: String, bytes: JsAny?, progress: (String) -> Unit, cancelled: () -> Boolean, success: (JsAny) -> Unit, failure: (String) -> Unit)
 @JsFun("size => new Uint8Array(size)")
@@ -69,6 +71,7 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
         override val supportsBinaryCoordinates = supportsCoordinates(bridge)
         override val supportsBinaryColumns = supportsColumns(bridge)
         override val supportsBinaryFiles = supportsFiles(bridge)
+        override val supportsBinaryMD = supportsMD(bridge)
         override suspend fun callBinary(request: String, input: ByteArray?, control: GdalCallControl?): GdalBinaryReply {
             val bytes = input?.let { copyBytes(it, control) }
             val reply: JsAny = suspendCoroutine { c ->

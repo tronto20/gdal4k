@@ -69,3 +69,37 @@ Do not overwrite, relabel or repeat this original baseline absent a concrete
 failure or changed harness. Optional scientific drivers require their own actual
 profile fixtures; MEM does not establish HDF5/netCDF availability or performance
 on other hosts.
+
+
+## Implementation under verification
+
+Private protocol 5 uses raw little-endian Float64 frames for the existing numeric
+slice conversion APIs. Numeric `MDValue` components use ASCII length-prefixed
+strings (four-byte little-endian length per component, absent imaginary length
+`0xffffffff`). The native engine still calls the original `mdParse`/`mdFormat`,
+so exact unsigned/signed ranges, complex presence checks, canonical floating-point
+strings and nonfinite spellings follow the existing typed contract. This avoids
+per-value JSON objects and repeated keys without claiming raw typed storage for
+the public string-valued model. Complete numeric frames/public objects remain.
+
+Numeric writes validate the complete frame and stage/parse every component before
+calling the same GDAL write API. Reads inspect the native schema and return either
+a numeric frame or the existing string/compound JSON result in that same call;
+there is no speculative retry, per-element schema call or cached type to outlive
+its handle. Old engines retain the JSON path. Input packing and decoding remain
+under the runtime lock with bounded cancellation checkpoints. No direct buffer
+lease or total-memory bound is exposed.
+
+The local normal Gradle JVM compilation passed, and ten transport-only control
+tests passed (five new MD plus five file regression controls). These controls use
+explicit test transports and do not establish native runtime behavior. New public
+cases cover Float64 nonzero windows/scalars/conversion, exact integers, complex/
+nonfinite values, numeric attributes, string/compound fallback, invalid shape/range,
+cancellation and parent closure. Two JVM cases exercise actual malformed native
+frames; those and the full source/published consumers await a current engine.
+
+Local disk space is severely constrained. Actual fresh normal Gradle native/Web
+CI producers must finish before new runtime tests or measurements can be accepted.
+An exact source/fingerprint/hash-verified CI prebuilt engine can be consumed through
+the normal producer's prebuilt verification path; an older baseline engine cannot
+validate changed native code. No new speed or memory effect is claimed yet.

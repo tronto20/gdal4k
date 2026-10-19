@@ -121,6 +121,61 @@ struct MDBuffer {
     void put(const CPLJSONArray& values){require(values.Size()==count,"Values size does not match shape");for(size_t i=0;i<count;++i)mdPut(data.data()+i*type.size(),type,values[static_cast<int>(i)]);}
     CPLJSONObject get(){CPLJSONArray values;for(size_t i=0;i<count;++i)values.Add(mdGet(data.data()+i*type.size(),type));return value(values);}
 };
+// Protocol 5 carries public numeric component strings as length-prefixed ASCII.
+// This preserves mdParse/mdFormat (including exact integers, complex values and
+// nonfinite spellings) while removing repeated JSON objects/keys/escaping.
+inline GIntBig mdValueCount(const CPLJSONObject& a) {
+    auto kind=a["numericValueCount"].GetType();
+    require(kind==CPLJSONObject::Type::Integer||kind==CPLJSONObject::Type::Long,"Numeric MD count must be an integer");
+    auto count=a.GetLong("numericValueCount",-1);require(count>=0,"Invalid numeric MD count");return count;
+}
+inline std::string mdBinaryComponent(size_t& offset,bool nullable,bool& missing) {
+    require(activeBinary->length-offset>=4,"Truncated numeric MD component length");uint32_t length=0;
+    for(unsigned i=0;i<4;++i)length|=uint32_t(activeBinary->input[offset++])<<(8*i);
+    missing=nullable&&length==UINT32_MAX;if(missing)return {};
+    require(length<=INT_MAX&&length<=activeBinary->length-offset,"Invalid numeric MD component size");
+    std::string text(length,'\0');
+    for(size_t position=0;position<length;) {
+        if(position)binaryCheckpoint();auto size=std::min<size_t>(262144,length-position);
+        for(size_t i=0;i<size;++i)require(activeBinary->input[offset+position+i]<128,"Numeric MD component must be ASCII");
+        std::memcpy(text.data()+position,activeBinary->input+offset+position,size);position+=size;
+    }
+    offset+=length;return text;
+}
+inline void mdBinaryPut(MDBuffer& buffer,const CPLJSONObject& a) {
+    require(buffer.type.kind()==GEDTC_NUMERIC,"Numeric MD input requires a numeric schema");
+    require(static_cast<uint64_t>(mdValueCount(a))==buffer.count,"Numeric MD values size does not match shape");
+    require(buffer.count<=activeBinary->length/8,"Truncated numeric MD values");size_t offset=0;
+    auto numeric=GDALExtendedDataTypeGetNumericDataType(buffer.type.handle);auto base=GDALGetNonComplexDataType(numeric);bool complex=GDALDataTypeIsComplex(numeric);
+    for(size_t i=0;i<buffer.count;++i) {
+        if((i&1023)==0)binaryCheckpoint();bool missing=false;
+        auto real=mdBinaryComponent(offset,false,missing);auto imaginary=mdBinaryComponent(offset,true,missing);
+        require(complex==!missing,"Imaginary component must match numeric data type");
+        char* p=buffer.data.data()+i*buffer.type.size();mdPutNumber(p,base,real);
+        if(complex)mdPutNumber(p+GDALGetDataTypeSizeBytes(base),base,imaginary);
+    }
+    require(offset==activeBinary->length,"Trailing numeric MD input bytes");
+}
+inline void mdBinaryAppend(const std::string& text,bool missing=false) {
+    auto& output=activeBinary->output;
+    require(text.size()<=INT_MAX&&output.size()<=static_cast<size_t>(INT_MAX)-4&&text.size()<=static_cast<size_t>(INT_MAX)-4-output.size(),"Numeric MD response exceeds bridge size; read smaller windows");
+    uint32_t length=missing?UINT32_MAX:static_cast<uint32_t>(text.size());
+    for(unsigned i=0;i<4;++i)output.push_back(static_cast<unsigned char>(length>>(8*i)));
+    auto offset=output.size();output.resize(offset+text.size());
+    for(size_t position=0;position<text.size();) {
+        if(position)binaryCheckpoint();auto size=std::min<size_t>(262144,text.size()-position);
+        std::memcpy(output.data()+offset+position,text.data()+position,size);position+=size;
+    }
+}
+inline CPLJSONObject mdBinaryGet(const MDType& type,const char* data,size_t count) {
+    require(count<=INT_MAX,"Numeric MD count exceeds bridge limit");auto numeric=GDALExtendedDataTypeGetNumericDataType(type.handle);auto base=GDALGetNonComplexDataType(numeric);bool complex=GDALDataTypeIsComplex(numeric);
+    for(size_t i=0;i<count;++i) {
+        if((i&1023)==0)binaryCheckpoint();auto p=data+i*type.size();
+        mdBinaryAppend(mdGetNumber(p,base));
+        if(complex)mdBinaryAppend(mdGetNumber(p+GDALGetDataTypeSizeBytes(base),base));else mdBinaryAppend({},true);
+    }
+    CPLJSONObject metadata,result;metadata.Add("binaryMDValues",true);metadata.Add("count",static_cast<int>(count));result.Add("value",metadata);return result;
+}
 inline CPLJSONObject createExtendedArray(Runtime& r,GDALGroupH group,const CPLJSONObject& a,unsigned long long id) {
     auto type=mdType(a.GetObj("dataType"));std::vector<GDALDimensionH> dims;for(auto d:a.GetArray("dimensions"))dims.push_back(static_cast<GDALDimensionH>(r.arg(d)));
     Strings opts(a.GetArray("options"));return r.result(GDALGroupCreateMDArray(group,a.GetString("name").c_str(),dims.size(),dims.data(),type->handle,opts.data()),"MDArray",true,id);
@@ -130,9 +185,10 @@ inline CPLJSONObject mdValues(GDALMDArrayH h,const CPLJSONObject& a,bool write) 
     struct Cleanup {GDALDimensionH* p;size_t n;~Cleanup(){GDALReleaseDimensions(p,n);}} cleanup{dims,nd};
     require(starts.Size()==nd&&counts.Size()==nd,"Slice rank does not match array");std::vector<GUInt64> start;std::vector<size_t> count;size_t n=1;
     for(size_t i=0;i<nd;++i){auto s=starts[static_cast<int>(i)].ToLong(),c=counts[static_cast<int>(i)].ToLong();auto size=GDALDimensionGetSize(dims[i]);require(s>=0&&c>0&&static_cast<uint64_t>(s)<=size&&static_cast<uint64_t>(c)<=size-s,"Slice is outside array");require(c<=INT_MAX&&n<=static_cast<size_t>(INT_MAX)/c,"Slice exceeds bridge limit; read smaller windows");start.push_back(s);count.push_back(c);n*=c;}
-    MDBuffer buffer(type,n);if(write)buffer.put(a.GetArray("values"));
+    if(activeBinary&&!write)require(activeBinary->length==0,"MD reads cannot have an input payload");
+    MDBuffer buffer(type,n);if(write&&activeBinary)mdBinaryPut(buffer,a);else if(write)buffer.put(a.GetArray("values"));
     auto ok=write?GDALMDArrayWrite(h,start.data(),count.data(),nullptr,nullptr,type.handle,buffer.data.data(),buffer.data.data(),buffer.data.size()):GDALMDArrayRead(h,start.data(),count.data(),nullptr,nullptr,type.handle,buffer.data.data(),buffer.data.data(),buffer.data.size());
-    if(write)return value(ok!=0);require(ok!=0,"Multidimensional read failed");return buffer.get();
+    if(write)return value(ok!=0);require(ok!=0,"Multidimensional read failed");if(activeBinary&&type.kind()==GEDTC_NUMERIC)return mdBinaryGet(type,buffer.data.data(),n);return buffer.get();
 }
 inline CPLJSONObject attributeOperation(Runtime& r,void* h,const CPLJSONObject& a,unsigned long long id,const std::string& owner,const std::string& op) {
     bool group=owner=="Group";auto g=static_cast<GDALGroupH>(h);auto m=static_cast<GDALMDArrayH>(h);auto name=a.GetString("name");Strings opts(a.GetArray("options"));
@@ -161,10 +217,11 @@ inline CPLJSONObject attributeOperation(Runtime& r,void* h,const CPLJSONObject& 
 }
 inline CPLJSONObject attributeValues(GDALAttributeH h,const CPLJSONObject& a,bool write) {
     MDType type(GDALAttributeGetDataType(h));auto count=GDALAttributeGetTotalElementsCount(h);require(count<=INT_MAX,"Attribute exceeds bridge limit");
-    if(write){MDBuffer buffer(type,static_cast<size_t>(count));buffer.put(a.GetArray("values"));return value(GDALAttributeWriteRaw(h,buffer.data.data(),buffer.data.size())!=0);}
+    if(write){MDBuffer buffer(type,static_cast<size_t>(count));if(activeBinary)mdBinaryPut(buffer,a);else buffer.put(a.GetArray("values"));return value(GDALAttributeWriteRaw(h,buffer.data.data(),buffer.data.size())!=0);}
+    if(activeBinary)require(activeBinary->length==0,"Attribute reads cannot have an input payload");
     size_t size=0;auto p=GDALAttributeReadAsRaw(h,&size);require(p!=nullptr,"Cannot read attribute");
     struct Cleanup {GDALAttributeH h;GByte* p;size_t size;~Cleanup(){GDALAttributeFreeRawResult(h,p,size);}} cleanup{h,p,size};
-    require(type.size()>0&&count<=SIZE_MAX/type.size()&&size==count*type.size(),"Unexpected attribute buffer size");CPLJSONArray values;for(size_t i=0;i<count;++i)values.Add(mdGet(reinterpret_cast<char*>(p)+i*type.size(),type));return value(values);
+    require(type.size()>0&&count<=SIZE_MAX/type.size()&&size==count*type.size(),"Unexpected attribute buffer size");if(activeBinary&&type.kind()==GEDTC_NUMERIC)return mdBinaryGet(type,reinterpret_cast<char*>(p),static_cast<size_t>(count));CPLJSONArray values;for(size_t i=0;i<count;++i)values.Add(mdGet(reinterpret_cast<char*>(p)+i*type.size(),type));return value(values);
 }
 inline CPLJSONObject createCodedDomain(Runtime& r,const CPLJSONObject& a) {
     std::vector<std::string> codes,labels;std::vector<bool> hasLabel;std::set<std::string> unique;
