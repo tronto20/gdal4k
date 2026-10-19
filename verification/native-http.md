@@ -38,3 +38,37 @@ download/range comparisons must use identical final compiled probes/production
 classes, fixtures/settings and actual producer payloads; an old engine can measure
 the original baseline but cannot validate changed C++. No improvement is claimed
 until both sides and their raw logs/hashes have been checked.
+
+## Original download control
+
+The committed harness `66ef488` compiled with normal Gradle and its 1,024-square
+smoke passed. The original baseline then ran three fresh JVMs sequentially with
+JDK 21.0.2 and the frozen, actual PR33 Mac ARM64 normal Gradle engine (fingerprint
+`1b6da019...`). No runtime implementation changed. The 8,192-square fixture is
+67,117,214 bytes; each process made one complete HTTP GET and validated 196,608
+pixels in three windows. A 64 KiB streaming download buffer avoids an artificial
+whole-file heap allocation in the control.
+
+Median download/open/read/close/checksum/removal time was 366.59 ms, cumulative
+JVM allocation 0.902 MB and whole-process OS peak RSS 95.22 MB. Server response
+body bytes were 67.12 MB per process. These are baseline diagnostics on loopback,
+without added latency/throttling, and establish no speed or memory improvement.
+JVM allocation excludes native allocations; sampled heap and OS RSS are separate.
+The elapsed samples ranged from 235.63 to 386.11 ms, so later comparisons must
+preserve raw values and alternate modes rather than extrapolate WAN performance.
+
+The 889 production classes, seven probe classes, source/harness hashes, six raw
+stdout/OS logs, three request logs, fixture and independently recomputed pixel
+checksum were verified. Original class/source snapshots are preserved under
+`verification/build/http-baseline`; the native library remains read-only in the
+separate frozen MD checkout. Its name/inode must not be rebuilt or mutated. The
+report is `verification/results/http-memory-before-original-macos-arm64.json`
+and its verification proof is
+`verification/results/native-http-stage1/before-baseline-verified.json`.
+
+The next implementation uses an isolated optional HTTP/CURL profile with a
+dedicated native range handler, rather than treating stock `/vsicurl/` options as
+proof of strict identity/range semantics. Default engines retain explicit policy
+rejection. Actual profile engines, platform support, TLS, failure paths, leases,
+independent consumers and final controlled download/range measurements remain to
+be implemented and verified. This decision adds no CURL dependency to defaults.
