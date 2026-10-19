@@ -7,6 +7,24 @@ import dev.gdal4k.GdalFiles
  * Common GDAL entry point for dataset, spatial reference, and transformation operations.
  */
 interface GdalRuntime {
+    /** Builds a vector index of the full affine extents of explicit raster files, in list order.
+     * Sources must remain readable until the call completes. The result stores source paths,
+     * not pixels or source leases. Relative paths are preserved relative to the process working
+     * directory, not rebased to the index. absolutePaths resolves local relative paths instead.
+     * Directories, wildcards, connection strings and network/VSI providers other than /vsimem/
+     * are rejected. Web accepts /vsimem/ files only; no browser/Node filesystem or HTTP mounting
+     * is implicit. Copy selected bytes and sidecars with writeMemoryFile when appropriate.
+     * Mixed CRS requires explicit -t_srs; missing/invalid rasters fail instead of being skipped.
+     * Options: -t_srs, -src_srs_name, -src_srs_format and repeated -lco. No GTI raster is created.
+     * Returns independent complete output buffers; source files remain caller-owned.
+     */
+    suspend fun tileIndex(sources: List<String>, driver: String = "GPKG", name: String = "tiles.gpkg", layerName: String = "tiles", locationField: String = "location", absolutePaths: Boolean = false, arguments: List<String>): GdalFiles
+
+    /** Writes a new vector index directly. Existing output is rejected; the caller owns
+     * partial files and sidecars on failure/cancellation. Source paths follow tileIndex policy.
+     */
+    suspend fun tileIndexTo(sources: List<String>, path: String, driver: String = "GPKG", layerName: String = "tiles", locationField: String = "location", absolutePaths: Boolean = false, arguments: List<String>)
+
     /** Creates an owned geometry. Optional CRS is assigned without transforming coordinates.
      * Invalid/truncated input throws. Close the result with use.
      */

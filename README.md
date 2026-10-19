@@ -273,6 +273,45 @@ union, 입력 GeoTransform·CRS, GPKG 출력과 `footprint` 레이어입니다. 
 코루틴 취소 정책을 따릅니다. 복잡한 경계는 GDAL 내부 중간 도형을 크게 만들 수 있어
 직접 출력도 전체 메모리 상한이나 스트리밍을 보장하지 않습니다.
 
+### 래스터 타일 인덱스
+
+```kotlin
+val runtime = Gdal4k.runtime()
+val files = runtime.tileIndex(listOf("tiles/a.tif", "tiles/b.tif"), absolutePaths = true)
+runtime.tileIndexTo(listOf("tiles/a.tif", "tiles/b.tif"), "catalog.gpkg", "-t_srs", "EPSG:3857")
+```
+
+`tileIndex` / `tileIndexTo`는 고정 GDAL 3.12.4의 GDALTileIndex로 각 입력의 전체
+GeoTransform 경계를 벡터 폴리곤과 경로 속성으로 기록합니다. 회전된 입력은 사각형의
+네 꼭짓점을 사용하며 유효 마스크·NoData를 따라 자르는 Footprint와 목적이 다릅니다.
+픽셀 모자이크나 GTI 래스터를 생성하거나 GTI 읽기를 보장하지 않습니다.
+
+입력은 명시한 파일 목록만 사용합니다. 디렉터리·와일드카드·연결 문자열·URL과
+`/vsimem/` 이외의 VSI 입력은 거부합니다. 상대 경로는 프로세스 작업 디렉터리를
+기준으로 해석하고 그대로 저장합니다. 결과 인덱스의 위치로 재배치하지 않으므로,
+이동할 결과에는 `absolutePaths = true` 또는 호출자가 정한 경로 배치 정책이 필요합니다.
+절대 경로는 호스트 내부 경로를 속성에 기록하므로 공유 전에 확인해야 합니다.
+
+Web(JS/wasmJs, Node/브라우저)의 입력은 같은 런타임의 `/vsimem/` 파일만 지원합니다.
+필요하면 선택한 파일과 sidecar를 `writeMemoryFile`로 명시적으로 복사하며, 이는 전체
+버퍼를 사용합니다. Node 파일 경로, OPFS, File·HTTP URL을 인덱스 입력으로 자동 마운트하지
+않습니다. 저장된 `/vsimem/` 경로는 해당 런타임·파일 수명 안에서만 의미가 있습니다.
+인덱스의 벡터 도형은 입력 삭제 후에도 읽을 수 있지만 참조한 픽셀 파일을 복사하거나
+VRT·URI lease를 보유하지 않습니다. 명시적 VRT의 의존 파일도 호출자가 유지해야 합니다.
+
+기본 출력은 GPKG, `tiles` 레이어, `location` 경로 필드입니다. 이름은 `driver`, `name`,
+`layerName`, `locationField`로 지정하고 `-t_srs`, `-src_srs_name`, `-src_srs_format`,
+반복 `-lco`만 문자열 옵션으로 지원합니다. 입력 CRS가 다르면 `-t_srs`가 필요하며,
+재투영에는 모든 입력 CRS가 있어야 합니다. GDAL의 재투영 경계는 warped VRT 격자를
+따릅니다. 잘못된 입력·GeoTransform, 누락·중복 파일, 생략된 입력이나 잘린 경로 속성은
+실패로 처리합니다. 출력을 덮어쓰거나 디렉터리를 탐색하는 옵션은 받지 않습니다.
+
+`tileIndex`는 모든 생성 파일·sidecar의 독립 버퍼를 반환합니다. `tileIndexTo`의 출력은
+OS/Node 파일 또는 브라우저 `opfs:/` 경로이며, 실패·취소 후 부분 출력은 호출자가 관리합니다.
+입력 파일도 호출자 소유입니다. 진행·취소는 `withGdalProgress`를 사용합니다. 직접 출력도
+GDAL 중간 도형과 사전 검증 비용이 있으며 스트리밍·전체 메모리 상한을 보장하지 않습니다.
+검증 범위와 기능 진단은 [tile-index.md](verification/tile-index.md)에 기록합니다.
+
 ### Terrain derivatives (DEM processing)
 
 `Dataset.demProcessing(processing, driver, name, arguments)` calls GDALDEMProcessing

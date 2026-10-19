@@ -154,7 +154,7 @@ extern "C" gdal4k_binary_result* gdal4k_execute_binary(gdal4k_context* context,c
         auto args=parse(request).GetObj("args"); auto name=args.GetString("method"),type=args.GetString("type");
         g4k::require(size>=0 && (!size || input),"Invalid binary raster input");
         const auto method = name.substr(0, name.find('_'));
-        const bool files = type == "GdalRuntime" && (name == "writeMemoryFile_String_ByteArray" || name == "readMemoryFile_String" || name == "openDataset_GdalFiles_DatasetOpenOptions" || method == "warp") ||
+        const bool files = type == "GdalRuntime" && (name == "writeMemoryFile_String_ByteArray" || name == "readMemoryFile_String" || name == "openDataset_GdalFiles_DatasetOpenOptions" || method == "warp" || method == "tileIndex") ||
             type == "Dataset" && (method == "translate" || method == "warp" || method == "translateVector" || method == "demProcessing" || method == "rasterize" || method == "polygonize" || method == "footprint" || method == "contour" || method == "grid" || method == "viewshed");
         const bool multidimensional = type == "MDArray" && (method == "read" || method == "write" || method == "readValues" || method == "writeValues") || type == "Attribute" && (method == "readValues" || method == "writeValues");
         g4k::require(multidimensional || files || (type=="FeatureColumnStream" && name=="read") || (type=="CoordinateTransformation" && name=="transformPoints_Array_DoubleArray") || (type=="Band"||type=="Dataset") && (name.rfind("readRaster_",0)==0 || name.rfind("writeRaster_",0)==0 || (type=="Band"&&(name.rfind("readBlock_",0)==0||name.rfind("writeBlock_",0)==0))),"Binary transport requires a supported array or file operation");

@@ -15,7 +15,7 @@ class GdalProgressNativeCallbacksTest {
         private val bridge = JniBridge()
         private val context: Long
         val callbacks = mutableMapOf<String, MutableList<Long>>()
-        private val operations = setOf("sieveTo", "proximityTo", "fillNoData", "contour", "grid", "viewshed", "overlayTo", "footprint", "footprintTo")
+        private val operations = setOf("sieveTo", "proximityTo", "fillNoData", "contour", "grid", "viewshed", "overlayTo", "footprint", "footprintTo", "tileIndex", "tileIndexTo")
         init { loadBundledLibrary(null); context = bridge.create(byteArrayOf(), byteArrayOf()); check(context != 0L) }
         override suspend fun call(request: String, attachment: Any?, control: GdalCallControl?): String {
             val name = Json.parseToJsonElement(request).jsonObject.getValue("args").jsonObject.getValue("method").jsonPrimitive.content.substringBefore('_')
@@ -95,5 +95,16 @@ class GdalProgressNativeCallbacksTest {
             } }
         } }
         assertEquals(7, calls.callbacks.getValue("overlayTo").size)
+    } }
+    @Test fun tileIndexMemoryAndDirectExecuteNativeCallbacks(): Unit = runBlocking { runtime { r, calls ->
+        val input = "/vsimem/tile-index-progress.tif"
+        val path = datasetOutputPath("tile-index-progress.gpkg")
+        try {
+            raster(r) { it.translateTo(input) }
+            r.openDataset(r.tileIndex(listOf(input))).use { ds -> requireNotNull(ds.getLayer(0)).use { assertEquals(1L, it.getFeatureCount(true)) } }
+            r.tileIndexTo(listOf(input), path)
+            r.openDataset(path).use { ds -> requireNotNull(ds.getLayer(0)).use { assertEquals(1L, it.getFeatureCount(true)) } }
+            assertEquals(setOf("tileIndex", "tileIndexTo"), calls.callbacks.keys)
+        } finally { r.deleteMemoryFile(input); requireNotNull(r.getDriver("GPKG")).use { it.delete(path) } }
     } }
 }
