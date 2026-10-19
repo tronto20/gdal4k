@@ -45,10 +45,10 @@
         auto request=a["request"].ToString();return value(request=="THIRD_PARTY_LICENSES"?gdal4k_license_notices():GDALVersionInfo(request.c_str()));
     }
     if(type=="GdalRuntime" && method=="writeMemoryFile_String_ByteArray") {
-        auto path=a["path"].ToString();require(path.rfind("/vsimem/",0)==0,"Memory file path must start with /vsimem/");auto slash=path.find_last_of(char(47));VSIMkdirRecursive(path.substr(0,slash).c_str(),0700);auto f=VSIFOpenL(path.c_str(),"wb");require(f!=nullptr,"Cannot create memory file");auto input=a.GetArray("bytes");std::vector<GByte> data;for(auto v:input)data.push_back(static_cast<GByte>(v.ToInteger()));auto written=VSIFWriteL(data.data(),1,data.size(),f);auto code=VSIFCloseL(f);require(written==data.size()&&code==0,"Cannot write memory file");return nullValue();
+        return writeMemoryFile(a);
     }
     if(type=="GdalRuntime" && method=="readMemoryFile_String") {
-        auto path=a["path"].ToString();require(path.rfind("/vsimem/",0)==0,"Memory file path must start with /vsimem/");vsi_l_offset size=0;auto p=VSIGetMemFileBuffer(path.c_str(),&size,false);require(p!=nullptr,"Memory file does not exist");return numbers(p,size);
+        return readMemoryFile(a);
     }
     if(type=="GdalRuntime" && method=="deleteMemoryFile_String") {
         auto path=a["path"].ToString();require(path.rfind("/vsimem/",0)==0,"Memory file path must start with /vsimem/");VSIStatBufL info;if(VSIStatL(path.c_str(),&info)==0){auto code=VSI_ISDIR(info.st_mode)?VSIRmdirRecursive(path.c_str()):VSIUnlink(path.c_str());require(code==0,"Cannot remove memory file");}return nullValue();

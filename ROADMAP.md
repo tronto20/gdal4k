@@ -12,8 +12,8 @@ these are not missing APIs to reimplement.
 | Order | Workstream | State |
 | --- | --- | --- |
 | 1 | Coordinate array transfer | Merged in PR29; tested HEAD confirmed in main |
-| 2 | Vector column transfer | In progress: existing path measured; scoped GDAL Arrow C stream implementation and verification |
-| 3 | File I/O copy reduction | Approved; extend existing direct-to-path APIs |
+| 2 | Vector column transfer | Merged in PR31: scoped GDAL Arrow C stream; controlled JVM measurements and full CI verified |
+| 3 | File I/O copy reduction | Implemented: negotiated binary file buffers, controlled JVM comparison and 2,038 local tests passed; exact-HEAD CI/merge pending |
 | 4 | Multidimensional numeric transfer | Approved; optimize existing MDArray/MDValue APIs |
 | 5 | JVM/Native HTTP input | Approved; extend existing web policies and compare actual bounded ranges |
 | 6 | Valid-data raster footprint | Approved; wrap GDALFootprint with mask/NoData semantics |

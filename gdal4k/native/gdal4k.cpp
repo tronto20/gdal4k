@@ -135,13 +135,16 @@ struct gdal4k_binary_result {
     g4k::BinaryRaster buffers{};
     ~gdal4k_binary_result() { gdal4k_free(json); }
 };
-extern "C" int gdal4k_binary_version() { return 3; }
+extern "C" int gdal4k_binary_version() { return 4; }
 extern "C" gdal4k_binary_result* gdal4k_execute_binary(gdal4k_context* context,const char* request,const unsigned char* input,int size,gdal4k_control* control) {
     try {
         auto result=std::make_unique<gdal4k_binary_result>();
         auto args=parse(request).GetObj("args"); auto name=args.GetString("method"),type=args.GetString("type");
         g4k::require(size>=0 && (!size || input),"Invalid binary raster input");
-        g4k::require((type=="FeatureColumnStream" && name=="read") || (type=="CoordinateTransformation" && name=="transformPoints_Array_DoubleArray") || (type=="Band"||type=="Dataset") && (name.rfind("readRaster_",0)==0 || name.rfind("writeRaster_",0)==0 || (type=="Band"&&(name.rfind("readBlock_",0)==0||name.rfind("writeBlock_",0)==0))),"Binary transport requires a supported array operation");
+        const auto method = name.substr(0, name.find('_'));
+        const bool files = type == "GdalRuntime" && (name == "writeMemoryFile_String_ByteArray" || name == "readMemoryFile_String" || name == "openDataset_GdalFiles_DatasetOpenOptions" || method == "warp") ||
+            type == "Dataset" && (method == "translate" || method == "warp" || method == "translateVector" || method == "demProcessing" || method == "rasterize" || method == "polygonize" || method == "contour" || method == "grid" || method == "viewshed");
+        g4k::require(files || (type=="FeatureColumnStream" && name=="read") || (type=="CoordinateTransformation" && name=="transformPoints_Array_DoubleArray") || (type=="Band"||type=="Dataset") && (name.rfind("readRaster_",0)==0 || name.rfind("writeRaster_",0)==0 || (type=="Band"&&(name.rfind("readBlock_",0)==0||name.rfind("writeBlock_",0)==0))),"Binary transport requires a supported array or file operation");
         result->buffers.input=input; result->buffers.length=static_cast<size_t>(size);
         struct Scope {g4k::BinaryRaster* previous; Scope(g4k::BinaryRaster* value):previous(g4k::activeBinary){g4k::activeBinary=value;}~Scope(){g4k::activeBinary=previous;}} scope(&result->buffers);
         result->json=gdal4k_execute_controlled(context,request,control);

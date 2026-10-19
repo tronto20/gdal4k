@@ -96,8 +96,8 @@ special('Layer','getSpatialFilter','auto g=OGR_L_GetSpatialFilter(h);return r.re
 for method in ['setSpatialFilter','setSpatialFilterRect']:
     special('Layer',method,'return setVectorSpatialFilter(r,h,a,'+str(method.endswith('Rect')).lower()+');')
 
-special('GdalRuntime','writeMemoryFile','auto path=a["path"].ToString();require(path.rfind("/vsimem/",0)==0,"Memory file path must start with /vsimem/");auto slash=path.find_last_of(char(47));VSIMkdirRecursive(path.substr(0,slash).c_str(),0700);auto f=VSIFOpenL(path.c_str(),"wb");require(f!=nullptr,"Cannot create memory file");auto input=a.GetArray("bytes");std::vector<GByte> data;for(auto v:input)data.push_back(static_cast<GByte>(v.ToInteger()));auto written=VSIFWriteL(data.data(),1,data.size(),f);auto code=VSIFCloseL(f);require(written==data.size()&&code==0,"Cannot write memory file");return nullValue();')
-special('GdalRuntime','readMemoryFile','auto path=a["path"].ToString();require(path.rfind("/vsimem/",0)==0,"Memory file path must start with /vsimem/");vsi_l_offset size=0;auto p=VSIGetMemFileBuffer(path.c_str(),&size,false);require(p!=nullptr,"Memory file does not exist");return numbers(p,size);')
+special('GdalRuntime','writeMemoryFile','return writeMemoryFile(a);')
+special('GdalRuntime','readMemoryFile','return readMemoryFile(a);')
 special('GdalRuntime','deleteMemoryFile','auto path=a["path"].ToString();require(path.rfind("/vsimem/",0)==0,"Memory file path must start with /vsimem/");VSIStatBufL info;if(VSIStatL(path.c_str(),&info)==0){auto code=VSI_ISDIR(info.st_mode)?VSIRmdirRecursive(path.c_str()):VSIUnlink(path.c_str());require(code==0,"Cannot remove memory file");}return nullValue();')
 
 special('GdalRuntime','versionInfo','auto request=a["request"].ToString();return value(request=="THIRD_PARTY_LICENSES"?gdal4k_license_notices():GDALVersionInfo(request.c_str()));')
@@ -351,6 +351,14 @@ for cls in TYPES:
             body='coordinateCall(points)'
         elif cls=='FeatureColumnStream' and name=='read':
             body='return columnRead()'
+        elif cls=='GdalRuntime' and name=='writeMemoryFile':
+            body='writeMemoryFileCall(path, bytes)'
+        elif cls=='GdalRuntime' and name=='readMemoryFile':
+            body='return readMemoryFileCall(path)'
+        elif cls=='GdalRuntime' and name=='openDataset' and params[0][1]=='GdalFiles':
+            body=f'val result = fileInputCall("{cls}", "{sig}", mapOf("options" to encode(options)), files); return requireNotNull(engine.wrapDataset(result, null))'
+        elif ret=='GdalFiles':
+            body=f'return fileOutputCall("{cls}", "{sig}", mapOf({payload}))'
         elif cls=='Layer' and name=='openColumnStream':
             body=f'require(batchSize in 1..65536) {{ "Column batch size must be between 1 and 65536" }}; check(engine.supportsBinaryColumns) {{ "Column transfer requires engine binary protocol 3; use Feature iteration with older engines" }}; val result = {call}; return requireNotNull(engine.wrapFeatureColumnStream(result, this))'
         elif cls=='CoordinateTransformation' and name=='transformBounds':

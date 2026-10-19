@@ -12,7 +12,7 @@ async function exercise(createGdalWorker, url, host) {
     async function call(type,handle,method,parameters={},cancelled) {
         let response;
         if (/^read(Raster|Block)_/.test(method)) {
-            if (![1,2,3].includes(bridge.binaryVersion)) throw new Error('HTTP regression requires binary raster capability');
+            if (![1,2,3,4].includes(bridge.binaryVersion)) throw new Error('HTTP regression requires binary raster capability');
             parameters={...parameters,bufferSize:parameters.buffer?.length??parameters.bufferSize};delete parameters.buffer;
             const packet=await bridge.callBinary(JSON.stringify({op:'runtime',args:{type,handle,method,parameters}}),null,()=>{},cancelled??(()=>false));
             response=JSON.parse(packet.json);

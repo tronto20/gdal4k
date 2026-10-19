@@ -50,8 +50,12 @@ interface GdalRuntime {
 
     suspend fun versionInfo(request: String = "--version"): String
 
-    /** Mount bytes in GDAL's process-local virtual filesystem. Path must begin with /vsimem/. */
+    /** Mount bytes in GDAL's process-local virtual filesystem. Path must begin with /vsimem/.
+     * Replaces existing contents; partial contents after failure/cancellation belong to the caller.
+     * This API holds complete byte buffers. Use existing dataset *To operations for large direct outputs.
+     */
     suspend fun writeMemoryFile(path: String, bytes: ByteArray)
+    /** Returns an independent complete buffer, including an empty buffer for an empty file. */
     suspend fun readMemoryFile(path: String): ByteArray
     suspend fun deleteMemoryFile(path: String)
 

@@ -15,6 +15,7 @@ import kotlin.io.encoding.Base64
 internal class RuntimeEngine(private val transport: GdalTransport) {
     val supportsBinaryCoordinates: Boolean get() = transport.supportsBinaryCoordinates
     val supportsBinaryColumns: Boolean get() = transport.supportsBinaryColumns
+    val supportsBinaryFiles: Boolean get() = transport.supportsBinaryFiles
     val supportsBinaryRaster: Boolean get() = transport.supportsBinaryRaster
     val supportsHttpInputPolicy: Boolean get() = transport.supportsHttpInputPolicy
     private val mutex = Mutex()
@@ -26,7 +27,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val caller = currentCoroutineContext()
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
-        val cancellable = transport.supportsHttpInputPolicy || type == "FeatureColumnStream" || name in setOf("openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+        val cancellable = transport.supportsHttpInputPolicy || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
@@ -36,10 +37,10 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         if (method != "close") { caller.ensureActive(); check(!closed) { "GDAL runtime is closed" } }
         // Queued calls hold only caller references and metadata, never eagerly packed large buffers.
         val input = binary?.prepare?.invoke()
-        val value = withContext(NonCancellable) {
+        val response = withContext(NonCancellable) {
         if (closed) {
             check(method == "close") { "GDAL runtime is closed" }
-            return@withContext JsonNull
+            return@withContext buildJsonObject { putJsonObject("result") { put("value", JsonNull) } }
         }
         val request = buildJsonObject {
             put("op", "runtime")
@@ -66,25 +67,36 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         }
         val failure = control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
         if (failure != null) {
-            for (id in response["allocatedHandles"]?.jsonArray.orEmpty().asReversed()) {
-                try {
-                    val close = buildJsonObject {
-                        put("op", "runtime")
-                        putJsonObject("args") { put("type", "Handle"); put("handle", id); put("method", "close"); putJsonObject("parameters") {} }
-                    }
-                    val closed = Json.parseToJsonElement(transport.call(close.toString())).jsonObject
-                    closed["error"]?.let { throw GdalException(it.jsonPrimitive.content) }
-                } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
-            }
+            closeAllocated(response, failure)
             throw failure
         }
-        response.getValue("result").jsonObject.getValue("value")
+        response
         }
         // Decode under the same lock in the original cancellable context. Multiple queued
         // reads cannot accumulate one decoded staging buffer each while another read starts.
-        if (binary != null) binary.complete(value, binary.output)
-        value
+        try {
+            val value = response.getValue("result").jsonObject.getValue("value")
+            if (binary != null) binary.complete(value, binary.output)
+            value
+        } catch (failure: Throwable) {
+            // A malformed binary reply or cancellation while decoding an input-open reply
+            // must release the newly allocated dataset and its isolated file workspace too.
+            withContext(NonCancellable) { closeAllocated(response, failure) }
+            throw failure
+        }
     }
+    }
+    private suspend fun closeAllocated(response: JsonObject, failure: Throwable) {
+        for (id in response["allocatedHandles"]?.jsonArray.orEmpty().asReversed()) {
+            try {
+                val close = buildJsonObject {
+                    put("op", "runtime")
+                    putJsonObject("args") { put("type", "Handle"); put("handle", id); put("method", "close"); putJsonObject("parameters") {} }
+                }
+                val closed = Json.parseToJsonElement(transport.call(close.toString())).jsonObject
+                closed["error"]?.let { throw GdalException(it.jsonPrimitive.content) }
+            } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+        }
     }
 }
 
