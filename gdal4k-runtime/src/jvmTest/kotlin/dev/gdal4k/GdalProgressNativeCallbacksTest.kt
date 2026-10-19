@@ -15,7 +15,7 @@ class GdalProgressNativeCallbacksTest {
         private val bridge = JniBridge()
         private val context: Long
         val callbacks = mutableMapOf<String, MutableList<Long>>()
-        private val operations = setOf("sieveTo", "proximityTo", "fillNoData", "contour", "grid", "viewshed", "overlayTo")
+        private val operations = setOf("sieveTo", "proximityTo", "fillNoData", "contour", "grid", "viewshed", "overlayTo", "footprint", "footprintTo")
         init { loadBundledLibrary(null); context = bridge.create(byteArrayOf(), byteArrayOf()); check(context != 0L) }
         override suspend fun call(request: String, attachment: Any?, control: GdalCallControl?): String {
             val name = Json.parseToJsonElement(request).jsonObject.getValue("args").jsonObject.getValue("method").jsonPrimitive.content.substringBefore('_')
@@ -64,6 +64,20 @@ class GdalProgressNativeCallbacksTest {
         }
         raster(r) { source -> r.openDataset(source.viewshed(ViewshedOptions(8.5, 8.5, curvatureCoefficient = 0.0))).use { assertEquals(16, it.getRasterYSize()) } }
         assertEquals(setOf("grid", "viewshed"), calls.callbacks.keys)
+    } }
+    @Test fun footprintMemoryAndDirectExecuteNativeCallbacks(): Unit = runBlocking { runtime { r, calls ->
+        raster(r) { source ->
+            r.openDataset(source.footprint()).use { ds ->
+                requireNotNull(ds.getLayer(0)).use { assertEquals(1L, it.getFeatureCount(true)) }
+            }
+            val path = datasetOutputPath("footprint-progress.gpkg")
+            try {
+                source.footprintTo(path)
+                r.openDataset(path).use { ds -> requireNotNull(ds.getLayer(0)).use { assertEquals(1L, it.getFeatureCount(true)) } }
+            } finally { requireNotNull(r.getDriver("GPKG")).use { it.delete(path) } }
+            assertEquals(16, source.getRasterXSize())
+        }
+        assertEquals(setOf("footprint", "footprintTo"), calls.callbacks.keys)
     } }
     @Test fun everyLayerOverlayExecutesNativeCallbacks(): Unit = runBlocking { runtime { r, calls ->
         requireNotNull(r.getDriver("MEM")).use { driver -> requireNotNull(driver.createVector("")).use { ds ->

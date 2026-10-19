@@ -149,6 +149,24 @@ interface Dataset {
      */
     suspend fun polygonizeTo(path: String, driver: String = "GPKG", band: Int = 1, mask: Band? = null, layerName: String = "polygons", fieldName: String = "value", arguments: List<String>)
 
+    /** Computes valid-data polygons with GDALFootprint, using band masks/NoData rather
+     * than the rectangular dataset extent. All bands are combined by union unless
+     * -b/-combine_bands select otherwise. Holes and disconnected regions are retained;
+     * -max_points defaults to unlimited, unlike the GDAL CLI's automatic simplification.
+     * Other options: -srcnodata, -ovr, -t_cs, -t_srs, -split_polys, -convex_hull,
+     * -densify, -simplify, -min_ring_area, -dsco and -lco. Geometry units follow GDAL.
+     * Source locations are omitted from attributes, including HTTP URLs/credentials.
+     * Returns independent vector files. Source remains caller-owned. GDAL can still
+     * materialize intermediate geometries; this API does not bound total memory.
+     */
+    suspend fun footprint(driver: String = "GPKG", name: String = "footprint.gpkg", layerName: String = "footprint", arguments: List<String>): GdalFiles
+
+    /** Writes a new OS/Node or browser opfs:/ vector file without copying the complete
+     * output through the bridge. Existing paths are rejected. Partial output/sidecars
+     * after failure or cancellation belong to the caller; input ownership is unchanged.
+     */
+    suspend fun footprintTo(path: String, driver: String = "GPKG", layerName: String = "footprint", arguments: List<String>)
+
     /**
      * Compute terrain derivatives with GDAL DEMProcessing. [processing] is hillshade,
      * slope, aspect, TRI, TPI or roughness (case insensitive). [arguments] are gdaldem

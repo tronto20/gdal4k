@@ -104,6 +104,12 @@
     if(type=="Dataset" && method=="polygonizeTo_String_String_Int_Band_String_String_List_String") {
         return polygonizeDataset(r,h,a,true);
     }
+    if(type=="Dataset" && method=="footprint_String_String_String_List_String") {
+        return footprintDataset(h,a,false);
+    }
+    if(type=="Dataset" && method=="footprintTo_String_String_String_List_String") {
+        return footprintDataset(h,a,true);
+    }
     if(type=="Dataset" && method=="demProcessing_String_String_String_List_String") {
         return demProcessing(h,a,false);
     }
