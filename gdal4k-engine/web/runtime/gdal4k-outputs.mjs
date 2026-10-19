@@ -57,7 +57,9 @@ export class Outputs {
             }
             const id = ++this.sequence; this.handles.set(id, {path, handle, write, shared}); return id;
         } catch (error) {
-            if (!write && (error.name === 'NotFoundError' || error.code === 'ENOENT' || error.code === 'ENOTDIR')) return 0;
+            // Read/update modes never create files. Drivers can probe with r+
+            // before creating an output; absence is a normal miss in either mode.
+            if (mode.startsWith('r') && (error.name === 'NotFoundError' || error.code === 'ENOENT' || error.code === 'ENOTDIR')) return 0;
             this.lastError = error; return 0;
         }
     }

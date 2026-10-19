@@ -46,8 +46,21 @@ try {
         outputs.close(id);
         assert.equal(fs.readFileSync(file, 'utf8'), 'ABCX');
     }
-    assert.equal(await outputs.open(outputs.path(path.join(directory, 'missing.bin')), 'rt'), 0);
-    assert.equal(outputs.lastError, null, 'Missing optional text sidecar is an ordinary miss');
+    const missing = path.join(directory, 'missing.shp');
+    for (const mode of ['rt', 'rb', 'r+t', 'rt+', 'r+b', 'rb+']) {
+        assert.equal(await outputs.open(outputs.path(missing), mode), 0);
+        assert.equal(outputs.lastError, null, `${mode}: a missing read/update probe is an ordinary miss`);
+        assert.equal(fs.existsSync(missing), false, `${mode}: probing must not create a file`);
+    }
+    const created = await outputs.open(outputs.path(missing), 'w+b');
+    assert.ok(created, 'A missing update probe must permit subsequent creation');
+    assert.equal(outputs.write(created, Uint8Array.of(65), 0), 1);
+    outputs.close(created);
+    assert.equal(fs.readFileSync(missing, 'utf8'), 'A');
+    assert.equal(outputs.lastError, null);
+    assert.equal(await outputs.open(outputs.path(path.join(file, 'child.bin')), 'w+b'), 0);
+    assert.equal(outputs.lastError?.code, 'ENOTDIR', 'A genuine creation failure must remain fatal');
+    outputs.lastError = null;
     assert.equal(outputs.handles.size, 0);
     console.log('GDAL4K_NODE_OUTPUT_STDIO_MODES_OK');
 } finally {
