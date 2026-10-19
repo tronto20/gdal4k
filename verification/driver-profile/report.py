@@ -80,7 +80,7 @@ if profile == 'http':
     assert fixture['testSourceSha256'] == sha(snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt')
     records = json.loads((evidence / 'http-requests.json').read_text())
     cache = json.loads((snapshot / 'verification/results/native-http-cache-check.json').read_text())
-    assert cache['result'] == 'passed' and cache['evictionReloadAndRegistryReleaseVerified']
+    assert cache['result'] == 'passed' and cache['vsiDispatchVerified'] and cache['evictionReloadAndRegistryReleaseVerified']
     assert cache['sourceSha256'] == sha(snapshot / 'gdal4k/native/http-cache-probe.cpp')
     assert cache['probeSha256'] == sha(snapshot / f'gdal4k-engine/build/engine/{target}/cmake/gdal4k_http_probe')
     assert 0 < cache['peakCachedBytes'] <= cache['cacheLimitBytes'] == 8388608

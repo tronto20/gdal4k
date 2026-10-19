@@ -7,6 +7,19 @@ int main(int argc, char** argv) {
     try {
         g4k_http::require(argc == 2, "Expected owned fixture URL");
         auto input = g4k_http::mount(argv[1], CPLJSONObject());
+        // Exercise actual GDAL plugin dispatch, including prefix removal, before
+        // the direct cache checks below. Public consumers verify dataset use.
+        const auto path = input->prefix + input->mainName;
+        VSIStatBufL info{};
+        g4k_http::require(VSIStatL(path.c_str(), &info) == 0 && info.st_size > 4 * 1024 * 1024,
+            "HTTP VSI stat callback failed");
+        auto* vsiFile = VSIFOpenL(path.c_str(), "rb");
+        g4k_http::require(vsiFile != nullptr, "HTTP VSI open callback failed");
+        std::vector<unsigned char> header(16);
+        const auto headerBytes = VSIFReadL(header.data(), 1, header.size(), vsiFile);
+        const auto closeResult = VSIFCloseL(vsiFile);
+        g4k_http::require(headerBytes == header.size() && closeResult == 0, "HTTP VSI read or close callback failed");
+        g4k_http::require(VSIFOpenL(path.c_str(), "r+b") == nullptr, "HTTP VSI accepted update access");
         std::vector<unsigned char> original;
         uint64_t checksum = 0;
         size_t peak = 0;
@@ -28,6 +41,7 @@ int main(int argc, char** argv) {
             g4k_http::require(sum == input->cachedBytes && sum <= g4k_http::cacheLimit, "HTTP cache exceeds bound");
             peak = std::max(peak, sum);
         }
+        g4k_http::require(std::equal(header.begin(), header.end(), original.begin()), "HTTP VSI header differs from fixture");
         const bool evicted = std::none_of(input->cache.begin(), input->cache.end(), [](const auto& chunk) { return chunk.name == "cache0.tif" && chunk.offset == 0; });
         g4k_http::require(evicted, "Expected actual LRU eviction after reading three files");
         std::vector<unsigned char> first(g4k_http::chunkSize);
@@ -39,7 +53,7 @@ int main(int argc, char** argv) {
         std::cout << "{\"result\":\"passed\",\"files\":3,\"peakCachedBytes\":" << peak <<
             ",\"cacheLimitBytes\":" << g4k_http::cacheLimit << ",\"chunkLimitBytes\":" << g4k_http::chunkSize <<
             ",\"fileBytes\":" << original.size() << ",\"checksum\":\"" << checksum <<
-            "\",\"evictionReloadAndRegistryReleaseVerified\":true}\n";
+            "\",\"vsiDispatchVerified\":true,\"evictionReloadAndRegistryReleaseVerified\":true}\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

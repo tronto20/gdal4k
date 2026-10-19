@@ -383,10 +383,13 @@ struct Mount {
 };
 struct Input { std::shared_ptr<Mount> mount; std::string name; uint64_t position = 0; bool eof = false, error = false; };
 inline std::pair<std::shared_ptr<Mount>, std::string> locate(const char* path) {
-    const std::string text = path ? path : "";
-    auto slash = text.find('/', std::strlen("/vsigdal4khttp/"));
+    std::string text = path ? path : "";
+    const std::string handler = "/vsigdal4khttp/";
+    // GDAL's plugin dispatcher strips the handler prefix before callbacks.
+    if (text.compare(0, handler.size(), handler) == 0) text.erase(0, handler.size());
+    auto slash = text.find('/');
     if (slash == std::string::npos) return {};
-    const auto prefix = text.substr(0, slash + 1);
+    const auto prefix = handler + text.substr(0, slash + 1);
     std::lock_guard<std::mutex> lock(registryMutex);
     auto found = registry.find(prefix);
     if (found == registry.end()) return {};
