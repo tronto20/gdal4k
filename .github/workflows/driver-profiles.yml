@@ -34,6 +34,8 @@ jobs:
           - { profile: scientific, target: macos-arm64, native: macosArm64, os: macos-15 }
           - { profile: parquet, target: linux-amd64, native: linuxX64, os: ubuntu-24.04 }
           - { profile: parquet, target: macos-arm64, native: macosArm64, os: macos-15 }
+          - { profile: http, target: linux-amd64, native: linuxX64, os: ubuntu-24.04 }
+          - { profile: http, target: macos-arm64, native: macosArm64, os: macos-15 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     env:
@@ -85,6 +87,8 @@ jobs:
             build/driver-profiles/**/inputs.json
             build/driver-profiles/**/source/gdal4k-runtime/build/test-results/
             build/driver-profiles/**/source/verification/results/
+            verification/results/native-http-fixture-*/*-requests.json
+            verification/results/native-http-fixture-*/*.crt
             build/driver-profiles/**/source/verification/tools/vcpkg/buildtrees/*/*.log
             build/driver-profiles/**/source/gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
           if-no-files-found: warn

@@ -471,6 +471,19 @@ This overload uses `dev.gdal4k.runtime.openDataset` on JS/wasmJs. The main URL m
 
 This policy covers direct JS/wasmJs HTTP inputs and related sidecars. Explicit selection is rejected for local/memory/File inputs and default Native/JNI engines, whose optional CURL backend is not supplied. Engine bootstrap and bundled resource loading are separate; no HTTP support is silently claimed for the other targets.
 
+An isolated optional `http` profile is under verification for JVM/JNI and
+Kotlin/Native on Linux x64/macOS ARM64, using separate local/CI Maven coordinates
+and actual engine capability negotiation. Default artifacts retain their current
+dependencies and explicit-policy rejection. Native direct HTTP URLs and sibling
+probes are read-only; each dataset mount caches at most 8 MiB in 64 KiB chunks.
+Deadlines, bounded retry/backoff, strict ranges/identity and cancellation cover
+actual requests. Redirects and URL userinfo are rejected. TLS peer/hostname
+verification stays enabled; `CURL_CA_BUNDLE` or `SSL_CERT_FILE` selects a
+caller-managed CA file. Sibling inference drops main-URL query strings. GDAL
+caches, outputs and multiple dataset mounts remain outside the cache bound.
+See [verification scope](../verification/native-http.md); no runtime availability
+or performance effect is established by compilation alone.
+
 ### Raster array transport and cancellation
 
 `Dataset`/`Band` `readRaster` and `writeRaster`, plus raw `Band.readBlock`/`writeBlock`, keep the same public Kotlin signatures. Bundled JNI, Native, JS and wasmJs engines negotiate a binary raster channel: small JSON metadata and little-endian primitive bytes replace one JSON object/string conversion per sample. Int64 values and floating-point bit patterns do not pass through JavaScript numbers. JNI and Native stage native buffers; the Worker transfers privately owned ArrayBuffers. The caller's arrays remain attached. On little-endian JS hosts, Short/Int/Float/Double arrays use TypedArray byte views and bounded bulk copies rather than per-sample boxed Long arithmetic. Int64 scalar encoding uses two 32-bit words. Kotlin/Wasm GC arrays still require a copy to/from JavaScript storage; this is not a zero-copy API.

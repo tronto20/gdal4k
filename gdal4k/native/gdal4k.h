@@ -17,6 +17,7 @@ typedef struct gdal4k_context gdal4k_context;
 typedef struct gdal4k_control gdal4k_control;
 typedef struct gdal4k_binary_result gdal4k_binary_result;
 G4K_API int gdal4k_binary_version();
+G4K_API int gdal4k_http_input_version();
 G4K_API gdal4k_binary_result *gdal4k_execute_binary(gdal4k_context *, const char *, const unsigned char *, int, gdal4k_control *);
 G4K_API const char *gdal4k_binary_json(const gdal4k_binary_result *);
 G4K_API const unsigned char *gdal4k_binary_data(const gdal4k_binary_result *);

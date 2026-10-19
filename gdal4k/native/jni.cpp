@@ -59,6 +59,7 @@ extern "C" JNIEXPORT void JNICALL Java_dev_gdal4k_JniBridge_controlDestroy(JNIEn
 extern "C" JNIEXPORT void JNICALL Java_dev_gdal4k_JniBridge_destroy(JNIEnv *, jobject, jlong handle) { gdal4k_destroy(reinterpret_cast<gdal4k_context *>(handle)); }
 
 extern "C" JNIEXPORT jint JNICALL Java_dev_gdal4k_JniBridge_binaryVersion(JNIEnv*,jobject) { return gdal4k_binary_version(); }
+extern "C" JNIEXPORT jint JNICALL Java_dev_gdal4k_JniBridge_httpInputVersion(JNIEnv*,jobject) { return gdal4k_http_input_version(); }
 extern "C" JNIEXPORT jobjectArray JNICALL Java_dev_gdal4k_JniBridge_executeBinary(JNIEnv* env,jobject,jlong handle,jbyteArray request,jbyteArray input,jlong control) {
     try {
     const auto text=bytes(env,request); if(env->ExceptionCheck())return nullptr;

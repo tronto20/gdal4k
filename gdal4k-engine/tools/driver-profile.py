@@ -12,6 +12,9 @@ import platform
 import shutil
 import subprocess
 import sys
+import datetime
+import importlib.util
+from contextlib import ExitStack
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = {
@@ -22,6 +25,9 @@ PROFILES = {
                 'targets': ['linux-amd64', 'macos-arm64']},
     'postgresql': {'features': ['postgresql'], 'drivers': ['PostgreSQL'],
                    'targets': ['linux-amd64']},
+    'http': {'features': ['curl'], 'drivers': [],
+             'dependencies': [{'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}],
+             'targets': ['linux-amd64', 'macos-arm64']},
 }
 TARGETS = {'linux-amd64': ('Linux', 'x86_64', 'LinuxX64', 'linux-x64-gnu'),
            'macos-arm64': ('Darwin', 'arm64', 'MacosArm64', 'macos-arm64')}
@@ -44,7 +50,7 @@ def source_files(root):
     return result
 
 
-def prepare(root, profile, target):
+def prepare(root, profile, target, http_fixture=None):
     spec = PROFILES[profile]
     if target not in spec['targets']:
         raise ValueError('Profile has no verified build matrix for this target: ' + target)
@@ -53,6 +59,10 @@ def prepare(root, profile, target):
     version = profile_version(base, profile)
     inventory = source_files(root)
     identity = {'profile': profile, 'target': target, 'version': version, 'sources': inventory}
+    if profile == 'http':
+        if not http_fixture:
+            raise ValueError('HTTP profile requires its owned running HTTP/TLS fixture')
+        identity['httpFixtureUrls'] = http_fixture['urls']
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     output = root / 'build/driver-profiles' / profile / target / digest
     snapshot = output / 'source'
@@ -89,11 +99,24 @@ gradle.taskGraph.whenReady {
 ''')
     fixture = root / 'verification/driver-profile/DriverProfileApiTest.kt'
     test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
-    test.write_text(fixture.read_text().replace('@PROFILE@', profile).replace('@HDF5_PATH@', (snapshot / 'verification/build/driver-profile.h5').as_posix()))
+    replacements = {'@PROFILE@': profile, '@HDF5_PATH@': (snapshot / 'verification/build/driver-profile.h5').as_posix()}
+    if profile == 'http':
+        replacements.update({'@HTTP_BASE@': http_fixture['urls']['http'], '@HTTPS_BASE@': http_fixture['urls']['https'],
+                             '@UNTRUSTED_BASE@': http_fixture['urls']['untrusted'], '@WRONG_NAME_BASE@': http_fixture['urls']['wrong-name']})
+    def replace(text):
+        for key, value in replacements.items(): text = text.replace(key, value)
+        return text
+    test.write_text(replace(fixture.read_text()))
+    http_test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt'
+    if profile == 'http':
+        http_test.write_text(replace((root / 'verification/driver-profile/NativeHttpProfileTest.kt').read_text()))
     consumer = snapshot / 'verification/consumer.py'
     consumer.write_text(consumer.read_text().replace("for test_name in ['DatasetApiTest'", "for test_name in ['DriverProfileApiTest', 'DatasetApiTest'"))
+    if profile == 'http':
+        consumer.write_text(consumer.read_text().replace("'DriverProfileApiTest', 'DatasetApiTest'", "'DriverProfileApiTest', 'NativeHttpProfileTest', 'DatasetApiTest'"))
     prepared = {name: hashlib.sha256((snapshot / name).read_bytes()).hexdigest() for name in inventory}
     prepared[test.relative_to(snapshot).as_posix()] = hashlib.sha256(test.read_bytes()).hexdigest()
+    if profile == 'http': prepared[http_test.relative_to(snapshot).as_posix()] = hashlib.sha256(http_test.read_bytes()).hexdigest()
     (output / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n')
     (output / 'inputs.json').write_text(json.dumps(identity, indent=2) + '\n')
     return snapshot, identity
@@ -105,7 +128,34 @@ def main():
     parser.add_argument('target', choices=TARGETS)
     parser.add_argument('--prepare-only', action='store_true')
     args = parser.parse_args()
-    snapshot, identity = prepare(ROOT, args.profile, args.target)
+    with ExitStack() as stack:
+        http_fixture = None
+        if args.profile == 'http':
+            spec = importlib.util.spec_from_file_location('native_http_fixture', ROOT / 'verification/driver-profile/http-fixture.py')
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            output = ROOT / 'verification/results' / ('native-http-fixture-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+            http_fixture = stack.enter_context(module.fixture(output))
+        snapshot = run_profile(args, http_fixture)
+    if args.profile == 'http' and not args.prepare_only:
+        evidence = snapshot / 'verification/results/native-http-profile'
+        evidence.mkdir(parents=True, exist_ok=False)
+        fixture_root = Path(http_fixture['output'])
+        for file in [*fixture_root.glob('*-requests.json'), *fixture_root.glob('*.crt')]:
+            shutil.copy2(file, evidence / file.name)
+        checksum = 1125899906842597
+        for byte in (fixture_root / 'fixture.tif').read_bytes(): checksum = (checksum * 31 + byte) & ((1 << 64) - 1)
+        (evidence / 'fixture.json').write_text(json.dumps({
+            'urls': http_fixture['urls'], 'imageSha256': hashlib.sha256((fixture_root / 'fixture.tif').read_bytes()).hexdigest(),
+            'imageChecksum': str(checksum),
+            'imageBytes': (fixture_root / 'fixture.tif').stat().st_size,
+            'serverSourceSha256': hashlib.sha256((ROOT / 'verification/driver-profile/http-fixture.py').read_bytes()).hexdigest(),
+            'testSourceSha256': hashlib.sha256((snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt').read_bytes()).hexdigest()
+        }, indent=2) + '\n')
+        subprocess.run([sys.executable, str(ROOT / 'verification/driver-profile/report.py'), str(snapshot), args.profile, args.target], check=True)
+
+
+def run_profile(args, http_fixture):
+    snapshot, identity = prepare(ROOT, args.profile, args.target, http_fixture)
     print(json.dumps({'source': str(snapshot), 'version': identity['version']}), flush=True)
     if args.prepare_only:
         return
@@ -113,6 +163,9 @@ def main():
     if (platform.system(), platform.machine().lower()) != (system, arch):
         raise ValueError('Run the profile on its matching native host; cross builds are not yet verified')
     env = os.environ.copy()
+    if http_fixture:
+        env['CURL_CA_BUNDLE'] = http_fixture['ca']
+        env['NO_PROXY'] = ','.join(filter(None, [env.get('NO_PROXY', ''), '127.0.0.1', 'localhost']))
     for key in ['GDAL4K_BINARY_VERSION', 'VCPKG_ROOT', 'VCPKG_INSTALLED_DIR']:
         env.pop(key, None)
     # Cache downloads/binaries may be explicitly shared; source, install and CMake stay local.
@@ -125,10 +178,30 @@ def main():
     run(gradle, '--console=plain', ':gdal4k:compileKotlin' + native,
         ':gdal4k-runtime:jvmTest', ':gdal4k-runtime:' + native[0].lower() + native[1:] + 'Test')
     run(sys.executable, snapshot / 'verification/audit-engine.py', args.target)
+    if args.profile == 'http':
+        probe = snapshot / 'gdal4k-engine/build/engine' / args.target / 'cmake/gdal4k_http_probe'
+        result = subprocess.run([str(probe), http_fixture['urls']['http'] + '/cache/internal/fixture.tif'],
+                                cwd=snapshot, env=env, text=True, capture_output=True)
+        (snapshot / 'verification/results/native-http-cache-check.log').write_text(result.stdout + result.stderr)
+        if result.returncode:
+            raise RuntimeError('Actual optional producer cache probe failed; inspect verification/results/native-http-cache-check.log')
+        evidence = json.loads(result.stdout)
+        assert evidence['result'] == 'passed' and evidence['peakCachedBytes'] <= 8 * 1024 * 1024
+        evidence.update(probeSha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
+                        sourceSha256=hashlib.sha256((snapshot / 'gdal4k/native/http-cache-probe.cpp').read_bytes()).hexdigest())
+        (snapshot / 'verification/results/native-http-cache-check.json').write_text(json.dumps(evidence, indent=2) + '\n')
     if args.profile == 'parquet':
         run(sys.executable, snapshot / 'verification/driver-profile/arrow-ipc-check.py', snapshot, args.target)
     run(sys.executable, snapshot / 'verification/consumer.py', '--target', 'jvm', '--jvm-binary', classifier)
     run(sys.executable, snapshot / 'verification/consumer.py', '--target', native[0].lower() + native[1:])
+    if args.profile == 'http':
+        library = snapshot / 'gdal4k-engine/build/jvm-resources/gdal4k' / args.target / ('libgdal4k.dylib' if system == 'Darwin' else 'libgdal4k.so')
+        run(sys.executable, snapshot / 'verification/http-memory-report.py', '--library', library,
+            '--manifest', snapshot / 'gdal4k-engine/build/engine' / args.target / 'manifest.json',
+            '--label', 'profile-controlled', '--modes', 'download-local', 'range')
+        # Final request logs are written when the owned servers stop. Reporting is deferred
+        # to main after their context exits, so partial/in-flight evidence cannot pass.
+        return snapshot
     run(sys.executable, ROOT / 'verification/driver-profile/report.py', snapshot, args.profile, args.target)
 
 

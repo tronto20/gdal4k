@@ -1,6 +1,7 @@
 """Check producer integration without invoking a dependency build or fabricating an engine."""
 import argparse
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -19,10 +20,12 @@ class ConfiguredToolsTest(unittest.TestCase):
     def test_native_and_web_configure_use_explicit_tools(self):
         class Configured(Exception):
             pass
-        for target, base in [('macos-arm64', 'arm64-osx'), ('web', 'wasm32-emscripten')]:
+        for target, base, http in [('macos-arm64', 'arm64-osx', False), ('web', 'wasm32-emscripten', False), ('macos-arm64', 'arm64-osx', True)]:
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 binary = root / 'gdal4k-engine'
+                (binary / 'engine').mkdir(parents=True)
+                (binary / 'engine/vcpkg.json').write_text(json.dumps({'dependencies': [{'name': 'gdal', 'features': ['curl'] if http else []}]}))
                 vcpkg = root / 'shared vcpkg'
                 (vcpkg / '.git').mkdir(parents=True)
                 (vcpkg / 'triplets').mkdir()
@@ -48,6 +51,7 @@ class ConfiguredToolsTest(unittest.TestCase):
                 self.assertIn('-DCMAKE_MAKE_PROGRAM=' + ninja, configure)
                 self.assertIn('-G', configure)
                 self.assertIn('Ninja', configure)
+                self.assertIn('-DGDAL4K_ENABLE_HTTP=' + ('ON' if http else 'OFF'), configure)
                 options = [f'--x-buildtrees-root={out/"vcpkg-buildtrees"}', f'--x-packages-root={out/"vcpkg-packages"}']
                 self.assertTrue(all(option in commands[0] for option in options))
                 self.assertIn('-DVCPKG_INSTALL_OPTIONS=' + ';'.join(options), configure)

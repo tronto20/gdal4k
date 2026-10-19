@@ -108,7 +108,7 @@ special('GdalRuntime','getDriver','return r.result(GDALGetDriverByName(a["name"]
 special('GdalRuntime','createSpatialReference','auto s=OSRNewSpatialReference(nullptr); if(a["definition"].IsValid() && OSRSetFromUserInput(s,a["definition"].ToString().c_str())!=OGRERR_NONE) { OSRDestroySpatialReference(s); throw std::runtime_error(CPLGetLastErrorMsg()); } return r.result(s,"SpatialReference",true);')
 special('GdalRuntime','createCoordinateTransformation','return r.result(OCTNewCoordinateTransformation(r.arg(a["source"]),r.arg(a["target"])),"CoordinateTransformation",true);')
 special('GdalRuntime','createGCP','auto p=static_cast<GDAL_GCP*>(CPLCalloc(1,sizeof(GDAL_GCP))); GDALInitGCPs(1,p); p->dfGCPX=a["gcpX"].ToDouble();p->dfGCPY=a["gcpY"].ToDouble();p->dfGCPZ=a["gcpZ"].ToDouble();p->dfGCPPixel=a["gcpPixel"].ToDouble();p->dfGCPLine=a["gcpLine"].ToDouble();CPLFree(p->pszInfo);CPLFree(p->pszId);p->pszInfo=CPLStrdup(a["info"].ToString().c_str());p->pszId=CPLStrdup(a["id"].ToString().c_str());return r.result(p,"GCP",true);')
-special('GdalRuntime','openDataset','if(a["files"].IsValid())return openMemoryDataset(r,a);auto opt=a["options"]; auto flags=GDAL_OF_VERBOSE_ERROR | (opt.GetBool("update")?GDAL_OF_UPDATE:GDAL_OF_READONLY) | opt.GetInteger("kind"); Strings list(opt.GetArray("options")); auto ds=GDALOpenEx(a["source"].ToString().c_str(),flags,nullptr,list.data(),nullptr);if(!ds) throw std::runtime_error(CPLGetLastErrorMsg());return r.result(ds,"Dataset",true);')
+special('GdalRuntime','openDataset','return openDataset(r,a);')
 special('GdalRuntime','datasetInfo','return value(datasetInfo(r.arg(a["dataset"]),a["options"].GetArray("arguments"),false));')
 special('GdalRuntime','drivers','return driverList();')
 OWNED.add(('GdalRuntime','buildVRT'))

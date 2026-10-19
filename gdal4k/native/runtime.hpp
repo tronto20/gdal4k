@@ -21,6 +21,7 @@
 #include <vector>
 #include <atomic>
 #include "binary.hpp"
+#include "http-inputs.hpp"
 
 #include <cstring>
 #include <cctype>
@@ -62,6 +63,10 @@ struct Runtime {
     struct Entry {void* pointer;std::string type;bool owned;unsigned long long parent;};
     std::map<unsigned long long,Entry> handles;
     std::map<unsigned long long,std::string> workspaces;
+    std::map<unsigned long long,std::shared_ptr<g4k_http::Mount>> httpInputs;
+    void beginHttp(gdal4k_control* control) { for (auto& input : httpInputs) input.second->begin(control); }
+    void endHttp() { for (auto& input : httpInputs) input.second->control.store(nullptr); }
+    void checkHttp() { for (auto& input : httpInputs) input.second->check(); }
     // Dataset handle lifetime and native resource lifetime differ for lazy VRT sources.
     std::map<unsigned long long,size_t> datasetLeases;
     std::map<unsigned long long,Entry> deferredDatasets;
@@ -131,6 +136,7 @@ struct Runtime {
     }
     void destroyDataset(unsigned long long id,void* pointer) {
         GDALClose(pointer);
+        httpInputs.erase(id); // Retain HTTP mounts until actual native destruction, including deferred VRT sources.
         auto workspace=workspaces.find(id);
         if(workspace!=workspaces.end()){VSIRmdirRecursive(workspace->second.c_str());workspaces.erase(workspace);}
         releasedDatasets.push_back(id);
@@ -195,6 +201,36 @@ struct Runtime {
     CPLJSONObject execute(const CPLJSONObject& request);
 };
 #include "runtime-files.hpp"
+inline CPLJSONObject openDataset(Runtime& r, const CPLJSONObject& a) {
+    if (a["files"].IsValid()) return openMemoryDataset(r, a);
+    const auto options = a["options"];
+    auto source = a["source"].ToString();
+    const bool directHttp = g4k_http::isUrl(source);
+    const auto policy = options["httpInputPolicy"];
+    const bool explicitPolicy = policy.IsValid() && policy.GetType() != CPLJSONObject::Type::Null;
+#ifndef __EMSCRIPTEN__
+    require(!explicitPolicy || (directHttp && g4k_http::available()), "HTTP input policy requires a direct HTTP(S) URL and an HTTP-enabled engine");
+#endif
+    std::shared_ptr<g4k_http::Mount> input;
+#ifdef GDAL4K_ENABLE_HTTP
+    if (directHttp) {
+        require(!options.GetBool("update"), "HTTP inputs are read-only");
+        input = g4k_http::mount(source, policy);
+        source = input->prefix + input->mainName;
+    }
+#endif
+    const auto flags = GDAL_OF_VERBOSE_ERROR | (options.GetBool("update") ? GDAL_OF_UPDATE : GDAL_OF_READONLY) | options.GetInteger("kind");
+    Strings list(options.GetArray("options"));
+    auto dataset = GDALOpenEx(source.c_str(), flags, nullptr, list.data(), nullptr);
+    try {
+        if (input) input->check();
+        require(dataset != nullptr, CPLGetLastErrorMsg());
+    } catch (...) { if (dataset) GDALClose(dataset); throw; }
+    auto result = r.result(dataset, "Dataset", true);
+    try { if (input) r.httpInputs.emplace(r.next, std::move(input)); }
+    catch (...) { r.close(r.next); throw; }
+    return result;
+}
 struct Arg {
     Runtime& r;CPLJSONObject json;void* pointer=nullptr;bool native=false;
     mutable std::unique_ptr<Strings> list;
