@@ -351,6 +351,15 @@ for cls in TYPES:
             body='coordinateCall(points)'
         elif cls=='FeatureColumnStream' and name=='read':
             body='return columnRead()'
+        elif cls=='MDArray' and name=='read':
+            body='return mdReadRasterCall(start, count)'
+        elif cls=='MDArray' and name=='write':
+            body='return mdWriteRasterCall(start, count, values)'
+        elif cls in ['MDArray','Attribute'] and name=='readValues':
+            body=f'return mdReadValuesCall("{cls}", "{sig}", mapOf({payload}))'
+        elif cls in ['MDArray','Attribute'] and name=='writeValues':
+            payload=', '.join('"'+n+'" to '+kt_arg(n,t) for n,t in params if n!='values')
+            body=f'return mdWriteValuesCall("{cls}", "{sig}", mapOf({payload}), values)'
         elif cls=='GdalRuntime' and name=='writeMemoryFile':
             body='writeMemoryFileCall(path, bytes)'
         elif cls=='GdalRuntime' and name=='readMemoryFile':

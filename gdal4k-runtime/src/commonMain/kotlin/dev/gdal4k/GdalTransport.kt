@@ -10,6 +10,7 @@ internal interface GdalTransport {
     val supportsBinaryRaster: Boolean get() = false
     val supportsBinaryCoordinates: Boolean get() = false
     val supportsBinaryColumns: Boolean get() = false
+    val supportsBinaryMD: Boolean get() = false
     val supportsBinaryFiles: Boolean get() = false
     suspend fun callBinary(request: String, input: ByteArray?, control: GdalCallControl?): GdalBinaryReply = error("Binary raster transport unavailable")
     val supportsHttpInputPolicy: Boolean get() = false

@@ -623,15 +623,15 @@ internal class BundledMDArray(engine: RuntimeEngine, id: String, parent: Runtime
     override suspend fun getFullName(): String { val result = invoke("MDArray", "getFullName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getDimensions(): List<Dimension> { val result = invoke("MDArray", "getDimensions", mapOf()); return result.jsonArray.map { requireNotNull(engine.wrapDimension(it, this)) } }
     override suspend fun getDataType(): Int { val result = invoke("MDArray", "getDataType", mapOf()); return result.jsonPrimitive.int }
-    override suspend fun read(start: LongArray, count: LongArray): DoubleArray { val result = invoke("MDArray", "read_LongArray_LongArray", mapOf("start" to encode(start), "count" to encode(count))); return result.jsonArray.map { it.jsonPrimitive.content.toDouble() }.toDoubleArray() }
-    override suspend fun write(start: LongArray, count: LongArray, values: DoubleArray): Boolean { val result = invoke("MDArray", "write_LongArray_LongArray_DoubleArray", mapOf("start" to encode(start), "count" to encode(count), "values" to encode(values))); return result.jsonPrimitive.boolean }
+    override suspend fun read(start: LongArray, count: LongArray): DoubleArray { return mdReadRasterCall(start, count) }
+    override suspend fun write(start: LongArray, count: LongArray, values: DoubleArray): Boolean { return mdWriteRasterCall(start, count, values) }
     override suspend fun getAttribute(name: String): Attribute? { val result = invoke("MDArray", "getAttribute_String", mapOf("name" to encode(name))); return engine.wrapAttribute(result, this) }
     override suspend fun getAttributes(options: List<String>): List<Attribute> { val result = invoke("MDArray", "getAttributes_List_String", mapOf("options" to encode(options))); return result.jsonArray.map { requireNotNull(engine.wrapAttribute(it, this)) } }
     override suspend fun createAttribute(name: String, dimensions: LongArray, dataType: MDDataType, options: List<String>): Attribute? { val result = invoke("MDArray", "createAttribute_String_LongArray_MDDataType_List_String", mapOf("name" to encode(name), "dimensions" to encode(dimensions), "dataType" to encode(dataType), "options" to encode(options))); return engine.wrapAttribute(result, this) }
     override suspend fun deleteAttribute(name: String, options: List<String>): Boolean { val result = invoke("MDArray", "deleteAttribute_String_List_String", mapOf("name" to encode(name), "options" to encode(options))); return result.jsonPrimitive.boolean }
     override suspend fun getExtendedDataType(): MDDataType { val result = invoke("MDArray", "getExtendedDataType", mapOf()); return decodeMDType(result) }
-    override suspend fun readValues(start: LongArray, count: LongArray): List<MDValue> { val result = invoke("MDArray", "readValues_LongArray_LongArray", mapOf("start" to encode(start), "count" to encode(count))); return result.jsonArray.map(::decodeMDValue) }
-    override suspend fun writeValues(start: LongArray, count: LongArray, values: List<MDValue>): Boolean { val result = invoke("MDArray", "writeValues_LongArray_LongArray_List_MDValue", mapOf("start" to encode(start), "count" to encode(count), "values" to encode(values))); return result.jsonPrimitive.boolean }
+    override suspend fun readValues(start: LongArray, count: LongArray): List<MDValue> { return mdReadValuesCall("MDArray", "readValues_LongArray_LongArray", mapOf("start" to encode(start), "count" to encode(count))) }
+    override suspend fun writeValues(start: LongArray, count: LongArray, values: List<MDValue>): Boolean { return mdWriteValuesCall("MDArray", "writeValues_LongArray_LongArray_List_MDValue", mapOf("start" to encode(start), "count" to encode(count)), values) }
 }
 
 internal class BundledDimension(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Dimension {
@@ -682,8 +682,8 @@ internal class BundledAttribute(engine: RuntimeEngine, id: String, parent: Runti
     override suspend fun getFullName(): String { val result = invoke("Attribute", "getFullName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getDimensions(): LongArray { val result = invoke("Attribute", "getDimensions", mapOf()); return result.jsonArray.map { it.jsonPrimitive.content.toLong() }.toLongArray() }
     override suspend fun getDataType(): MDDataType { val result = invoke("Attribute", "getDataType", mapOf()); return decodeMDType(result) }
-    override suspend fun readValues(): List<MDValue> { val result = invoke("Attribute", "readValues", mapOf()); return result.jsonArray.map(::decodeMDValue) }
-    override suspend fun writeValues(values: List<MDValue>): Boolean { val result = invoke("Attribute", "writeValues_List_MDValue", mapOf("values" to encode(values))); return result.jsonPrimitive.boolean }
+    override suspend fun readValues(): List<MDValue> { return mdReadValuesCall("Attribute", "readValues", mapOf()) }
+    override suspend fun writeValues(values: List<MDValue>): Boolean { return mdWriteValuesCall("Attribute", "writeValues_List_MDValue", mapOf(), values) }
 }
 
 internal class BundledColorTable(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), ColorTable {

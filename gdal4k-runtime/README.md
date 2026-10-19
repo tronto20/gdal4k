@@ -85,7 +85,7 @@ Android는 API 28 이상에서 `arm64-v8a`만 지원합니다. x86_64와 32비�
 
 한 런타임의 GDAL 호출과 종료는 직렬화합니다. 다른 런타임 핸들을 섞으면 실패합니다. 데이터셋을 닫은 뒤 그 밴드·레이어 핸들을 쓰면 실패합니다. `use`의 정리는 취소된 coroutine에서도 실행합니다.
 
-내장 엔진의 래스터 배열은 바이너리 채널을 사용하지만, staging·디코딩 복사는 남아 있어 큰 입력은 window 단위 처리가 유리할 수 있습니다. 메모리 파일·파일 묶음은 별도 바이너리 기능을 협상하며, 다차원 값과 구형 엔진의 JSON 경로는 별도입니다. 응답성 테스트는 GDAL의 JXL 연산이 호출 스레드·웹 이벤트 루프 밖에서 실행되는지 검증합니다.
+내장 엔진의 래스터 배열은 바이너리 채널을 사용하지만, staging·디코딩 복사는 남아 있어 큰 입력은 window 단위 처리가 유리할 수 있습니다. 메모리 파일·파일 묶음은 별도 바이너리 기능을 협상하며, 다차원 수치 값도 별도 바이너리 기능을 협상하며, 문자열·레코드와 구형 엔진의 JSON 경로는 유지합니다. 응답성 테스트는 GDAL의 JXL 연산이 호출 스레드·웹 이벤트 루프 밖에서 실행되는지 검증합니다.
 
 대기 중인 호출은 취소할 수 있습니다. 이미 시작한 GDAL C 호출은 중간에 강제 중단하지 않고 완료한 뒤 핸들/결과를 정리합니다. 따라서 coroutine 취소가 오래 걸리는 GDAL 연산을 즉시 멈추지는 않습니다. 웹 Worker를 강제로 종료해서 데이터셋 상태를 손상시키는 동작도 하지 않습니다.
 
@@ -477,7 +477,7 @@ This policy covers direct JS/wasmJs HTTP inputs and related sidecars. Explicit s
 
 Large buffer preparation and decoding run while holding the runtime operation lock; queued calls do not allocate staging arrays, and concurrent reads do not accumulate decoded buffers outside that lock. Encoding and decoding check coroutine cancellation between bounded chunks and yield to other work. Read data is decoded in private storage and committed to the caller array only after the final cancellation check. The final copy is not interrupted; cancellation racing with that commit may observe a fully updated array. A cancelled or failed read before commit leaves the destination unchanged. Once GDAL starts writing, cancellation does not roll back data, cursor/metadata changes or partial output files. Do not modify input/output arrays concurrently with an operation.
 
-Native calls continue to await real GDAL completion before freeing buffers, controls or input leases. Algorithms with GDAL progress callbacks can stop cooperatively during work. A driver call without such callbacks may finish its current native I/O before cancellation is delivered; no thread or Worker is forcibly terminated. Older dynamic JNI/web engines without the negotiated capability retain the JSON path. Coordinate and column transfers negotiate their own binary capabilities. File buffers use the separately negotiated channel described below; multidimensional/attribute values retain their existing serialization paths.
+Native calls continue to await real GDAL completion before freeing buffers, controls or input leases. Algorithms with GDAL progress callbacks can stop cooperatively during work. A driver call without such callbacks may finish its current native I/O before cancellation is delivered; no thread or Worker is forcibly terminated. Older dynamic JNI/web engines without the negotiated capability retain the JSON path. Coordinate and column transfers negotiate their own binary capabilities. File buffers use the separately negotiated channel described below; multidimensional numeric values negotiate the separate channel described below, with structured and older-engine fallback.
 
 `verification/raster-transport-report.py <engine-target>` summarizes the JVM same-engine JSON/binary comparison (8 MiB Float64 MEM raster, three alternating trials of three write/read roundtrips for Float64 and Byte arrays), cumulative JVM allocation and cancellation observations. Published JS/wasm KLIB verification also measures the raw Worker protocol on Node and Chromium with a 2 MiB Float64 MEM raster. Those Worker measurements exclude Kotlin/Wasm GC interop copies. Timing is reported as evidence, never used as a test pass threshold or a cross-platform performance promise.
 
@@ -556,3 +556,23 @@ ownership on failure/cancellation. Binary buffers are not a streaming or zero-co
 API. [The file transfer report](../verification/file-transfer.md) records controlled
 macOS ARM64 JVM measurements and their limits; it does not establish Native, Web
 or Android performance.
+
+### Multidimensional numeric transfer
+
+Existing `MDArray.read`/`write` Float64 slices negotiate private binary protocol 5
+and transfer little-endian numeric buffers. Existing `readValues`/`writeValues`
+and attribute numeric values use length-prefixed numeric component strings,
+removing per-element JSON objects while preserving the native decimal parser,
+canonical output formatting, exact Int64/UInt64 and complex/nonfinite semantics.
+This is a compact string frame for typed values, not a conversion through Float64.
+Strings and compound records retain their structured JSON path; reads choose that
+fallback in the same native operation. Older engines retain the existing JSON APIs.
+
+Public types/signatures, window/scalar validation and handle lifetime are unchanged.
+Packing and decoding stay inside the runtime operation lock with cancellation
+checkpoints; complete buffers and public value/string allocations remain. A driver
+write already in progress can leave caller-owned partial changes on cancellation.
+The versioned `../verification/md-transfer.md` investigation records the original
+macOS ARM64 JVM baseline; the new implementation still requires actual fresh
+producer/runtime/consumer validation and controlled after measurements. No measured
+improvement, zero-copy or cross-platform performance promise is established yet.
