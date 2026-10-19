@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Verify published Maven artifacts from a fresh, unrelated Kotlin consumer build."""
 import argparse
-import errno
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ENGINE_TARGETS, library_version_from_repo
+from consumer_evidence import preserve_consumer_evidence
 
 ROOT=Path(__file__).resolve().parent.parent
 p=argparse.ArgumentParser()
@@ -142,6 +143,7 @@ kotlin {
 }
 '''
  if target=='jvm':
+  build = 'import java.time.Duration\n' + build
   build += '\nkotlin.sourceSets.named("jvmMain") { dependencies {\n' + ''.join('    runtimeOnly("dev.tronto.gdal4k:gdal4k-engine:'+VERSION+':'+b+'")\n' for b in binaries) + '} }\n'
   build += '''
 val recordJvmRuntime = tasks.register("recordJvmRuntime") {
@@ -159,13 +161,19 @@ val recordJvmRuntime = tasks.register("recordJvmRuntime") {
     }
 }
 tasks.named("jvmTest") { dependsOn(recordJvmRuntime) }
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    // A stuck test worker must fail before the outer CI job kills Python and
+    // discards its temporary test results. This is a functional hang bound.
+    timeout.set(Duration.ofMinutes(8))
+    testLogging { events("started", "passed", "failed", "skipped") }
+}
 '''
  (consumer/'build.gradle.kts').write_text(build)
  (consumer/'gradle.properties').write_text('org.gradle.jvmargs=-Xmx2g\nandroid.useAndroidX=true\n')
  path=consumer/'src/commonTest/kotlin/consumer/PublishedConsumerTest.kt';path.parent.mkdir(parents=True);path.write_text(source, encoding="utf-8")
  if not a.expect_missing_jvm_binary:
   # Exercise the expanded API from published coordinates, not producer project dependencies.
-  for test_name in ['DatasetApiTest', 'AdvancedDatasetApiTest', 'BandApiTest', 'BandStructuresTest', 'MosaicApiTest', 'RasterizeApiTest', 'DemProcessingApiTest', 'PolygonizeApiTest', 'OgrVectorApiTest', 'OgrSchemaApiTest', 'RasterAnalysisApiTest', 'GridViewshedApiTest', 'RasterMathApiTest', 'OgrLayerApiTest', 'GdalProgressApiTest', 'HttpInputPolicyTest', 'BinaryRasterApiTest', 'RasterWindowsApiTest', 'CoordinateArraysApiTest', 'VectorColumnsApiTest', 'FileTransferApiTest', 'MDTransferApiTest']:
+  for test_name in ['DatasetApiTest', 'AdvancedDatasetApiTest', 'BandApiTest', 'BandStructuresTest', 'MosaicApiTest', 'RasterizeApiTest', 'DemProcessingApiTest', 'PolygonizeApiTest', 'FootprintApiTest', 'OgrVectorApiTest', 'OgrSchemaApiTest', 'RasterAnalysisApiTest', 'GridViewshedApiTest', 'RasterMathApiTest', 'OgrLayerApiTest', 'GdalProgressApiTest', 'HttpInputPolicyTest', 'BinaryRasterApiTest', 'RasterWindowsApiTest', 'CoordinateArraysApiTest', 'VectorColumnsApiTest', 'FileTransferApiTest', 'MDTransferApiTest']:
    expanded = (ROOT/f'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/{test_name}.kt').read_text(encoding="utf-8")
    expanded = expanded.replace('package dev.gdal4k\n','package consumer\nimport dev.gdal4k.Gdal4k\n')
    expanded_path = consumer/f'src/commonTest/kotlin/consumer/{test_name}.kt'
@@ -187,6 +195,8 @@ tasks.named("jvmTest") { dependsOn(recordJvmRuntime) }
  # The native consumer must link the archive stored inside its published KLIB.
  platform={'macosArm64':'macos-arm64','linuxX64':'linux-amd64','linuxArm64':'linux-arm64','mingwX64':'windows-amd64','iosArm64':'ios-arm64','iosSimulatorArm64':'ios-simulator-arm64'}.get(target)
  hidden=[]
+ case = '-compile' if target=='android' and a.compile_only else '-missing' if a.expect_missing_jvm_binary and not binaries else '-wrong' if a.expect_missing_jvm_binary else '-multiple' if len(binaries)>1 else ''
+ destination=ROOT/'verification/results'/('published-consumer-'+target+('-browser' if a.browser else '')+case)
  try:
   if platform:
    for original in [ROOT/f'gdal4k-engine/build/engine/{platform}',ROOT/f'gdal4k-engine/build/classes/kotlin/{target}/main/cinterop',ROOT/f'gdal4k-runtime/build/classes/kotlin/{target}/main/cinterop']:
@@ -194,7 +204,10 @@ tasks.named("jvmTest") { dependsOn(recordJvmRuntime) }
      moved=original.with_name(original.name+'-consumer-hidden')
      if moved.exists():raise RuntimeError('Previous hidden producer files must be restored: '+str(moved))
      original.rename(moved);hidden.append((original,moved))
-  run([gradle,'-p',consumer,'--console=plain','--refresh-dependencies',task],cwd=consumer)
+  try:
+   run([gradle,'-p',consumer,'--console=plain','--refresh-dependencies',task],cwd=consumer)
+  finally:
+   preservation=preserve_consumer_evidence(consumer,destination,sys.exc_info()[1])
   runtime_files = []
   runtime_coordinates = []
   if target=='jvm':
@@ -205,33 +218,6 @@ tasks.named("jvmTest") { dependsOn(recordJvmRuntime) }
    actual_payloads = {b for b in JVM_BINARIES if any(name.endswith('-'+b+'.jar') for name in engine_files)}
    if actual_payloads != set(binaries) or len(engine_files) != len(binaries):
     raise RuntimeError(f'Unexpected JVM classifier files: {engine_files}; expected {binaries}')
-  case = '-compile' if target=='android' and a.compile_only else '-missing' if a.expect_missing_jvm_binary and not binaries else '-wrong' if a.expect_missing_jvm_binary else '-multiple' if len(binaries)>1 else ''
-  destination=ROOT/'verification/results'/('published-consumer-'+target+('-browser' if a.browser else '')+case)
-  destination.mkdir(parents=True,exist_ok=True)
-  preservation={'hardlinked_files':0,'copied_files':0}
-  def preserve_completed_file(source, output):
-   """Retain completed own temporary artifacts without duplicating their data blocks.
-
-   No task writes these files again. Removing the temporary directory only unlinks
-   its names; the complete evidence remains. External/symlink sources and filesystems
-   without hard links use the ordinary copy. Never link user SDK/cache files.
-   """
-   source,output=Path(source),Path(output)
-   if output.is_symlink():raise RuntimeError('Refusing symlinked consumer evidence file: '+str(output))
-   if output.exists():output.unlink()
-   if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(consumer.resolve()):
-    preservation['copied_files']+=1
-    return shutil.copy2(source,output)
-   try:
-    os.link(source,output)
-    preservation['hardlinked_files']+=1
-    return str(output)
-   except OSError as failure:
-    if failure.errno not in {errno.EXDEV,errno.EPERM,errno.EACCES,errno.ENOTSUP,errno.EINVAL}:raise
-    preservation['copied_files']+=1
-    return shutil.copy2(source,output)
-  for folder in ['build/test-results','build/outputs/androidTest-results','build/bin']:
-   if (consumer/folder).exists():shutil.copytree(consumer/folder,destination/Path(folder).name,dirs_exist_ok=True,copy_function=preserve_completed_file)
   (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed'},indent=2)+'\n')
  finally:
   for original,moved in reversed(hidden):moved.rename(original)

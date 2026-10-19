@@ -243,6 +243,36 @@ GDAL Python `gdal_polygonize` CLI의 모든 옵션을 파싱하는 API는 아닙
 관리합니다. 연속적인 사진 픽셀보다 분류·마스크 래스터에 적합하며, 복잡한 경계는 많은
 폴리곤과 작업 메모리를 요구할 수 있습니다.
 
+### 유효 데이터 영역 (Footprint)
+
+```kotlin
+runtime.openDataset("image.tif").use { source ->
+    val files = source.footprint("-b", "1", driver = "GeoJSON", name = "valid.geojson")
+    source.footprintTo("valid.gpkg", "-combine_bands", "intersection")
+}
+```
+
+`footprint`는 GDALFootprint로 마스크·NoData를 반영한 유효 영역의 폴리곤을 생성합니다.
+입력의 사각 extent나 픽셀 값별 Polygonize와 구분됩니다. 기본값은 모든 밴드 마스크의
+union, 입력 GeoTransform·CRS, GPKG 출력과 `footprint` 레이어입니다. 구멍과 분리된
+영역을 보존하며 GDAL CLI의 기본 100점 자동 단순화를 적용하지 않습니다
+(`-max_points unlimited`). `-split_polys`는 분리된 폴리곤을 개별 피처로 출력합니다.
+
+`-b`, `-combine_bands union|intersection`, `-srcnodata`, `-ovr`, `-t_cs pixel|georef`,
+`-t_srs`, `-densify`, `-simplify`, `-min_ring_area`, `-max_points`, `-convex_hull`,
+`-dsco`, `-lco`를 지원하며 값과 조합은 GDAL 규칙을 따릅니다. 별도의 Band 인자를
+마스크로 전달하는 대신 입력 밴드의 유효성 마스크를 사용합니다. 옵션으로 단순화·볼록껍질·
+작은 링 제거를 요청하면 원래 경계·구멍이 변경될 수 있습니다. 문자열 옵션으로 출력 경로나
+포맷·레이어명을 덮어쓸 수 없고 `driver`, `name`, `layerName`을 지정합니다.
+입력 경로·서명 URL을 결과 속성에 유출하지 않도록 location 필드는 생성하지 않습니다.
+
+`footprint`는 입력을 닫아도 사용할 수 있는 독립 `GdalFiles`를 반환합니다.
+`footprintTo`는 OS/Node 또는 브라우저 `opfs:/` 경로에 직접 기록하며 전체 결과를
+브리지로 복사하지 않습니다. 기존 파일은 거부하고 입력 핸들은 호출자가 소유합니다.
+실패·취소 후 부분 출력과 sidecar는 호출자가 관리합니다. 진행·취소는 `withGdalProgress`와
+코루틴 취소 정책을 따릅니다. 복잡한 경계는 GDAL 내부 중간 도형을 크게 만들 수 있어
+직접 출력도 전체 메모리 상한이나 스트리밍을 보장하지 않습니다.
+
 ### Terrain derivatives (DEM processing)
 
 `Dataset.demProcessing(processing, driver, name, arguments)` calls GDALDEMProcessing

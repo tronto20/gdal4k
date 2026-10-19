@@ -15,8 +15,8 @@ these are not missing APIs to reimplement.
 | 2 | Vector column transfer | Merged in PR31: scoped GDAL Arrow C stream; controlled JVM measurements and full CI verified |
 | 3 | File I/O copy reduction | Merged in PR32: negotiated binary file buffers, controlled JVM comparison, full exact-HEAD CI and tested HEAD ancestry verified |
 | 4 | Multidimensional numeric transfer | Merged in PR33: protocol 5, controlled same-class JVM comparison, full exact-HEAD CI and tested HEAD main ancestry verified |
-| 5 | JVM/Native HTTP input | Optional CURL profile and bounded-range handler under verification; original download/local-open baseline preserved; actual fresh producer/runtime and controlled range comparison pending |
-| 6 | Valid-data raster footprint | Approved; wrap GDALFootprint with mask/NoData semantics |
+| 5 | JVM/Native HTTP input | Merged in PR34: optional CURL profile, actual Linux/Mac source/published runtime and controlled loopback comparison, full exact-HEAD CI and tested HEAD main ancestry verified; OS RSS increased |
+| 6 | Valid-data raster footprint | GDALFootprint wrapper, mask/NoData polygons, memory/direct output and representative diagnostics under implementation; actual producer/runtime/full CI pending |
 | 7 | Raster tile index | Approved; wrap GDALTileIndex for explicit input locations |
 | 8 | Multidimensional conversion | Approved; wrap GDALMultiDimTranslate with explicit type/shape/loss limits |
 
