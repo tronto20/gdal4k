@@ -489,6 +489,21 @@ This overload uses `dev.gdal4k.runtime.openDataset` on JS/wasmJs. The main URL m
 
 This policy covers direct JS/wasmJs HTTP inputs and related sidecars. Explicit selection is rejected for local/memory/File inputs and default Native/JNI engines, whose optional CURL backend is not supplied. Engine bootstrap and bundled resource loading are separate; no HTTP support is silently claimed for the other targets.
 
+The isolated `http` profile adds a native CURL range handler while retaining the
+default dependency manifest. It is under verification on Linux x64 and macOS
+ARM64 for JVM/JNI and Kotlin/Native source and published consumers. The profile
+uses separate local/CI Maven versions (`0.1.0-http-SNAPSHOT`); it does not replace
+default artifacts or imply a remotely published HTTP package. The actual engine
+negotiates policy support. Native direct HTTP inputs and sibling probes are
+read-only, with a per-dataset 8 MiB cache of 64 KiB chunks, strict range/identity
+checks, per-attempt deadlines, bounded retries and cancellable requests/backoff.
+Redirects and URL userinfo are rejected; signed main-URL query strings are not
+copied to inferred siblings. TLS peer/hostname verification stays enabled, with
+`CURL_CA_BUNDLE` or `SSL_CERT_FILE` for a caller-managed trust file. Local files,
+GDAL's internal cache, output buffers and multiple datasets are outside that
+range-cache bound. See [native HTTP verification](verification/native-http.md)
+for the preserved original baseline and the remaining runtime/evidence gates.
+
 ### Raster array transport and cancellation
 
 `Dataset`/`Band` `readRaster` and `writeRaster`, plus raw `Band.readBlock`/`writeBlock`, keep the same public Kotlin signatures. Bundled JNI, Native, JS and wasmJs engines negotiate a binary raster channel: small JSON metadata and little-endian primitive bytes replace one JSON object/string conversion per sample. Int64 values and floating-point bit patterns do not pass through JavaScript numbers. JNI and Native stage native buffers; the Worker transfers privately owned ArrayBuffers. The caller's arrays remain attached. On little-endian JS hosts, Short/Int/Float/Double arrays use TypedArray byte views and bounded bulk copies rather than per-sample boxed Long arithmetic. Int64 scalar encoding uses two 32-bit words. Kotlin/Wasm GC arrays still require a copy to/from JavaScript storage; this is not a zero-copy API.

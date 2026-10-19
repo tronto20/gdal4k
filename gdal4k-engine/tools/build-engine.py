@@ -125,6 +125,9 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
   notice.write_text('\n\n'.join(f.name+'\n'+f.read_text(errors='replace') for f in sorted(extra.iterdir())))
  build=out/'cmake' 
  cmd=[cmake,'--fresh','-S',ROOT/'gdal4k/native','-B',build,'-G','Ninja',f'-DCMAKE_MAKE_PROGRAM={ninja}',f'-DCMAKE_TOOLCHAIN_FILE={vcpkg/"scripts/buildsystems/vcpkg.cmake"}',f'-DVCPKG_INSTALLED_DIR={installed}',f'-DVCPKG_TARGET_TRIPLET={triplet}',f'-DVCPKG_OVERLAY_TRIPLETS={triplets}',f'-DVCPKG_OVERLAY_PORTS={BINARY/"ports"}',f'-DVCPKG_MANIFEST_DIR={BINARY/"engine"}','-DVCPKG_INSTALL_OPTIONS='+';'.join(work_options),'-DCMAKE_BUILD_TYPE=Release']
+ manifest=json.loads((BINARY/'engine/vcpkg.json').read_text())
+ gdal=next(value for value in manifest['dependencies'] if isinstance(value,dict) and value.get('name')=='gdal')
+ cmd+=['-DGDAL4K_ENABLE_HTTP='+('ON' if 'curl' in gdal.get('features',[]) else 'OFF')]
  if target.startswith(('linux','windows')):cmd += [f'-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE={chain}']
  if target=='web':
   emsdk=Path(os.environ['EMSDK'])
@@ -159,6 +162,13 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
   print('Bundled static closure: '+', '.join(f.name for f in archives),flush=True)
   # Consumers link system libraries with their own target toolchain.
   system_options=list(dict.fromkeys(t for t in arguments if re.fullmatch(r'-l[\w.+-]+',t)))
+  # Keep each Apple framework pair together: downstream .distinct() must not
+  # discard the second '-framework'. These are system frameworks, not archives.
+  for index,token in enumerate(arguments):
+   framework=arguments[index+1] if token=='-framework' and index+1<len(arguments) else token[len('-framework '):] if token.startswith('-framework ') else None
+   if framework and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]+',framework) and framework.lower()!='tiff':
+    option='-framework '+framework
+    if option not in system_options:system_options.append(option)
   if target.startswith('windows'):
    # K/N supplies static winpthread with --whole-archive. Re-adding its dynamic
    # import library before that runtime produces duplicate pthread definitions.

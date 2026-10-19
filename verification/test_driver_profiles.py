@@ -19,6 +19,7 @@ class ProfileIsolationTest(unittest.TestCase):
                      'gdal4k-engine/engine/vcpkg.json': json.dumps({'dependencies': [{'name': 'gdal', 'default-features': False, 'features': ['geos']}]}),
                      'verification/consumer.py': "for test_name in ['DatasetApiTest']: pass\n",
                      'verification/driver-profile/DriverProfileApiTest.kt': '@PROFILE@ @HDF5_PATH@',
+                     'verification/driver-profile/NativeHttpProfileTest.kt': '@HTTP_BASE@ @HTTPS_BASE@ @UNTRUSTED_BASE@ @WRONG_NAME_BASE@',
                      'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/Existing.kt': '// API test\n',
                      '.gitignore': 'build/\n'}
             for name, text in files.items():
@@ -28,6 +29,15 @@ class ProfileIsolationTest(unittest.TestCase):
             before = {name: (root / name).read_bytes() for name in files}
             scientific, data = module.prepare(root, 'scientific', 'linux-amd64')
             parquet, other = module.prepare(root, 'parquet', 'linux-amd64')
+            fixture = {'urls': {'http': 'http://127.0.0.1:10001', 'https': 'https://127.0.0.1:10002',
+                                'untrusted': 'https://127.0.0.1:10003', 'wrong-name': 'https://127.0.0.1:10004'}}
+            http, http_identity = module.prepare(root, 'http', 'linux-amd64', fixture)
+            http_manifest = json.loads((http / 'gdal4k-engine/engine/vcpkg.json').read_text())
+            self.assertEqual(['curl', 'geos'], http_manifest['dependencies'][0]['features'])
+            self.assertIn({'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}, http_manifest['dependencies'])
+            self.assertEqual(fixture['urls'], http_identity['httpFixtureUrls'])
+            self.assertNotIn('@HTTP_BASE@', (http / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt').read_text())
+            self.assertIn("'NativeHttpProfileTest'", (http / 'verification/consumer.py').read_text())
             self.assertNotEqual(scientific, parquet)
             self.assertEqual('0.1.0-scientific-SNAPSHOT', data['version'])
             self.assertNotEqual(data['version'], other['version'])

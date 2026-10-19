@@ -12,6 +12,7 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     val handle = gdal4k_create(options.projData, options.gdalData) ?: error("Unable to initialize GDAL")
     object : GdalTransport {
         private val binaryVersion = gdal4k_binary_version()
+        override val supportsHttpInputPolicy = gdal4k_http_input_version() == 1
         override val supportsBinaryRaster = binaryVersion in 1..5
         override val supportsBinaryCoordinates = binaryVersion in 2..5
         override val supportsBinaryColumns = binaryVersion in 3..5

@@ -180,7 +180,7 @@ internal open class RuntimeHandle(val engine: RuntimeEngine, private val id: Str
             put("kind", when(value.kind) { DatasetKind.Any -> 0; DatasetKind.Raster -> 2; DatasetKind.Vector -> 4; DatasetKind.Multidimensional -> 16 })
             put("options", encode(value.openOptions))
             value.httpInputPolicy?.let { policy ->
-                require(engine.supportsHttpInputPolicy) { "HTTP input policy requires the JS/wasmJs HTTP backend; Native/JNI support is not provided by the default engine" }
+                require(engine.supportsHttpInputPolicy) { "HTTP input policy requires an HTTP-enabled engine (JS/wasmJs or the optional native HTTP profile)" }
                 putJsonObject("httpInputPolicy") {
                     put("requestTimeoutMillis", policy.requestTimeoutMillis); put("maxRetries", policy.maxRetries)
                     put("retryDelayMillis", policy.retryDelayMillis); put("maxRetryDelayMillis", policy.maxRetryDelayMillis)

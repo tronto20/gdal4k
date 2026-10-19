@@ -1,0 +1,8 @@
+// Compile-only API check for the isolated profile templates. Do not execute these
+// placeholder-URL tests or select an older native library to validate new C++.
+gradle.projectsEvaluated {
+    def target = gradle.rootProject.findProject(':gdal4k-runtime')
+    if (target == null) return
+    target.extensions.getByName('kotlin').sourceSets.getByName('jvmTest').kotlin.srcDir(
+        new File(gradle.rootProject.projectDir, 'verification/driver-profile'))
+}

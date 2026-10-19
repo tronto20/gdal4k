@@ -72,3 +72,48 @@ proof of strict identity/range semantics. Default engines retain explicit policy
 rejection. Actual profile engines, platform support, TLS, failure paths, leases,
 independent consumers and final controlled download/range measurements remain to
 be implemented and verified. This decision adds no CURL dependency to defaults.
+
+## Implementation under verification
+
+The optional profile adds GDAL's `curl` feature and explicit CURL `ssl`/`c-ares`
+features in its own manifest/prefix/version. Normal producer configuration turns
+the adapter on only for that manifest. Default Native/JNI engines return HTTP
+capability zero; old JNI engines without the new symbol also reject explicit
+selection. Web mounting and its policy checks remain in the existing Worker.
+
+The native plugin performs strict ranged requests through libcurl's multi API,
+checks cancellation during requests and backoff, and bounds headers, accepted
+response bodies and a per-mount LRU. It validates response status, range, size,
+encoding, length and selected validator before accepting bytes; identity errors
+poison subsequent provider reads, including cached chunks. GDAL's separate block
+cache can still return previously read pixels. Errors contain fixed diagnostics,
+not source URLs. Redirects and URL userinfo are rejected. Peer/hostname TLS
+verification remains enabled; child-process CA configuration is explicit.
+
+HTTP mounts follow actual native dataset destruction and transitive VRT source
+leases. Callback failures ignored by a driver still fail the enclosing operation
+and close newly allocated handles. Existing caller-owned direct output partials
+are not rolled back. Sources are retained until native work finishes; cancellation
+does not kill threads or free an in-flight CURL handle from another thread.
+
+Ten profile-only public cases are compiled into source JVM/Native tests and both
+independent consumers. They use an owned HTTP/TLS server with recorded actual
+requests and cover bounded windows/VRT leases, PAM/missing sidecars, retry/auth,
+full/truncated/misencoded/mis-sized responses, redirects, poisoned identity/size,
+strong/weak/missing validators, trusted/untrusted/hostname TLS, deadlines, actual
+in-flight/backoff cancellation and read-only/userinfo rejection. The profile also
+runs three fresh download/range JVM pairs with identical final classes and the
+same actual profile engine. Test definitions are not evidence of execution.
+An additional CMake-built, source-fingerprinted native probe reads three related
+files through the real range handler, checks their complete bytes/checksum,
+observes cache eviction/reload under the 8 MiB bound and confirms registry release.
+It supplements the public consumers rather than establishing packaged API support.
+
+Local compile-only JVM template validation and the 38 offline checks passed.
+The new header passes syntax checking with the local SDK CURL headers; a full
+syntax-only check against non-pinned system GDAL 3.13 stops on that version's
+existing `GDALGetMetadata` const-signature difference. No system GDAL was linked
+or executed, and no production source was changed to accommodate that mismatch.
+These checks establish neither pinned GDAL 3.12.4 runtime behavior nor performance.
+Fresh normal Gradle current CI producers and full actual verification remain
+mandatory; the preserved MD engine is used only by the frozen original baseline.

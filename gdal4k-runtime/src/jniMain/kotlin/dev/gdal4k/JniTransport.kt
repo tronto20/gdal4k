@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 
 internal class JniBridge {
     external fun binaryVersion(): Int
+    external fun httpInputVersion(): Int
     external fun executeBinary(handle: Long, request: ByteArray, input: ByteArray?, control: Long): Array<ByteArray>
     external fun create(proj: ByteArray, data: ByteArray): Long
     external fun execute(handle: Long, request: ByteArray): ByteArray
@@ -27,6 +28,7 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     check(handle != 0L) { "Unable to initialize GDAL" }
     object : GdalTransport {
         private val binaryVersion = try { bridge.binaryVersion() } catch (_: UnsatisfiedLinkError) { 0 }
+        override val supportsHttpInputPolicy = try { bridge.httpInputVersion() == 1 } catch (_: UnsatisfiedLinkError) { false }
         override val supportsBinaryRaster = binaryVersion in 1..5
         override val supportsBinaryCoordinates = binaryVersion in 2..5
         override val supportsBinaryColumns = binaryVersion in 3..5

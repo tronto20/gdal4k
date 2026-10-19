@@ -12,6 +12,9 @@ class DriverProfileApiTest {
     @Test fun requiredDriversAndRealDataRoundTrip() = runTest(timeout = 120.seconds) {
         val r = Gdal4k.runtime()
         when (profile) {
+            "http" -> r.openDataset("@HTTP_BASE@/required/$datasetOutputPrefix/fixture.tif", DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(requireStrongETag = true))).use {
+                assertEquals(2048, it.getRasterXSize()); assertEquals(2048, it.getRasterYSize())
+            }
             "scientific" -> {
                 requireNotNull(r.getDriver("HDF5")).use { assertEquals("HDF5", it.getShortName()) }
                 r.openDataset("HDF5:\"@HDF5_PATH@\"://values").use {

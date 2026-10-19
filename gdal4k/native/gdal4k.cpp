@@ -91,6 +91,7 @@ extern "C" char *gdal4k_execute_controlled(gdal4k_context *ctx, const char *requ
         explicit ProgressScope(gdal4k_control* value) : previous(g4k::activeProgress) { g4k::activeProgress = value; }
         ~ProgressScope() { g4k::activeProgress = previous; }
     } progressScope(control);
+    ctx->runtime.beginHttp(control);
     try {
         g4k::require(g4k::progress(0, "", control), "GDAL operation cancelled");
         response.Add("result", execute(*ctx, parse(request)));
@@ -98,6 +99,16 @@ extern "C" char *gdal4k_execute_controlled(gdal4k_context *ctx, const char *requ
     }
     catch (const std::exception &e) { response.Add("error", e.what()); }
     catch (...) { response.Add("error", "Unknown GDAL error"); }
+    try { ctx->runtime.checkHttp(); }
+    catch (const std::exception& error) {
+        // Drivers may ignore sidecar/stat/read errors. Never return a partial success or leak
+        // handles allocated by an operation whose HTTP callback failed.
+        response.Delete("error"); response.Add("error", error.what());
+        std::vector<unsigned long long> allocated;
+        for (const auto& entry : ctx->runtime.handles) if (entry.first > firstHandle) allocated.push_back(entry.first);
+        for (auto id : allocated) ctx->runtime.close(id);
+    }
+    ctx->runtime.endHttp();
     CPLJSONArray released;
     for(auto id:ctx->runtime.releasedDatasets)released.Add(std::to_string(id));
     response.Add("releasedDatasets",released);
@@ -136,6 +147,7 @@ struct gdal4k_binary_result {
     ~gdal4k_binary_result() { gdal4k_free(json); }
 };
 extern "C" int gdal4k_binary_version() { return 5; }
+extern "C" int gdal4k_http_input_version() { return g4k_http::available() ? 1 : 0; }
 extern "C" gdal4k_binary_result* gdal4k_execute_binary(gdal4k_context* context,const char* request,const unsigned char* input,int size,gdal4k_control* control) {
     try {
         auto result=std::make_unique<gdal4k_binary_result>();
