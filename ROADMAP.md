@@ -13,8 +13,8 @@ these are not missing APIs to reimplement.
 | --- | --- | --- |
 | 1 | Coordinate array transfer | Merged in PR29; tested HEAD confirmed in main |
 | 2 | Vector column transfer | Merged in PR31: scoped GDAL Arrow C stream; controlled JVM measurements and full CI verified |
-| 3 | File I/O copy reduction | Implemented: negotiated binary file buffers, controlled JVM comparison and 2,038 local tests passed; exact-HEAD CI/merge pending |
-| 4 | Multidimensional numeric transfer | Approved; optimize existing MDArray/MDValue APIs |
+| 3 | File I/O copy reduction | Merged in PR32: negotiated binary file buffers, controlled JVM comparison, full exact-HEAD CI and tested HEAD ancestry verified |
+| 4 | Multidimensional numeric transfer | Investigation: existing MDArray/MDValue/attribute serialization, versioned baseline probe; no runtime changes or measured improvement yet |
 | 5 | JVM/Native HTTP input | Approved; extend existing web policies and compare actual bounded ranges |
 | 6 | Valid-data raster footprint | Approved; wrap GDALFootprint with mask/NoData semantics |
 | 7 | Raster tile index | Approved; wrap GDALTileIndex for explicit input locations |
