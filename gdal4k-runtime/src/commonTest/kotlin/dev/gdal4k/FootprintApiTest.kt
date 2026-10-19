@@ -152,9 +152,11 @@ class FootprintApiTest {
         vrt.use { source ->
             assertFailsWith<CancellationException> { withGdalProgress({ false }) { source.footprint() } }
             val callbackFailure = IllegalStateException("footprint callback")
-            assertSame(callbackFailure, assertFailsWith<IllegalStateException> {
+            val error = assertFailsWith<IllegalStateException> {
                 withGdalProgress({ throw callbackFailure }) { source.footprint() }
-            })
+            }
+            // Coroutine stack-trace recovery may copy JVM exceptions while retaining the original cause.
+            assertTrue(error === callbackFailure || error.cause === callbackFailure)
             val files = source.footprint()
             assertTrue(area(files) > 0.0)
             assertEquals(256, source.getRasterXSize())
