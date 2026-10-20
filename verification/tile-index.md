@@ -67,3 +67,22 @@ GdalFiles buffers, source metadata and GDAL intermediate geometries remain. Ther
 streaming, zero-copy, total-memory bound, pixel mosaic or universal/Native/Web/Android
 performance claim. Local template compilation is separate from actual pinned producer/runtime
 verification. Current actual runtime, diagnostics and complete exact-HEAD CI remain pending.
+# Windows CI diagnostics
+
+The original PR36 Windows job reached the four-hour job limit during the combined
+test/consumer step. Its job log and Windows XML/artifacts were unavailable. This
+establishes a timeout, not a particular failing test or a transient runner cause.
+
+The Windows verification path now records each child command, its raw combined
+output, start/end times and exit/timeout status under `verification/results/ci-commands-mingwX64`.
+Each command has a 60-minute deadline. The independent consumer uses an inner
+59-minute deadline so its existing `finally` blocks can preserve partial XML and
+restore the hidden producer paths before the outer deadline. Only the command's
+owned process tree is terminated. Single-use Gradle daemons and individual test
+events make the retained log useful for locating a stall.
+
+The Windows test/consumer step is bounded at 180 minutes inside the existing
+240-minute job to reserve time for `always()` evidence uploads. These are
+diagnostic limits, not a runtime performance measurement or a fix for an
+established GDAL defect. Logs can still be lost if the hosted runner itself
+becomes unavailable. A new commit requires its own full CI and evidence checks.

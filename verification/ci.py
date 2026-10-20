@@ -11,6 +11,7 @@ import tarfile
 from pathlib import Path
 from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ANDROID_ENGINE, ENGINE_COORDINATES, ENGINE_TARGETS
+from command_evidence import run_with_evidence
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT/'gdal4k-engine/build'
@@ -19,12 +20,18 @@ GRADLE = ROOT/('gradlew.bat' if os.name == 'nt' else 'gradlew')
 PLATFORMS = {'macosArm64':'macos-arm64','linuxX64':'linux-amd64',
  'linuxArm64':'linux-arm64','mingwX64':'windows-amd64','iosArm64':'ios-arm64',
  'iosSimulatorArm64':'ios-simulator-arm64'}
+COMMAND_TIMEOUT = None
+COMMAND_EVIDENCE = None
 
 def run(*args):
-    subprocess.run([str(x) for x in args], cwd=ROOT, check=True)
+    if COMMAND_TIMEOUT is not None:
+        run_with_evidence(args, cwd=ROOT, directory=COMMAND_EVIDENCE, timeout=COMMAND_TIMEOUT)
+    else:
+        subprocess.run([str(x) for x in args], cwd=ROOT, check=True)
 
 def gradle(*tasks, options=()):
-    run(GRADLE, '--console=plain', f'-Dmaven.repo.local={REPO}', *options, *tasks)
+    diagnostic_options = ['--no-daemon', '--init-script', ROOT/'verification/ci-diagnostics.init.gradle'] if COMMAND_TIMEOUT is not None else []
+    run(GRADLE, '--console=plain', *diagnostic_options, f'-Dmaven.repo.local={REPO}', *options, *tasks)
 
 def publish(target):
     title=target[0].upper()+target[1:]
@@ -33,7 +40,10 @@ def publish(target):
     gradle(*(f':{m}:publish{p}PublicationToMavenLocal' for m in modules for p in ['KotlinMultiplatform',title]))
 
 def consumer(target, *options):
-    run(sys.executable, ROOT/'verification/consumer.py', '--target', target, '--no-publish', '--repo', REPO, *options)
+    # Let the consumer's finally blocks retain XML and restore hidden producer
+    # paths before the outer command deadline terminates its Python process.
+    diagnostic_options = ['--command-timeout-seconds', max(1, COMMAND_TIMEOUT - 60)] if COMMAND_TIMEOUT is not None else []
+    run(sys.executable, ROOT/'verification/consumer.py', '--target', target, '--no-publish', '--repo', REPO, *diagnostic_options, *options)
 
 def stage(name, platforms=(), targets=(), include_root=False, include_tests=False):
     """Only portable outputs; no producer installations, SDKs or build caches."""
@@ -61,10 +71,17 @@ def stage(name, platforms=(), targets=(), include_root=False, include_tests=Fals
     print('Staged '+str(output),flush=True)
 
 def main():
+    global COMMAND_TIMEOUT, COMMAND_EVIDENCE
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('target', choices=[*PLATFORMS,'web','android-arm64-v8a','aggregate','linuxArm64-run'])
     p.add_argument('--build-engine-only',action='store_true',help='Build the native engine before starting a simulator or running Kotlin tests')
+    p.add_argument('--command-timeout-seconds', type=int,
+                   help='Bound each child command and retain output under verification/results/ci-commands-TARGET')
     p.add_argument('--ios-device');a=p.parse_args();target=a.target
+    if a.command_timeout_seconds is not None:
+        if a.command_timeout_seconds <= 0:p.error('--command-timeout-seconds must be positive')
+        COMMAND_TIMEOUT = a.command_timeout_seconds
+        COMMAND_EVIDENCE = ROOT / f'verification/results/ci-commands-{target}'
     if a.build_engine_only and target not in PLATFORMS:p.error('--build-engine-only requires a Native target')
     if target in PLATFORMS:
         gradle(f':gdal4k:compileKotlin{target[0].upper()+target[1:]}') # initialize matching K/N toolchain

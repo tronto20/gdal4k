@@ -11,10 +11,12 @@ from pathlib import Path
 from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ENGINE_TARGETS, library_version_from_repo
 from consumer_evidence import preserve_consumer_evidence
+from command_evidence import run_with_evidence
 
 ROOT=Path(__file__).resolve().parent.parent
 p=argparse.ArgumentParser()
 p.add_argument('--target', required=True, choices=['jvm','js','wasmJs','macosArm64','linuxX64','linuxArm64','mingwX64','iosArm64','iosSimulatorArm64','android'])
+p.add_argument('--command-timeout-seconds', type=int, help='Bound the consumer Gradle command and retain its output and XML on timeout')
 p.add_argument('--repo',type=Path,default=ROOT/'verification/build/consumer-maven')
 p.add_argument('--no-publish',action='store_true')
 p.add_argument('--compile-only',action='store_true',help='Link Native tests or compile Android device tests without running them')
@@ -23,6 +25,7 @@ p.add_argument('--ios-device')
 p.add_argument('--jvm-binary', action='append', choices=JVM_BINARIES, help='Explicit payload; repeat to verify a multi-OS application')
 p.add_argument('--expect-missing-jvm-binary', action='store_true', help='Verify actionable failure in a fresh JVM without the host payload')
 a=p.parse_args()
+if a.command_timeout_seconds is not None and a.command_timeout_seconds <= 0:p.error('--command-timeout-seconds must be positive')
 if (a.jvm_binary or a.expect_missing_jvm_binary) and a.target != 'jvm': p.error('JVM binary options require --target jvm')
 binaries = a.jvm_binary or ([] if a.expect_missing_jvm_binary or a.target != 'jvm' else [host_binary()])
 if a.expect_missing_jvm_binary and host_binary() in binaries: p.error('The missing-binary test cannot include the host payload')
@@ -210,7 +213,12 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
      if moved.exists():raise RuntimeError('Previous hidden producer files must be restored: '+str(moved))
      original.rename(moved);hidden.append((original,moved))
   try:
-   run([gradle,'-p',consumer,'--console=plain','--refresh-dependencies',task],cwd=consumer)
+   diagnostic_options = ['--no-daemon', '--init-script', ROOT/'verification/ci-diagnostics.init.gradle'] if a.command_timeout_seconds is not None else []
+   command = [gradle,'-p',consumer,'--console=plain',*diagnostic_options,'--refresh-dependencies',task]
+   if a.command_timeout_seconds is not None:
+    run_with_evidence(command, cwd=consumer, directory=destination/'commands', timeout=a.command_timeout_seconds)
+   else:
+    run(command,cwd=consumer)
   finally:
    preservation=preserve_consumer_evidence(consumer,destination,sys.exc_info()[1])
   runtime_files = []
