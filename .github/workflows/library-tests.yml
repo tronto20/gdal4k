@@ -191,7 +191,7 @@ jobs:
             verification/results/http-inputs-*/
             verification/results/binary-transport-*/
             verification/results/js-codec-benchmark-*.json
-            verification/results/related-inputs/
+            verification/results/related-inputs-*/
             gdal4k-engine/build/engine/*/vcpkg-buildtrees/*/*.log
 
   android:
