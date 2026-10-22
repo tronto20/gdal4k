@@ -49,6 +49,7 @@ def kt_result(typ,expr,parent):
     elif t=='RasterHistogram':out=f'{expr}.jsonObject.let {{ RasterHistogram(it.getValue("minimum").jsonPrimitive.content.toDouble(), it.getValue("maximum").jsonPrimitive.content.toDouble(), it.getValue("counts").jsonArray.map {{ n -> n.jsonPrimitive.content.toLong() }}.toLongArray()) }}'
     elif t=='ColorEntry':out=f'{expr}.jsonArray.let {{ ColorEntry(it[0].jsonPrimitive.int, it[1].jsonPrimitive.int, it[2].jsonPrimitive.int, it[3].jsonPrimitive.int) }}'
     elif t=='MDDataType':out=f'decodeMDType({expr})'
+    elif t=='MDValue':out=f'decodeMDValue({expr})'
     elif t=='FieldDomainBound':out=f'decodeDomainBound({expr})'
     elif t=='List<CodedFieldValue>':out=f'{expr}.jsonArray.map(::decodeCodedValue)'
     elif t=='List<MDValue>':out=f'{expr}.jsonArray.map(::decodeMDValue)'
@@ -115,7 +116,7 @@ OWNED.add(('GdalRuntime','buildVRT'))
 special('GdalRuntime','buildVRT','return buildVirtualDataset(r,a);')
 special('GdalRuntime','warp','return warpDatasets(r,a,false);')
 special('GdalRuntime','warpTo','return warpDatasets(r,a,true);')
-PARENT_OWNED={('Dataset','getRootGroup'),('Group','openGroup'),('Group','openArray'),('Group','createGroup'),('Group','createDimension'),('Group','createArray')}
+PARENT_OWNED={('Dataset','getRootGroup'),('Group','getDimensions'),('Group','openGroup'),('Group','openArray'),('Group','createGroup'),('Group','createDimension'),('Group','createArray')}
 OWNED.update({('Driver','createMultidimensional'),('GdalRuntime','createGlobFieldDomain'),('GdalRuntime','createRelationship'),('Dataset','getFieldDomain'),('Dataset','getRelationship')})
 PREFIX.update({'Group':'GDALGroup','Dimension':'GDALDimension','MDArray':'GDALMDArray','FieldDomain':'OGR_FldDomain_','Relationship':'GDALRelationship'})
 special('Driver','createMultidimensional','Strings root(a.GetArray("rootOptions")),opts(a.GetArray("options"));return r.result(GDALCreateMultiDimensional(h,a["name"].ToString().c_str(),root.data(),opts.data()),"Dataset",true);')
@@ -137,11 +138,15 @@ for method in ['getLeftTableFields','getRightTableFields']:
     special('Relationship',method,'auto p=GDALRelationship'+method[0].upper()+method[1:]+'(h);auto out=strings(p);CSLDestroy(p);return out;')
 for method,fn in [('getGroupNames','GDALGroupGetGroupNames'),('getArrayNames','GDALGroupGetMDArrayNames')]:
     special('Group',method,f'Strings opts(a.GetArray("options"));auto p={fn}(h,opts.data());auto out=strings(p);CSLDestroy(p);return out;')
+special('Group','getDimensions','Strings opts(a.GetArray("options"));size_t n=0;auto dims=GDALGroupGetDimensions(h,&n,opts.data());CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);')
 for method,fn,typ in [('openGroup','GDALGroupOpenGroup','Group'),('openArray','GDALGroupOpenMDArray','MDArray'),('createGroup','GDALGroupCreateGroup','Group')]:
     special('Group',method,f'Strings opts(a.GetArray("options"));return r.result({fn}(h,a["name"].ToString().c_str(),opts.data()),"{typ}",true,id);')
 special('Group','createDimension','auto size=a.GetLong("size");require(size>0,"Dimension size must be positive");Strings opts(a.GetArray("options"));return r.result(GDALGroupCreateDimension(h,a["name"].ToString().c_str(),a["type"].ToString().c_str(),a["direction"].ToString().c_str(),size,opts.data()),"Dimension",true,id);')
 special('Group','createArray','std::vector<GDALDimensionH> dims;for(auto d:a.GetArray("dimensions"))dims.push_back(static_cast<GDALDimensionH>(r.arg(d)));auto type=static_cast<GDALDataType>(a.GetInteger("dataType"));require(type>GDT_Unknown&&type<GDT_TypeCount,"Invalid numeric data type");auto edt=GDALExtendedDataTypeCreate(type);Strings opts(a.GetArray("options"));auto array=GDALGroupCreateMDArray(h,a["name"].ToString().c_str(),dims.size(),dims.data(),edt,opts.data());GDALExtendedDataTypeRelease(edt);return r.result(array,"MDArray",true,id);')
 special('Dimension','getSize','auto size=GDALDimensionGetSize(h);require(size<=INT64_MAX,"Dimension size exceeds Kotlin Long");return value(std::to_string(size));')
+PARENT_OWNED.add(('Dimension','getIndexingVariable'))
+special('Dimension','getIndexingVariable','return r.result(GDALDimensionGetIndexingVariable(h),"MDArray",true,id);')
+special('Dimension','setIndexingVariable','auto v=a["array"];return value(GDALDimensionSetIndexingVariable(h,v.GetType()==CPLJSONObject::Type::Null?nullptr:static_cast<GDALMDArrayH>(r.arg(v)))!=0);')
 special('MDArray','getDimensions','size_t n=0;auto dims=GDALMDArrayGetDimensions(h,&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);')
 special('MDArray','getDataType','auto type=GDALMDArrayGetDataType(h);auto numeric=GDALExtendedDataTypeGetClass(type)==GEDTC_NUMERIC?GDALExtendedDataTypeGetNumericDataType(type):GDT_Unknown;GDALExtendedDataTypeRelease(type);return value(numeric);')
 special('MDArray','read','return mdRaster(h,a,false);')
@@ -152,6 +157,13 @@ PREFIX['Attribute']='GDALAttribute'
 OWNED.update({('GdalRuntime','createCodedFieldDomain'),('GdalRuntime','createRangeFieldDomain')})
 special('Group','createArray_String_List_Dimension_MDDataType_List_String','return createExtendedArray(r,h,a,id);')
 special('MDArray','getExtendedDataType','return extendedTypeResult(GDALMDArrayGetDataType(h));')
+special('MDArray','getNoDataValue','return mdNoDataValue(h,a,false);')
+special('MDArray','setNoDataValue','return mdNoDataValue(h,a,true);')
+special('MDArray','getUnit','return value(GDALMDArrayGetUnit(h));')
+special('MDArray','setUnit','auto unit=a["unit"].ToString();require(unit.find(\'\\0\')==std::string::npos,"NUL in multidimensional unit");return value(GDALMDArraySetUnit(h,unit.c_str())!=0);')
+for name in ['Scale','Offset']:
+    special('MDArray','get'+name,f'int present=0;auto n=GDALMDArrayGet{name}(h,&present);return present?value(n):nullValue();')
+    special('MDArray','set'+name,f'return value(GDALMDArraySet{name}(h,CPLAtof(a["{name.lower()}"].ToString().c_str()))!=0);')
 for op in ['readValues','writeValues']:
     special('MDArray',op,'return mdValues(h,a,'+str(op=='writeValues').lower()+');')
 for owner in ['Group','MDArray']:
@@ -196,6 +208,9 @@ special('Dataset','executeSQL','auto filter=a["spatialFilter"];auto dialect=a["d
 
 special('Dataset','info','return value(datasetInfo(h,a.GetArray("arguments"),true));')
 special('Dataset','translate','return convertDataset(h,a,"translate");')
+OWNED.add(('Dataset','multiDimTranslate'))
+for name,mode in [('multiDimTranslate',0),('multiDimTranslateFiles',1),('multiDimTranslateTo',2)]:
+    special('Dataset',name,f'return multiDimTranslateDataset(r,h,a,{mode});')
 special('Dataset','warp','return convertDataset(h,a,"warp");')
 special('Dataset','translateVector','return convertDataset(h,a,"vector");')
 special('Dataset','demProcessing','return demProcessing(h,a,false);')

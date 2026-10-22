@@ -121,6 +121,38 @@ interface GdalRuntime {
  * Shared dataset handle. Platform-specific implementations will wrap the native dataset object.
  */
 interface Dataset {
+    /** Converts multidimensional arrays/groups with GDALMultiDimTranslate into an owned MEM
+     * dataset. The result is materialized and remains usable after the input is closed.
+     * An empty option list copies the full tree. Explicit array/group selection, transpose,
+     * index views, coordinate subsets and positive integer scale-axis steps follow GDAL syntax.
+     * Selectors require a reopenable file-backed input; anonymous MEM selection is rejected.
+     * Numeric coordinate subsets use GDAL's Float64 comparison domain. Int64/UInt64 and complex
+     * coordinate arrays are rejected for value-based subsets, even when individual values fit;
+     * use an index view instead. String coordinates use lexicographic selection. Output-format
+     * overrides, resampling and type coercion are rejected.
+     * A single -group lifts that group's contents/attributes into the output root and ignores
+     * dstname; repeated -group selections create named output groups. Attributes on an unselected
+     * source root are excluded by group selection, following pinned GDAL semantics.
+     * Source files and any VRT dependencies must remain readable until this call completes.
+     */
+    suspend fun multiDimTranslate(arguments: List<String>): Dataset
+
+    /** Converts to complete independent output buffers. The initial GTiff path accepts a
+     * single numeric 2D array without attributes or unsupported metadata; representation losses
+     * fail explicitly. Multidimensional hierarchy/coordinate metadata are not silently discarded.
+     * Use multiDimTranslate for a full in-memory multidimensional result, and the direct variant
+     * for large file outputs. Driver creation options use repeated -co KEY=VALUE arguments.
+     */
+    suspend fun multiDimTranslateFiles(driver: String = "GTiff", name: String = "converted.tif", arguments: List<String>): GdalFiles
+
+    /** Writes directly to an OS/Node file or browser opfs:/ path. Existing output is rejected.
+     * Source remains caller-owned; partial files and sidecars after failure/cancellation are
+     * caller-owned. GTiff follows multiDimTranslateFiles restrictions. The optional scientific
+     * profile also permits netCDF NC4 output to real OS paths; netCDF is not accepted by the
+     * buffer-returning variant or /vsimem/ output. Driver availability requires the profile.
+     */
+    suspend fun multiDimTranslateTo(path: String, driver: String = "GTiff", arguments: List<String>)
+
     /** Interpolates vector points using GDALGrid utility arguments, e.g. -a, -zfield,
      * -txe/-tye, -outsize, -ot and -co. CRS assignment and layer/filter/cursor handling
      * follow GDAL; -a_srs assigns output CRS without transforming coordinates.

@@ -17,8 +17,14 @@ these are not missing APIs to reimplement.
 | 4 | Multidimensional numeric transfer | Merged in PR33: protocol 5, controlled same-class JVM comparison, full exact-HEAD CI and tested HEAD main ancestry verified |
 | 5 | JVM/Native HTTP input | Merged in PR34: optional CURL profile, actual Linux/Mac source/published runtime and controlled loopback comparison, full exact-HEAD CI and tested HEAD main ancestry verified; OS RSS increased |
 | 6 | Valid-data raster footprint | Merged in PR35: valid-mask/NoData polygons, holes, memory/direct outputs, actual source/published runtime and functional diagnostics; full exact-HEAD CI and tested HEAD main ancestry verified |
-| 7 | Raster tile index | GDALTileIndex for explicit raster files and vector extent/location index under implementation; current producer/runtime/full CI pending |
-| 8 | Multidimensional conversion | Approved; wrap GDALMultiDimTranslate with explicit type/shape/loss limits |
+| 7 | Raster tile index | Merged in PR36: explicit affine extent/location index, full current source/published runtime and diagnostics; exact-HEAD primary13/profiles7 and tested HEAD main ancestry verified |
+| 8 | Multidimensional conversion | In implementation: GDALMultiDimTranslate, explicit selection/type/shape/metadata loss limits, MEM/GTiff and scientific OS NC4 coverage; current producer/runtime/full CI pending |
+
+These eight workstreams are milestones toward the broader [full GDAL support goal](GDAL_SUPPORT.md),
+not its completion definition. JVM on its four current OS/ABIs is the first support priority;
+coverage on the other existing targets follows with actual platform execution evidence.
+Isolated optional driver profiles do not establish a combined JVM distribution or complete
+GDAL API/driver support.
 
 Performance claims require identical-input/environment speed, cumulative allocation and OS peak
 RSS diagnostics with raw logs/hashes. Functional additions require correctness/error/lifetime

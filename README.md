@@ -2,6 +2,11 @@
 
 GDAL 3.12.4를 내장한 Kotlin Multiplatform 라이브러리입니다. JVM, Android, Kotlin/Native, JS, wasmJs에서 같은 `suspend` API를 사용합니다. GDAL 설치, 데이터 디렉터리 지정, 웹 엔진 CDN 설정은 필요하지 않습니다. WASI는 제외합니다.
 
+목표는 현재 지원하는 모든 플랫폼에서 고정 GDAL의 전체 기능을 사용할 수 있게 하는 것입니다.
+첫 번째 지원·검증 우선순위는 JVM의 네 OS/ABI입니다. 현재 API나 아래 개선 작업의 완료가
+전체 GDAL 지원 완료를 뜻하지는 않습니다. 지원 범위와 실제 실행 증거의 기준은
+[GDAL 지원 목표](GDAL_SUPPORT.md)에 정리합니다.
+
 JVM 기본 의존성에는 바이너리가 없습니다. 아래 플랫폼 좌표 중 필요한 것만 명시적으로 추가합니다. 선택한 JAR에 GDAL·JXL·PROJ 데이터가 포함되므로 별도 설치나 경로 설정은 필요하지 않습니다.
 
 Android는 API 28 이상, `arm64-v8a`만 지원합니다. Android x86/x86_64와 32비트 ARM은 지원하지 않습니다.
@@ -311,6 +316,51 @@ OS/Node 파일 또는 브라우저 `opfs:/` 경로이며, 실패·취소 후 부
 입력 파일도 호출자 소유입니다. 진행·취소는 `withGdalProgress`를 사용합니다. 직접 출력도
 GDAL 중간 도형과 사전 검증 비용이 있으며 스트리밍·전체 메모리 상한을 보장하지 않습니다.
 검증 범위와 기능 진단은 [tile-index.md](verification/tile-index.md)에 기록합니다.
+
+### 다차원 변환
+
+`Dataset.multiDimTranslate`는 고정 GDAL 3.12.4의 GDALMultiDimTranslate로 배열·그룹을
+선택하고 차원을 자르거나 재배열한 독립 MEM 데이터셋을 반환합니다. 입력을 닫은 뒤에도
+결과를 사용할 수 있으며 결과는 `use`로 닫습니다.
+
+```kotlin
+val selection = listOf("-array", "name=cube,dstname=selected,transpose=[0,2,1],view=[1,:,:]")
+runtime.openDataset("cube.vrt", DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { source ->
+    source.multiDimTranslate(selection).use { converted ->
+        // (time, y, x)를 (time, x, y)로 재배열한 뒤 time=1을 선택: 결과는 (x, y).
+    }
+    val files = source.multiDimTranslateFiles(driver = "GTiff", name = "converted.tif", arguments = selection)
+    source.multiDimTranslateTo("converted.tif", driver = "GTiff", arguments = selection)
+}
+```
+
+허용 옵션은 `-array`의 이름·출력 이름·`transpose`·`view`, `-group`의 이름·출력 이름·
+재귀 여부, 좌표 기반 `-subset`, 간격을 건너뛰는 `-scaleaxes`입니다. GDAL은 `transpose`를
+`view`보다 먼저 적용합니다. 숫자 좌표 subset은 GDAL의 Float64 비교 영역을 사용합니다.
+현재 Int64/UInt64·복소수 좌표 배열의 값 기반 subset은 개별 값의 크기와 관계없이 거부합니다.
+문자열 좌표는 날짜 문자열을 포함해 GDAL의 사전식 순서로 선택합니다. 좌표 indexing variable이
+없으면 값 기반 subset은 실패합니다. 정확한 Int64/UInt64 값 자체를 읽거나 index view로
+선택하는 API와 구분합니다.
+타입 변환·자동 scale·보간·덮어쓰기 옵션은 받지 않습니다. 선택 옵션에 필요한 GDAL의
+재열기를 위해 입력은 이름이 있는 파일이어야 하며, 익명 MEM 입력에는 전체 복사를 사용합니다.
+원본 파일과 명시적인 VRT 의존 파일은 호출이 끝날 때까지 호출자가 보존합니다.
+
+메모리 결과는 배열의 타입·형상·정확한 Int64/UInt64·문자열·복합 값과 속성·NoData·
+단위·scale/offset·차원 indexing variable을 보존하는지 검증합니다. 값을 Float64 배열로
+확인하면 정밀도를 잃을 수 있으므로 wide integer·복소수에는 `readValues`를 사용합니다.
+검증은 변환과 메모리 비용에 포함되며 결과가 동등한지 검사할 뿐 전체 메모리 상한을 보장하지 않습니다.
+
+파일 결과의 기본 형식 GTiff는 속성과 indexing variable이 없는 단일 2차원 숫자 배열만
+허용합니다. 표현할 수 없는 구조·메타데이터·값을 조용히 버리지 않습니다. netCDF 출력은
+선택 scientific profile과 실제 OS 경로의 NC4 형식으로 제한하며 `/vsimem/` 버퍼 출력은
+지원하지 않습니다. 현재 형식별 보존·거부 정책과 검증 상태는
+[md-translate.md](verification/md-translate.md)에 기록합니다. 다른 플랫폼의 HDF5/netCDF
+쓰기 지원을 추정하지 않습니다.
+
+`multiDimTranslateFiles`는 전체 파일·sidecar 버퍼를 반환하고 직접 출력의 부분 파일은
+실패·취소 후에도 호출자가 관리합니다. Web 입력은 같은 runtime에 명시적으로 올린 파일을
+사용하며 외부 파일·HTTP 의존성을 자동으로 마운트하지 않습니다. 진행·취소는
+`withGdalProgress`를 사용합니다. 스트리밍·zero-copy·보편적인 속도 향상 주장은 하지 않습니다.
 
 ### Terrain derivatives (DEM processing)
 

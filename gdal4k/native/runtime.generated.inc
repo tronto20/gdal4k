@@ -86,6 +86,15 @@
     if(type=="GdalRuntime" && method=="datasetInfo_Dataset_DatasetInfoOptions") {
         return value(datasetInfo(r.arg(a["dataset"]),a["options"].GetArray("arguments"),false));
     }
+    if(type=="Dataset" && method=="multiDimTranslate_List_String") {
+        return multiDimTranslateDataset(r,h,a,0);
+    }
+    if(type=="Dataset" && method=="multiDimTranslateFiles_String_String_List_String") {
+        return multiDimTranslateDataset(r,h,a,1);
+    }
+    if(type=="Dataset" && method=="multiDimTranslateTo_String_String_List_String") {
+        return multiDimTranslateDataset(r,h,a,2);
+    }
     if(type=="Dataset" && method=="grid_String_String_List_String") {
         return gridViewshedDataset(h,a,"grid",false);
     }
@@ -1652,6 +1661,9 @@
     if(type=="Group" && method=="getArrayNames_List_String") {
         Strings opts(a.GetArray("options"));auto p=GDALGroupGetMDArrayNames(static_cast<GDALGroupH>(h),opts.data());auto out=strings(p);CSLDestroy(p);return out;
     }
+    if(type=="Group" && method=="getDimensions_List_String") {
+        Strings opts(a.GetArray("options"));size_t n=0;auto dims=GDALGroupGetDimensions(static_cast<GDALGroupH>(h),&n,opts.data());CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);
+    }
     if(type=="Group" && method=="openGroup_String_List_String") {
         Strings opts(a.GetArray("options"));return r.result(GDALGroupOpenGroup(static_cast<GDALGroupH>(h),a["name"].ToString().c_str(),opts.data()),"Group",true,id);
     }
@@ -1690,6 +1702,30 @@
     }
     if(type=="MDArray" && method=="getDimensions") {
         size_t n=0;auto dims=GDALMDArrayGetDimensions(static_cast<GDALMDArrayH>(h),&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);
+    }
+    if(type=="MDArray" && method=="getNoDataValue") {
+        return mdNoDataValue(static_cast<GDALMDArrayH>(h),a,false);
+    }
+    if(type=="MDArray" && method=="setNoDataValue_MDValue") {
+        return mdNoDataValue(static_cast<GDALMDArrayH>(h),a,true);
+    }
+    if(type=="MDArray" && method=="getUnit") {
+        return value(GDALMDArrayGetUnit(static_cast<GDALMDArrayH>(h)));
+    }
+    if(type=="MDArray" && method=="setUnit_String") {
+        auto unit=a["unit"].ToString();require(unit.find('\0')==std::string::npos,"NUL in multidimensional unit");return value(GDALMDArraySetUnit(static_cast<GDALMDArrayH>(h),unit.c_str())!=0);
+    }
+    if(type=="MDArray" && method=="getScale") {
+        int present=0;auto n=GDALMDArrayGetScale(static_cast<GDALMDArrayH>(h),&present);return present?value(n):nullValue();
+    }
+    if(type=="MDArray" && method=="getOffset") {
+        int present=0;auto n=GDALMDArrayGetOffset(static_cast<GDALMDArrayH>(h),&present);return present?value(n):nullValue();
+    }
+    if(type=="MDArray" && method=="setScale_Double") {
+        return value(GDALMDArraySetScale(static_cast<GDALMDArrayH>(h),CPLAtof(a["scale"].ToString().c_str()))!=0);
+    }
+    if(type=="MDArray" && method=="setOffset_Double") {
+        return value(GDALMDArraySetOffset(static_cast<GDALMDArrayH>(h),CPLAtof(a["offset"].ToString().c_str()))!=0);
     }
     if(type=="MDArray" && method=="getDataType") {
         auto type=GDALMDArrayGetDataType(static_cast<GDALMDArrayH>(h));auto numeric=GDALExtendedDataTypeGetClass(type)==GEDTC_NUMERIC?GDALExtendedDataTypeGetNumericDataType(type):GDT_Unknown;GDALExtendedDataTypeRelease(type);return value(numeric);
@@ -1735,6 +1771,12 @@
     }
     if(type=="Dimension" && method=="getSize") {
         auto size=GDALDimensionGetSize(static_cast<GDALDimensionH>(h));require(size<=INT64_MAX,"Dimension size exceeds Kotlin Long");return value(std::to_string(size));
+    }
+    if(type=="Dimension" && method=="getIndexingVariable") {
+        return r.result(GDALDimensionGetIndexingVariable(static_cast<GDALDimensionH>(h)),"MDArray",true,id);
+    }
+    if(type=="Dimension" && method=="setIndexingVariable_MDArray") {
+        auto v=a["array"];return value(GDALDimensionSetIndexingVariable(static_cast<GDALDimensionH>(h),v.GetType()==CPLJSONObject::Type::Null?nullptr:static_cast<GDALMDArrayH>(r.arg(v)))!=0);
     }
     if(type=="FieldDomain" && method=="getName") {
         auto out=apply(OGR_FldDomain_GetName, Arg(r,h));return value(out);

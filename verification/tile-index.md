@@ -65,8 +65,10 @@ hashes. CI uploads the raw probe class files as well. Cumulative allocation, sam
 These are functional diagnostics, not a before/after improvement comparison. Complete
 GdalFiles buffers, source metadata and GDAL intermediate geometries remain. There is no
 streaming, zero-copy, total-memory bound, pixel mosaic or universal/Native/Web/Android
-performance claim. Local template compilation is separate from actual pinned producer/runtime
-verification. Current actual runtime, diagnostics and complete exact-HEAD CI remain pending.
+performance claim. PR36 merged after the exact-HEAD primary 13 jobs, seven optional profile
+jobs, actual source/published runtime and artifact/diagnostic checks passed, with the tested
+HEAD confirmed in fetched main. Local template compilation remains separate from that actual
+pinned producer/runtime evidence; later changes require their own verification.
 # Windows CI diagnostics
 
 The original PR36 Windows job reached the four-hour job limit during the combined

@@ -33,6 +33,7 @@
 
 namespace g4k {
 inline void require(bool ok,const char* message) { if(!ok) throw std::runtime_error(message); }
+inline void require(bool ok,const std::string& message) { if(!ok) throw std::runtime_error(message); }
 inline CPLJSONObject nullValue() { CPLJSONObject o; o.AddNull("value");return o; }
 inline CPLJSONObject value(const char* v) { if(!v)return nullValue();CPLJSONObject o;o.Add("value",v);return o; }
 inline CPLJSONObject value(const std::string& v) { return value(v.c_str()); }
@@ -365,6 +366,7 @@ inline CPLJSONObject mdRaster(GDALMDArrayH h,const CPLJSONObject& a,bool write) 
     require(ok!=0,"Multidimensional read failed");if(activeBinary){binaryOutput(data.data(),data.size());return value(static_cast<int>(n));}return numbers(data.data(),data.size());
 }
 #include "runtime-md.hpp"
+#include "runtime-md-metadata.hpp"
 #include "runtime-band.hpp"
 #include "runtime-band-structures.hpp"
 #include "runtime-schema.hpp"

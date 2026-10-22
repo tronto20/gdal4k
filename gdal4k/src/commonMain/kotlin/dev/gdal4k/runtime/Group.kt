@@ -7,6 +7,12 @@ interface Group {
     suspend fun getFullName(): String
     suspend fun getGroupNames(options: List<String> = emptyList()): List<String>
     suspend fun getArrayNames(options: List<String> = emptyList()): List<String>
+    /**
+     * Dimensions registered with this group according to the driver. Array-local axes may appear
+     * only in [MDArray.getDimensions], so an empty group list does not imply that its arrays are scalar.
+     * Close each returned handle; it cannot outlive this group. Options are driver specific.
+     */
+    suspend fun getDimensions(options: List<String> = emptyList()): List<Dimension>
     suspend fun openGroup(name: String, options: List<String> = emptyList()): Group?
     suspend fun openArray(name: String, options: List<String> = emptyList()): MDArray?
     suspend fun createGroup(name: String, options: List<String> = emptyList()): Group?

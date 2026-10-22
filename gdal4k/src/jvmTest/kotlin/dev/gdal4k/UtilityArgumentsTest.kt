@@ -17,9 +17,9 @@ class UtilityArgumentsTest {
     ) { _, method, args ->
         calls += Call(method.name, args!!.dropLast(1)) // suspend continuation is not an API argument
         when (method.name) {
-            "buildVRT" -> dataset
+            "buildVRT", "multiDimTranslate" -> dataset
             "info" -> "{}"
-            "warpTo", "translateTo", "translateVectorTo", "rasterizeTo", "demProcessingTo", "tileIndexTo" -> Unit
+            "warpTo", "translateTo", "translateVectorTo", "rasterizeTo", "demProcessingTo", "tileIndexTo", "multiDimTranslateTo" -> Unit
             else -> files
         }
     })
@@ -96,6 +96,26 @@ class UtilityArgumentsTest {
         val args = arrayOf("-compute_edges", "-s", "1")
         dataset.demProcessing("slope", arguments = args)
         assertEquals(Call("demProcessing", listOf("slope", "GTiff", "terrain.tif", args.asList())), calls.single())
+    }
+
+    @Test fun multidimensionalConversionOptionsAndNamedOutputSettings() = runBlocking {
+        val options = arrayOf("-array", "name=cube,transpose=[1,0],dstname=selected")
+        assertSame(dataset, dataset.multiDimTranslate(*options))
+        assertSame(files, dataset.multiDimTranslateFiles(*options, driver = "GTiff", name = "slice.tif"))
+        dataset.multiDimTranslateTo("out.tif", *options, driver = "GTiff")
+        assertEquals(listOf(
+            Call("multiDimTranslate", listOf(options.asList())),
+            Call("multiDimTranslateFiles", listOf("GTiff", "slice.tif", options.asList())),
+            Call("multiDimTranslateTo", listOf("out.tif", "GTiff", options.asList())),
+        ), calls)
+        calls.clear()
+        dataset.multiDimTranslate()
+        dataset.multiDimTranslateFiles()
+        dataset.multiDimTranslateTo("converted.tif")
+        assertTrue(calls.all { it.values.last() == emptyList<String>() })
+        val list = options.asList()
+        dataset.multiDimTranslate(arguments = list)
+        assertSame(list, calls.last().values.single())
     }
 
     @Test fun tileIndexExplicitLocationsAndNamedSettings() = runBlocking {

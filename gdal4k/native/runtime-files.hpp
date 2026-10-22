@@ -353,3 +353,5 @@ inline CPLJSONObject warpDatasets(Runtime& r,const CPLJSONObject& a,bool direct)
     Directory output;auto name=a.GetString("name");fileBasename(name);
     warpDatasetPath(r,a,output.path+"/"+name);return outputFiles(output,name);
 }
+
+#include "runtime-md-translate.hpp"

@@ -176,7 +176,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
  path=consumer/'src/commonTest/kotlin/consumer/PublishedConsumerTest.kt';path.parent.mkdir(parents=True);path.write_text(source, encoding="utf-8")
  if not a.expect_missing_jvm_binary:
   # Exercise the expanded API from published coordinates, not producer project dependencies.
-  for test_name in ['DatasetApiTest', 'AdvancedDatasetApiTest', 'BandApiTest', 'BandStructuresTest', 'MosaicApiTest', 'RasterizeApiTest', 'DemProcessingApiTest', 'PolygonizeApiTest', 'FootprintApiTest', 'TileIndexApiTest', 'OgrVectorApiTest', 'OgrSchemaApiTest', 'RasterAnalysisApiTest', 'GridViewshedApiTest', 'RasterMathApiTest', 'OgrLayerApiTest', 'GdalProgressApiTest', 'HttpInputPolicyTest', 'BinaryRasterApiTest', 'RasterWindowsApiTest', 'CoordinateArraysApiTest', 'VectorColumnsApiTest', 'FileTransferApiTest', 'MDTransferApiTest']:
+  for test_name in ['DatasetApiTest', 'AdvancedDatasetApiTest', 'BandApiTest', 'BandStructuresTest', 'MosaicApiTest', 'RasterizeApiTest', 'DemProcessingApiTest', 'PolygonizeApiTest', 'FootprintApiTest', 'TileIndexApiTest', 'MultiDimTranslateApiTest', 'OgrVectorApiTest', 'OgrSchemaApiTest', 'RasterAnalysisApiTest', 'GridViewshedApiTest', 'RasterMathApiTest', 'OgrLayerApiTest', 'GdalProgressApiTest', 'HttpInputPolicyTest', 'BinaryRasterApiTest', 'RasterWindowsApiTest', 'CoordinateArraysApiTest', 'VectorColumnsApiTest', 'FileTransferApiTest', 'MDTransferApiTest']:
    expanded = (ROOT/f'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/{test_name}.kt').read_text(encoding="utf-8")
    expanded = expanded.replace('package dev.gdal4k\n','package consumer\nimport dev.gdal4k.Gdal4k\n')
    expanded_path = consumer/f'src/commonTest/kotlin/consumer/{test_name}.kt'
@@ -187,6 +187,9 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
    local_destination = consumer/'src/jvmTest/kotlin/consumer/TileIndexLocalPathsTest.kt'
    local_destination.parent.mkdir(parents=True, exist_ok=True)
    local_destination.write_text(local_paths.replace('package dev.gdal4k\n', 'package consumer\nimport dev.gdal4k.Gdal4k\n'), encoding='utf-8')
+   md_paths = (ROOT/'gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/MultiDimTranslateLocalPathsTest.kt').read_text(encoding='utf-8')
+   md_destination = consumer/'src/jvmTest/kotlin/consumer/MultiDimTranslateLocalPathsTest.kt'
+   md_destination.write_text(md_paths.replace('package dev.gdal4k\n', 'package consumer\nimport dev.gdal4k.Gdal4k\n'), encoding='utf-8')
   platform_path = ROOT/f'gdal4k-runtime/src/{test_set}/kotlin/dev/gdal4k/DatasetOutputPath.kt'
   actual_set = test_set if target in ['android','jvm','js','wasmJs'] else target+'Test'
   actual_path = consumer/f'src/{actual_set}/kotlin/consumer/DatasetOutputPath.kt'
