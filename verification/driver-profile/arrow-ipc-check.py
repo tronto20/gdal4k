@@ -8,6 +8,25 @@ import shlex
 import subprocess
 import sys
 
+
+def compiler_linker_options(options):
+    """Expand Native's grouped framework pairs for a compiler's argv contract."""
+    assert isinstance(options, list) and all(
+        isinstance(option, str) and option and '\0' not in option for option in options
+    ), 'Invalid Native linker options'
+    arguments = []
+    for option in options:
+        if option.startswith('-framework'):
+            framework = re.fullmatch(r'-framework ([A-Za-z][A-Za-z0-9_]+)', option)
+            assert framework, 'Invalid grouped framework option'
+            # Keep repeated -framework tokens and preserve other options verbatim,
+            # including paths containing spaces. These are argv, not shell input.
+            arguments.extend(['-framework', framework.group(1)])
+        else:
+            arguments.append(option)
+    return arguments
+
+
 def compiler_from_cmake(cache, directory):
     """A toolchain may set a normal CMake variable instead of a cache entry."""
     cached = cache.get('CMAKE_CXX_COMPILER')
@@ -41,8 +60,7 @@ def main():
     include = engine / 'installed' / ('gdal4k-' + target) / 'include'
     archive = engine / 'libgdal4k.a'
     assert source.is_file() and archive.is_file() and (include / 'arrow/ipc/api.h').is_file()
-    options = json.loads((engine / 'native-linker-options.json').read_text())
-    assert all(isinstance(flag, str) and '\0' not in flag for flag in options)
+    options = compiler_linker_options(json.loads((engine / 'native-linker-options.json').read_text()))
     flags = shlex.split(cache.get('CMAKE_CXX_FLAGS', '')) + shlex.split(cache.get('CMAKE_CXX_FLAGS_RELEASE', ''))
     link = shlex.split(cache.get('CMAKE_EXE_LINKER_FLAGS', ''))
     if target.startswith('linux'):
