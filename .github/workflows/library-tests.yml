@@ -25,6 +25,7 @@ jobs:
           python -m unittest discover -s verification -p test_publish.py
           python -m unittest discover -s verification -p test_consumer_evidence.py
           python -m unittest discover -s verification -p test_command_evidence.py
+          python -m unittest discover -s verification -p test_embed_data.py
   native:
     name: Native ${{ matrix.target }}
     strategy:
@@ -72,6 +73,7 @@ jobs:
         timeout-minutes: ${{ matrix.target == 'mingwX64' && 180 || 240 }}
         run: |
           if [ '${{ matrix.target }}' = mingwX64 ]; then
+            python -m unittest discover -s verification -p test_embed_data.py
             python -m unittest discover -s verification -p test_command_evidence.py
             python verification/ci.py mingwX64 --command-timeout-seconds 3600
           else
