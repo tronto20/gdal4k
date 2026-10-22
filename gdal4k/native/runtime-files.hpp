@@ -306,6 +306,7 @@ inline CPLJSONObject rasterizeDataset(GDALDatasetH source, const CPLJSONObject& 
 
 #include "runtime-polygonize.hpp"
 #include "runtime-footprint.hpp"
+#include "runtime-tile-index.hpp"
 #include "runtime-grid-viewshed.hpp"
 
 #include "runtime-analysis.hpp"

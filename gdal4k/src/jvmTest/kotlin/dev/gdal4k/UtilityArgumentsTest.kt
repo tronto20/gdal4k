@@ -19,7 +19,7 @@ class UtilityArgumentsTest {
         when (method.name) {
             "buildVRT" -> dataset
             "info" -> "{}"
-            "warpTo", "translateTo", "translateVectorTo", "rasterizeTo", "demProcessingTo" -> Unit
+            "warpTo", "translateTo", "translateVectorTo", "rasterizeTo", "demProcessingTo", "tileIndexTo" -> Unit
             else -> files
         }
     })
@@ -96,5 +96,16 @@ class UtilityArgumentsTest {
         val args = arrayOf("-compute_edges", "-s", "1")
         dataset.demProcessing("slope", arguments = args)
         assertEquals(Call("demProcessing", listOf("slope", "GTiff", "terrain.tif", args.asList())), calls.single())
+    }
+
+    @Test fun tileIndexExplicitLocationsAndNamedSettings() = runBlocking {
+        val paths = listOf("a.tif", "b.tif")
+        val args = arrayOf("-t_srs", "EPSG:3857")
+        assertSame(files, runtime.tileIndex(paths, *args, driver = "GeoJSON", name = "catalog.geojson", layerName = "catalog", locationField = "raster", absolutePaths = true))
+        runtime.tileIndexTo(paths, "out.gpkg", *args)
+        assertEquals(listOf(
+            Call("tileIndex", listOf(paths, "GeoJSON", "catalog.geojson", "catalog", "raster", true, args.asList())),
+            Call("tileIndexTo", listOf(paths, "out.gpkg", "GPKG", "tiles", "location", false, args.asList())),
+        ), calls)
     }
 }

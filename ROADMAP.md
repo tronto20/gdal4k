@@ -16,8 +16,8 @@ these are not missing APIs to reimplement.
 | 3 | File I/O copy reduction | Merged in PR32: negotiated binary file buffers, controlled JVM comparison, full exact-HEAD CI and tested HEAD ancestry verified |
 | 4 | Multidimensional numeric transfer | Merged in PR33: protocol 5, controlled same-class JVM comparison, full exact-HEAD CI and tested HEAD main ancestry verified |
 | 5 | JVM/Native HTTP input | Merged in PR34: optional CURL profile, actual Linux/Mac source/published runtime and controlled loopback comparison, full exact-HEAD CI and tested HEAD main ancestry verified; OS RSS increased |
-| 6 | Valid-data raster footprint | GDALFootprint wrapper, mask/NoData polygons, memory/direct output and representative diagnostics under implementation; actual producer/runtime/full CI pending |
-| 7 | Raster tile index | Approved; wrap GDALTileIndex for explicit input locations |
+| 6 | Valid-data raster footprint | Merged in PR35: valid-mask/NoData polygons, holes, memory/direct outputs, actual source/published runtime and functional diagnostics; full exact-HEAD CI and tested HEAD main ancestry verified |
+| 7 | Raster tile index | GDALTileIndex for explicit raster files and vector extent/location index under implementation; current producer/runtime/full CI pending |
 | 8 | Multidimensional conversion | Approved; wrap GDALMultiDimTranslate with explicit type/shape/loss limits |
 
 Performance claims require identical-input/environment speed, cumulative allocation and OS peak

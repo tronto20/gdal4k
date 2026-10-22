@@ -1,0 +1,9 @@
+// Used only by bounded CI commands, including the independent consumer build.
+allprojects {
+    tasks.withType(org.gradle.api.tasks.testing.AbstractTestTask).configureEach {
+        testLogging {
+            events 'started', 'passed', 'failed', 'skipped'
+            showStandardStreams = true
+        }
+    }
+}

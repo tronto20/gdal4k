@@ -1,0 +1,15 @@
+// Compile the explicit-current-engine diagnostic without provisioning an engine payload.
+gradle.projectsEvaluated {
+    def target = gradle.rootProject.findProject(':gdal4k-runtime')
+    if (target == null) return
+    target.tasks.register('writeTileIndexMemoryClasspath') {
+        dependsOn target.tasks.named('jvmTestClasses')
+        doLast {
+            def testTask = target.tasks.named('jvmTest').get()
+            new File(target.buildDir, 'tile-index-memory-classpath.json').text = groovy.json.JsonOutput.toJson([
+                classpath: testTask.classpath.asPath,
+                java: testTask.javaLauncher.get().executablePath.asFile.absolutePath
+            ])
+        }
+    }
+}

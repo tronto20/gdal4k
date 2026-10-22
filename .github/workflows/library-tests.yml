@@ -24,6 +24,7 @@ jobs:
       - run: |
           python -m unittest discover -s verification -p test_publish.py
           python -m unittest discover -s verification -p test_consumer_evidence.py
+          python -m unittest discover -s verification -p test_command_evidence.py
   native:
     name: Native ${{ matrix.target }}
     strategy:
@@ -67,7 +68,15 @@ jobs:
           xcrun simctl bootstatus "$device" -b
           echo "IOS_DEVICE=$device" >> "$GITHUB_ENV"
       - name: Test library and independent published consumer
-        run: python verification/ci.py '${{ matrix.target }}' ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
+        # Leave time for always() evidence uploads within the existing 240m job.
+        timeout-minutes: ${{ matrix.target == 'mingwX64' && 180 || 240 }}
+        run: |
+          if [ '${{ matrix.target }}' = mingwX64 ]; then
+            python -m unittest discover -s verification -p test_command_evidence.py
+            python verification/ci.py mingwX64 --command-timeout-seconds 3600
+          else
+            python verification/ci.py '${{ matrix.target }}' ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
+          fi
       - uses: actions/cache/save@v6
         if: always()
         with:
@@ -86,6 +95,7 @@ jobs:
             gdal4k/build/test-results/
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
+            verification/results/ci-commands-*/
             verification/results/raster-transport-*.json
             verification/results/window-memory-*.json
             verification/results/window-memory/
@@ -97,6 +107,9 @@ jobs:
             verification/results/file-memory/
             verification/results/md-memory-*.json
             verification/results/md-memory/
+            verification/results/tile-index-memory-*.json
+            verification/results/tile-index-memory/
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/TileIndexMemoryProbe*.class
             verification/results/footprint-memory-*.json
             verification/results/footprint-memory/
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/FootprintMemoryProbe*.class
