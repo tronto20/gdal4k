@@ -12,14 +12,14 @@ p.add_argument('--web', action='store_true', help='Web resources are read on dem
 a = p.parse_args()
 root = a.prefix/'share/gdal'
 files = resource_files(a.prefix)
-notices = '\n\n'.join('=== '+f.parent.name+' ===\n'+f.read_text() for f in sorted((a.prefix/'share').glob('*/copyright')))
+notices = '\n\n'.join('=== '+f.parent.name+' ===\n'+f.read_text(encoding='utf-8') for f in sorted((a.prefix/'share').glob('*/copyright')))
 if a.web:
-    notices += '\n\n=== gdal4k serial Viewshed ===\n' + (Path(__file__).resolve().parents[2]/'gdal4k/native/serial-viewshed/LICENSE').read_text()
+    notices += '\n\n=== gdal4k serial Viewshed ===\n' + (Path(__file__).resolve().parents[2]/'gdal4k/native/serial-viewshed/LICENSE').read_text(encoding='utf-8')
     a.output.parent.mkdir(parents=True,exist_ok=True)
     a.output.write_text('// GDAL data bytes live in the lazily read web resource asset.\n'
         'const char* gdal4k_data_directory() { return "/vsigdal4k/resources"; }\n'
         'const char* gdal4k_license_notices() { return '+json.dumps(notices,ensure_ascii=True)+'; }\n'
-        'void gdal4k_install_resources() {}\n')
+        'void gdal4k_install_resources() {}\n', encoding='utf-8', newline='\n')
     raise SystemExit(0)
 lines = ['// Generated from the pinned GDAL distribution.','''#include "resources.h"
 #include <cpl_vsi.h>
@@ -37,7 +37,7 @@ lines.append('struct Resource { const char* name; const unsigned char* data; siz
 for i,f in enumerate(files):
     lines.append('{'+json.dumps(f.relative_to(root).as_posix())+f', resource_{i}, sizeof(resource_{i})'+'},')
 lines.append('};')
-# Quote notices as ordinary UTF-8 C++ strings, preserving every license byte.
+# Quote UTF-8 notice text as C++ strings after normalizing CRLF/CR to LF.
 lines.append('static const char notices[] = '+json.dumps(notices,ensure_ascii=True)+';')
 lines.append('''const char* gdal4k_data_directory() { return "/vsimem/gdal4k-resources/gdal"; }
 const char* gdal4k_license_notices() { return notices; }
@@ -54,4 +54,4 @@ void gdal4k_install_resources() {
 }
 ''')
 a.output.parent.mkdir(parents=True,exist_ok=True)
-a.output.write_text('\n'.join(lines)+'\n')
+a.output.write_text('\n'.join(lines)+'\n', encoding='utf-8', newline='\n')
