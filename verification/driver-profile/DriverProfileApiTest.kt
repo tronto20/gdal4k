@@ -1,5 +1,7 @@
 package dev.gdal4k
 
+import dev.gdal4k.GdalException
+import dev.gdal4k.GdalFiles
 import dev.gdal4k.runtime.*
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.test.runTest
@@ -14,76 +16,290 @@ class DriverProfileApiTest {
     @Test fun requiredDriversAndRealDataRoundTrip() = runTest(timeout = 120.seconds) {
         val r = Gdal4k.runtime()
         when (profile) {
-            "http" -> r.openDataset("@HTTP_BASE@/required/$datasetOutputPrefix/fixture.tif", DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(requireStrongETag = true))).use {
-                assertEquals(2048, it.getRasterXSize()); assertEquals(2048, it.getRasterYSize())
+            "http" -> DriverProfileFixtures.requiredHttp(r)
+            "scientific" -> DriverProfileFixtures.scientific(r)
+            "parquet" -> DriverProfileFixtures.parquet(r) { _, _ -> }
+            "postgresql" -> DriverProfileFixtures.postgresql(r)
+            "combined" -> {
+                // Preserve the four ordinary required HTTP contexts. Diagnostic calls
+                // below use the separate "combined" case and fresh keys instead.
+                DriverProfileFixtures.requiredHttp(r)
+                combinedRoundTrip(r)
             }
-            "scientific" -> {
-                requireNotNull(r.getDriver("HDF5")).use { assertEquals("HDF5", it.getShortName()) }
-                r.openDataset("HDF5:\"@HDF5_PATH@\"://values").use {
-                    assertEquals(2, it.getRasterXSize()); assertEquals(2, it.getRasterYSize())
-                    assertContentEquals(doubleArrayOf(1.0, 2.0, 3.0, 4.0), it.readRaster())
+            else -> error("Unknown optional profile")
+        }
+    }
+}
+
+/** One supplied Runtime and fresh owned names per call, including diagnostic rounds. */
+internal suspend fun combinedRoundTrip(r: GdalRuntime) = DriverProfileFixtures.combined(r)
+
+private object DriverProfileFixtures {
+    private const val postgresqlConnection = "PG:host=127.0.0.1 port=5432 dbname=gdal4k user=gdal4k password=profile-fixture"
+    private fun token() = kotlin.random.Random.nextLong().toULong().toString(16)
+
+    suspend fun requiredHttp(r: GdalRuntime) {
+        r.openDataset("@HTTP_BASE@/required/$datasetOutputPrefix/fixture.tif",
+            DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(requireStrongETag = true))).use {
+            assertEquals(2048, it.getRasterXSize()); assertEquals(2048, it.getRasterYSize())
+        }
+    }
+
+    suspend fun combined(r: GdalRuntime) {
+        val name = "combined-${token()}"
+        assertEquals("3120400", r.versionInfo("VERSION_NUM"))
+        defaultJxl(r, "$name-before")
+        scientific(r, "$name-before")
+        // The original HDF5 handle closes before this independent MEM copy is retained.
+        val retained = hdf5Copy(r)
+        val detached = retained.use { hdf ->
+            parquet(r, name) { _, layer ->
+                // HDF5/MEM, Parquet and HTTP-backed VRT handles coexist while PG copies
+                // the Parquet layer. Closing PG and dropping its table must not steal them.
+                combinedHttpLease(r, "$datasetOutputPrefix-$name").use { remote ->
+                    val fromPostgresql = postgresql(r, layer, name)
+                    verifyPointLayer(layer)
+                    verifyHdf5Copy(hdf)
+                    verifyHttpPixels(remote)
+                    val fromHttp = remote.translate("GTiff", "$name-http.tif", listOf(
+                        "-srcwin", "1792", "1792", "16", "16", "-co", "COMPRESS=JXL", "-co", "JXL_LOSSLESS=YES"))
+                    Pair(fromPostgresql, fromHttp)
                 }
-                // HDF5 is read from the real, already closed h5py fixture. The MEM result
-                // must remain readable after its source dataset has closed.
-                val hdfCopy = r.openDataset("@HDF5_PATH@", DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use {
-                    it.multiDimTranslate(emptyList())
-                }
-                hdfCopy.use { copy -> requireNotNull(copy.getRootGroup()).use { group ->
-                    verifyArray(group, "values", MDDataType.Numeric(GdalDataType.Int16), longArrayOf(2, 2),
-                        listOf(1, 2, 3, 4).map { MDValue.Numeric(it) })
-                } }
-                requireNotNull(r.getDriver("netCDF")).use { driver ->
-                    val path = datasetOutputPath("profile.nc")
-                    try {
-                        requireNotNull(driver.create(path, 2, 2, 1, GdalDataType.Int16)).use { ds ->
-                            requireNotNull(ds.getRasterBand(1)).use { band -> assertEquals(0, band.writeRaster(doubleArrayOf(5.0, 6.0, 7.0, 8.0))) }
-                        }
-                        r.openDataset(path).use { assertContentEquals(doubleArrayOf(5.0, 6.0, 7.0, 8.0), it.readRaster()) }
-                    } finally { assertEquals(0, driver.delete(path)) }
-                }
-                scientificConversion(r)
             }
-            "parquet" -> {
-                requireNotNull(r.getDriver("Parquet")).use { driver ->
-                    val path = datasetOutputPath("profile.parquet")
-                    try {
-                        r.openDataset("input.geojson", """{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"value":42},"geometry":{"type":"Point","coordinates":[3,4]}}]}""".encodeToByteArray()).use { ds ->
-                            ds.translateVectorTo(path, "Parquet", emptyList())
+        }
+        // PG connections/table, Parquet file, HTTP source/VRT and retained MEM copy are
+        // all closed/deleted. Only the independent file bytes remain for these reads.
+        r.openDataset(detached.first.mainFile().name, detached.first.mainFile().bytes).use { ds ->
+            requireNotNull(ds.getLayer(0)).use { verifyPointLayer(it) }
+        }
+        r.openDataset(detached.second.mainFile().name, detached.second.mainFile().bytes).use { ds ->
+            verifyHttpPixels(ds, 0, 0, 1792, 1792)
+            assertTrue(r.datasetInfo(ds, DatasetInfoOptions(listOf("-json"))).contains("JXL"))
+        }
+        defaultJxl(r, "$name-after")
+        scientific(r, "$name-after")
+    }
+
+    private suspend fun defaultJxl(r: GdalRuntime, name: String) {
+        val expected = byteArrayOf(0, 1, 127, -1)
+        val files = requireNotNull(r.getDriver("MEM")).use { driver ->
+            requireNotNull(driver.create("", 2, 2, 1, GdalDataType.Byte)).use { source ->
+                requireNotNull(source.getRasterBand(1)).use { assertEquals(0, it.writeRaster(expected)) }
+                listOf("JPEGXL", "GTiff", "COG").map { format ->
+                    val options = if (format == "JPEGXL") listOf("-co", "LOSSLESS=YES")
+                        else listOf("-co", "COMPRESS=JXL", "-co", "JXL_LOSSLESS=YES")
+                    format to source.translate(format, "$name-${format.lowercase()}" + if (format == "JPEGXL") ".jxl" else ".tif", options)
+                }
+            }
+        }
+        for ((format, output) in files) r.openDataset(output.mainFile().name, output.mainFile().bytes).use { ds ->
+            assertEquals(2, ds.getRasterXSize()); assertEquals(2, ds.getRasterYSize())
+            requireNotNull(ds.getRasterBand(1)).use { band ->
+                val actual = ByteArray(4); assertEquals(0, band.readRaster(actual)); assertContentEquals(expected, actual)
+            }
+            if (format != "JPEGXL") assertTrue(r.datasetInfo(ds, DatasetInfoOptions(listOf("-json"))).contains("JXL"))
+        }
+    }
+
+    suspend fun scientific(r: GdalRuntime, name: String = "profile") {
+        requireNotNull(r.getDriver("HDF5")).use { assertEquals("HDF5", it.getShortName()) }
+        r.openDataset("HDF5:\"@HDF5_PATH@\"://values").use {
+            assertEquals(2, it.getRasterXSize()); assertEquals(2, it.getRasterYSize())
+            assertContentEquals(doubleArrayOf(1.0, 2.0, 3.0, 4.0), it.readRaster())
+        }
+        hdf5Copy(r).use { verifyHdf5Copy(it) }
+        ownedFile(r, "netCDF", "$name.nc") { driver, path ->
+            requireNotNull(driver.create(path, 2, 2, 1, GdalDataType.Int16)).use { ds ->
+                requireNotNull(ds.getRasterBand(1)).use { band ->
+                    assertEquals(0, band.writeRaster(doubleArrayOf(5.0, 6.0, 7.0, 8.0)))
+                }
+            }
+            r.openDataset(path).use { assertContentEquals(doubleArrayOf(5.0, 6.0, 7.0, 8.0), it.readRaster()) }
+        }
+        scientificConversion(r, name)
+    }
+
+    private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
+        r.openDataset("@HDF5_PATH@", DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use {
+            it.multiDimTranslate(emptyList())
+        }
+
+    private suspend fun verifyHdf5Copy(copy: Dataset) {
+        requireNotNull(copy.getRootGroup()).use { group ->
+            verifyArray(group, "values", MDDataType.Numeric(GdalDataType.Int16), longArrayOf(2, 2),
+                listOf(1, 2, 3, 4).map { MDValue.Numeric(it) })
+        }
+    }
+
+    suspend fun <T> parquet(r: GdalRuntime, name: String = "profile", block: suspend (Dataset, Layer) -> T): T =
+        ownedFile(r, "Parquet", "$name.parquet") { _, path ->
+            r.openDataset("input.geojson", """{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"value":42},"geometry":{"type":"Point","coordinates":[3,4]}}]}""".encodeToByteArray()).use {
+                it.translateVectorTo(path, "Parquet", emptyList())
+            }
+            r.openDataset(path).use { ds -> requireNotNull(ds.getLayer(0)).use { layer ->
+                verifyPointLayer(layer)
+                val result = block(ds, layer)
+                verifyPointLayer(layer)
+                result
+            } }
+        }
+
+    private suspend fun verifyPointLayer(layer: Layer) {
+        assertEquals(1, layer.getFeatureCount(true))
+        layer.resetReading()
+        requireNotNull(layer.getNextFeature()).use { feature ->
+            assertEquals(42, feature.getFieldAsInteger("value"))
+            requireNotNull(feature.getGeometryRef()).use {
+                assertContentEquals(doubleArrayOf(3.0, 4.0, 0.0), it.getPoint(0))
+            }
+        }
+        assertNull(layer.getNextFeature())
+    }
+
+    private suspend fun verifyHttpPixels(ds: Dataset, x: Int = 1792, y: Int = 1792, sourceX: Int = x, sourceY: Int = y) {
+        requireNotNull(ds.getRasterBand(1)).use { band ->
+            val actual = ByteArray(16 * 16)
+            assertEquals(0, band.readRaster(BandRasterIOOptions(x, y, 16, 16), actual))
+            val expected = ByteArray(actual.size) { i ->
+                val px = sourceX + i % 16; val py = sourceY + i / 16
+                ((px * 31 + py * 17 + (px xor py)) and 255).toByte()
+            }
+            assertContentEquals(expected, actual)
+        }
+    }
+
+    private suspend fun combinedHttpLease(r: GdalRuntime, key: String): Dataset {
+        val options = DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(requireStrongETag = true))
+        return r.openDataset("@HTTP_BASE@/combined/$key/fixture.tif", options).use { source ->
+            assertEquals(2048, source.getRasterXSize()); assertEquals(2048, source.getRasterYSize())
+            verifyHttpPixels(source)
+            r.openDataset("@HTTPS_BASE@/combined/$key/fixture.tif", options).use { verifyHttpPixels(it) }
+            for (origin in listOf("@UNTRUSTED_BASE@", "@WRONG_NAME_BASE@")) {
+                assertFailsWith<GdalException> {
+                    r.openDataset("$origin/combined/$key/fixture.tif", options).use { verifyHttpPixels(it) }
+                }
+            }
+            // buildVRT retains the HTTP lease after this original Dataset closes.
+            r.buildVRT(listOf(source), emptyList())
+        }
+    }
+
+    private suspend fun layerIndex(ds: Dataset, name: String): Int? {
+        for (i in 0 until ds.getLayerCount()) {
+            val matches = requireNotNull(ds.getLayer(i)).use { it.getName() == name }
+            if (matches) return i
+        }
+        return null
+    }
+
+    suspend fun postgresql(r: GdalRuntime, source: Layer? = null, name: String = "profile"): GdalFiles {
+        requireNotNull(r.getDriver("PostgreSQL")).use { assertEquals("PostgreSQL", it.getShortName()) }
+        // Fresh, bounded identifiers avoid collisions across diagnostic rounds. No SQL
+        // text or broad prefix deletion is used; only this exact absent-before-create name.
+        val table = "p_${datasetOutputPrefix}_${token()}".replace('-', '_')
+        var ownsName = false
+        var committed = false
+        var operationFailure: Throwable? = null
+        try {
+            r.openDataset(postgresqlConnection, DatasetOpenOptions(accessMode = DatasetAccessMode.Update, kind = DatasetKind.Vector)).use { ds ->
+                assertNull(layerIndex(ds, table), "Refusing to replace an existing fixture table")
+                var transaction = false
+                if (source == null) {
+                    assertEquals(0, ds.startTransaction())
+                    transaction = true
+                }
+                var writeFailure: Throwable? = null
+                try {
+                    ownsName = true
+                    val created = if (source == null) ds.createLayer(table, geometryType = 1)
+                        else {
+                            // GDAL CopyLayer owns its target-layer batch transactions.
+                            // PG rejects nesting them inside a Dataset user transaction.
+                            source.resetReading()
+                            ds.copyLayer(source, table)
                         }
-                        r.openDataset(path).use { ds ->
-                            requireNotNull(ds.getLayer(0)).use { layer ->
-                                assertEquals(1, layer.getFeatureCount(true))
-                                requireNotNull(layer.getNextFeature()).use { feature ->
-                                    assertEquals(42, feature.getFieldAsInteger("value"))
-                                    requireNotNull(feature.getGeometryRef()).use { assertContentEquals(doubleArrayOf(3.0, 4.0, 0.0), it.getPoint(0)) }
+                    requireNotNull(created).use { layer ->
+                        if (source == null) {
+                            r.createFieldDefn("value", 0).use { assertEquals(0, layer.createField(it)) }
+                            requireNotNull(layer.getLayerDefn()).use { definition ->
+                                r.createFeature(definition).use { feature ->
+                                    feature.setField("value", 42)
+                                    r.createGeometryFromWkt("POINT (3 4)").use { assertEquals(0, feature.setGeometry(it)) }
+                                    assertEquals(0, layer.createFeature(feature))
                                 }
                             }
                         }
-                    } finally { assertEquals(0, driver.delete(path)) }
-                }
-            }
-            "postgresql" -> {
-                // Dedicated disposable CI service. PG: is also recognized by PostGISRaster; select vector explicitly.
-                requireNotNull(r.getDriver("PostgreSQL")).use { assertEquals("PostgreSQL", it.getShortName()) }
-                r.openDataset("PG:host=127.0.0.1 port=5432 dbname=gdal4k user=gdal4k password=profile-fixture", DatasetOpenOptions(accessMode = DatasetAccessMode.Update, kind = DatasetKind.Vector)).use { ds ->
-                    val table = "profile_$datasetOutputPrefix".replace('-', '_')
-                    requireNotNull(ds.createLayer(table, geometryType = 1)).use { layer ->
-                        r.createFieldDefn("value", 0).use { assertEquals(0, layer.createField(it)) }
-                        r.createFeature(requireNotNull(layer.getLayerDefn())).use { feature ->
-                            feature.setField("value", 42)
-                            r.createGeometryFromWkt("POINT (3 4)").use { assertEquals(0, feature.setGeometry(it)) }
-                            assertEquals(0, layer.createFeature(feature))
-                        }
-                        assertEquals(0, ds.flushCache())
-                        layer.resetReading()
-                        requireNotNull(layer.getNextFeature()).use { assertEquals(42, it.getFieldAsInteger("value")) }
+                        assertEquals(0, layer.syncToDisk())
+                        verifyPointLayer(layer)
                     }
-                    // Drop only the table created by this test invocation.
-                    val index = (0 until ds.getLayerCount()).first { i -> requireNotNull(ds.getLayer(i)).use { it.getName() == table } }
-                    assertEquals(0, ds.deleteLayer(index))
+                    if (transaction) {
+                        assertEquals(0, ds.commitTransaction())
+                        transaction = false
+                    } else {
+                        assertEquals(0, ds.flushCache())
+                    }
+                    committed = true
+                } catch (failure: Throwable) {
+                    writeFailure = failure
+                    throw failure
+                } finally {
+                    if (transaction) withContext(NonCancellable) {
+                        try { assertEquals(0, ds.rollbackTransaction()) }
+                        catch (cleanupFailure: Throwable) {
+                            val failure = writeFailure
+                            if (failure == null) throw cleanupFailure
+                            failure.addSuppressed(cleanupFailure)
+                        }
+                    }
                 }
             }
-            else -> error("Unknown optional profile")
+            // A new connection proves persisted fields and geometry, rather than only
+            // the original writer's cursor/cache. Exported bytes outlive table deletion.
+            return r.openDataset(postgresqlConnection, DatasetOpenOptions(kind = DatasetKind.Vector)).use { ds ->
+                requireNotNull(ds.getLayer(table)).use { verifyPointLayer(it) }
+                ds.translateVector("GeoJSON", "$name-pg.geojson", listOf(table))
+            }
+        } catch (failure: Throwable) {
+            operationFailure = failure
+            throw failure
+        } finally {
+            if (ownsName) withContext(NonCancellable) {
+                try {
+                    // Writer/read connections have closed before cleanup, including a
+                    // failed or cancelled transaction. A partial created table is owned too.
+                    r.openDataset(postgresqlConnection, DatasetOpenOptions(accessMode = DatasetAccessMode.Update, kind = DatasetKind.Vector)).use { ds ->
+                        val index = layerIndex(ds, table)
+                        if (committed) assertNotNull(index, "Owned committed table disappeared before cleanup")
+                        if (index != null) assertEquals(0, ds.deleteLayer(index))
+                        assertEquals(0, ds.flushCache())
+                        assertNull(layerIndex(ds, table))
+                    }
+                    r.openDataset(postgresqlConnection, DatasetOpenOptions(kind = DatasetKind.Vector)).use { assertNull(layerIndex(it, table)) }
+                } catch (cleanupFailure: Throwable) {
+                    val failure = operationFailure
+                    if (failure == null) throw cleanupFailure
+                    failure.addSuppressed(cleanupFailure)
+                }
+            }
+        }
+    }
+
+    private suspend fun <T> ownedFile(r: GdalRuntime, format: String, name: String, block: suspend (Driver, String) -> T): T {
+        val path = datasetOutputPath(name)
+        return requireNotNull(r.getDriver(format)).use { driver ->
+            var operationFailure: Throwable? = null
+            try { block(driver, path) }
+            catch (failure: Throwable) { operationFailure = failure; throw failure }
+            finally {
+                withContext(NonCancellable) {
+                    try { assertEquals(0, driver.delete(path)) }
+                    catch (cleanupFailure: Throwable) {
+                        val failure = operationFailure
+                        if (failure == null) throw cleanupFailure
+                        failure.addSuppressed(cleanupFailure)
+                    }
+                }
+            }
         }
     }
 
@@ -97,15 +313,15 @@ class DriverProfileApiTest {
         }
     }
 
-    /** Actual OS NC4 output, used only by the two scientific profile host jobs. */
-    private suspend fun scientificConversion(r: GdalRuntime) {
+    /** Actual OS NC4 output in scientific and combined host profiles. */
+    private suspend fun scientificConversion(r: GdalRuntime, name: String) {
         val signed = listOf(Long.MIN_VALUE.toString(), "-9007199254740993", "9007199254740993", Long.MAX_VALUE.toString()).map { MDValue.Numeric(it) }
         val unsigned = listOf("0", "9007199254740993", "18446744073709551614", "18446744073709551615").map { MDValue.Numeric(it) }
         val floating = listOf("0.25", "-2.5", "3.75", "4.5").map { MDValue.Numeric(it) }
         val complex = listOf(MDValue.Numeric("1.25", "-2.5"), MDValue.Numeric("3.5", "4.75"),
             MDValue.Numeric("-5.25", "6.5"), MDValue.Numeric("7.75", "-8"))
         val text = listOf("", "한글 😀", "scene", "last").map { MDValue.Text(it) }
-        val path = datasetOutputPath("profile-md-exact.nc")
+        val path = datasetOutputPath("$name-md-exact.nc")
         val schema = listOf("signed" to MDDataType.Numeric(GdalDataType.Int64),
             "unsigned" to MDDataType.Numeric(GdalDataType.UInt64), "floating" to MDDataType.Numeric(GdalDataType.Float64),
             "complex" to MDDataType.Numeric(GdalDataType.CFloat64), "text" to MDDataType.Text())

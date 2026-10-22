@@ -28,9 +28,20 @@ PROFILES = {
     'http': {'features': ['curl'], 'drivers': [],
              'dependencies': [{'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}],
              'targets': ['linux-amd64', 'macos-arm64']},
+    'combined': {'features': ['curl', 'hdf5', 'netcdf', 'parquet', 'postgresql'],
+                 'drivers': ['HDF5', 'netCDF', 'Parquet', 'PostgreSQL'],
+                 'dependencies': [
+                     {'name': 'netcdf-c', 'default-features': False, 'features': ['netcdf-4']},
+                     {'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}],
+                 'capabilities': ['scientific', 'parquet', 'http', 'postgresql'],
+                 'targets': ['linux-amd64']},
 }
 TARGETS = {'linux-amd64': ('Linux', 'x86_64', 'LinuxX64', 'linux-x64-gnu'),
            'macos-arm64': ('Darwin', 'arm64', 'MacosArm64', 'macos-arm64')}
+
+
+def has_capability(profile, capability):
+    return capability in PROFILES[profile].get('capabilities', [profile])
 
 
 def profile_version(base, profile):
@@ -59,7 +70,7 @@ def prepare(root, profile, target, http_fixture=None):
     version = profile_version(base, profile)
     inventory = source_files(root)
     identity = {'profile': profile, 'target': target, 'version': version, 'sources': inventory}
-    if profile == 'http':
+    if has_capability(profile, 'http'):
         if not http_fixture:
             raise ValueError('HTTP profile requires its owned running HTTP/TLS fixture')
         identity['httpFixtureUrls'] = http_fixture['urls']
@@ -100,7 +111,7 @@ gradle.taskGraph.whenReady {
     fixture = root / 'verification/driver-profile/DriverProfileApiTest.kt'
     test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
     replacements = {'@PROFILE@': profile, '@HDF5_PATH@': (snapshot / 'verification/build/driver-profile.h5').as_posix()}
-    if profile == 'http':
+    if has_capability(profile, 'http'):
         replacements.update({'@HTTP_BASE@': http_fixture['urls']['http'], '@HTTPS_BASE@': http_fixture['urls']['https'],
                              '@UNTRUSTED_BASE@': http_fixture['urls']['untrusted'], '@WRONG_NAME_BASE@': http_fixture['urls']['wrong-name']})
     def replace(text):
@@ -108,15 +119,19 @@ gradle.taskGraph.whenReady {
         return text
     test.write_text(replace(fixture.read_text()))
     http_test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt'
-    if profile == 'http':
+    if has_capability(profile, 'http'):
         http_test.write_text(replace((root / 'verification/driver-profile/NativeHttpProfileTest.kt').read_text()))
+    combined_probe = snapshot / 'gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/CombinedDriverMemoryProbe.kt'
+    if profile == 'combined':
+        combined_probe.write_text((root / 'verification/driver-profile/CombinedDriverMemoryProbe.kt').read_text())
     consumer = snapshot / 'verification/consumer.py'
     consumer.write_text(consumer.read_text().replace("for test_name in ['DatasetApiTest'", "for test_name in ['DriverProfileApiTest', 'DatasetApiTest'"))
-    if profile == 'http':
+    if has_capability(profile, 'http'):
         consumer.write_text(consumer.read_text().replace("'DriverProfileApiTest', 'DatasetApiTest'", "'DriverProfileApiTest', 'NativeHttpProfileTest', 'DatasetApiTest'"))
     prepared = {name: hashlib.sha256((snapshot / name).read_bytes()).hexdigest() for name in inventory}
     prepared[test.relative_to(snapshot).as_posix()] = hashlib.sha256(test.read_bytes()).hexdigest()
-    if profile == 'http': prepared[http_test.relative_to(snapshot).as_posix()] = hashlib.sha256(http_test.read_bytes()).hexdigest()
+    if has_capability(profile, 'http'): prepared[http_test.relative_to(snapshot).as_posix()] = hashlib.sha256(http_test.read_bytes()).hexdigest()
+    if profile == 'combined': prepared[combined_probe.relative_to(snapshot).as_posix()] = hashlib.sha256(combined_probe.read_bytes()).hexdigest()
     (output / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n')
     (output / 'inputs.json').write_text(json.dumps(identity, indent=2) + '\n')
     return snapshot, identity
@@ -130,13 +145,13 @@ def main():
     args = parser.parse_args()
     with ExitStack() as stack:
         http_fixture = None
-        if args.profile == 'http':
+        if has_capability(args.profile, 'http'):
             spec = importlib.util.spec_from_file_location('native_http_fixture', ROOT / 'verification/driver-profile/http-fixture.py')
             module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
             output = ROOT / 'verification/results' / ('native-http-fixture-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
             http_fixture = stack.enter_context(module.fixture(output))
         snapshot = run_profile(args, http_fixture)
-    if args.profile == 'http' and not args.prepare_only:
+    if has_capability(args.profile, 'http') and not args.prepare_only:
         evidence = snapshot / 'verification/results/native-http-profile'
         evidence.mkdir(parents=True, exist_ok=False)
         fixture_root = Path(http_fixture['output'])
@@ -173,12 +188,12 @@ def run_profile(args, http_fixture):
     gradle = snapshot / 'gradlew'
     def run(*command):
         subprocess.run([str(x) for x in command], cwd=snapshot, env=env, check=True)
-    if args.profile == 'scientific':
+    if has_capability(args.profile, 'scientific'):
         run(sys.executable, '-c', "import h5py,numpy as np; from pathlib import Path; p=Path('verification/build/driver-profile.h5'); p.parent.mkdir(parents=True,exist_ok=True); f=h5py.File(p,'w'); f.create_dataset('values',data=np.array([[1,2],[3,4]],dtype='int16')); f.close()")
     run(gradle, '--console=plain', ':gdal4k:compileKotlin' + native,
         ':gdal4k-runtime:jvmTest', ':gdal4k-runtime:' + native[0].lower() + native[1:] + 'Test')
     run(sys.executable, snapshot / 'verification/audit-engine.py', args.target)
-    if args.profile == 'http':
+    if has_capability(args.profile, 'http'):
         probe = snapshot / 'gdal4k-engine/build/engine' / args.target / 'cmake/gdal4k_http_probe'
         result = subprocess.run([str(probe), http_fixture['urls']['http'] + '/cache/internal/fixture.tif'],
                                 cwd=snapshot, env=env, text=True, capture_output=True)
@@ -190,12 +205,15 @@ def run_profile(args, http_fixture):
         evidence.update(probeSha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
                         sourceSha256=hashlib.sha256((snapshot / 'gdal4k/native/http-cache-probe.cpp').read_bytes()).hexdigest())
         (snapshot / 'verification/results/native-http-cache-check.json').write_text(json.dumps(evidence, indent=2) + '\n')
-    if args.profile == 'parquet':
+    if has_capability(args.profile, 'parquet'):
         run(sys.executable, snapshot / 'verification/driver-profile/arrow-ipc-check.py', snapshot, args.target)
     run(sys.executable, snapshot / 'verification/consumer.py', '--target', 'jvm', '--jvm-binary', classifier)
     run(sys.executable, snapshot / 'verification/consumer.py', '--target', native[0].lower() + native[1:])
-    if args.profile == 'http':
+    if has_capability(args.profile, 'http'):
         library = snapshot / 'gdal4k-engine/build/jvm-resources/gdal4k' / args.target / ('libgdal4k.dylib' if system == 'Darwin' else 'libgdal4k.so')
+        if args.profile == 'combined':
+            run(sys.executable, snapshot / 'verification/combined-driver-memory-report.py', '--library', library,
+                '--manifest', snapshot / 'gdal4k-engine/build/engine' / args.target / 'manifest.json')
         run(sys.executable, snapshot / 'verification/http-memory-report.py', '--library', library,
             '--manifest', snapshot / 'gdal4k-engine/build/engine' / args.target / 'manifest.json',
             '--label', 'profile-controlled', '--modes', 'download-local', 'range')

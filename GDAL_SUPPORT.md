@@ -12,6 +12,10 @@ Generated adapters cover the declared Kotlin interfaces. Successful generation a
 
 Optional scientific, Parquet, HTTP and PostgreSQL profiles currently have separate versioned dependency configurations and limited tested host matrices. Passing each isolated profile does not establish that their combined capabilities work in one process. Complete JVM support therefore requires a coherent combined-capability engine distribution and tests of its dependency closure and combined runtime behavior on all four JVM classifiers. The small default distribution remains a separate packaging policy.
 
+The first combined profile is being implemented for Linux x64 glibc. It brings HDF5/netCDF, Parquet/Arrow, HTTP/TLS and PostgreSQL into one isolated engine and Maven version. Its current validation status is **pending**: workflow wiring and fixture intent do not establish a successful producer, packaged dependency closure or actual runtime execution. The existing seven isolated profile jobs remain separate checks. See [combined driver verification](verification/combined-drivers.md) for the acceptance scope and evidence requirements.
+
+Combined Linux ARM64, macOS ARM64 and Windows x64 engine/runtime coverage also remains pending. Linux x64 combined verification is the first step toward the four-classifier acceptance matrix, not completion of that matrix or full GDAL support.
+
 ## Extend the same contracts to the other current platforms
 
 The existing targets also include six Kotlin/Native variants, Android ARM64, and JavaScript and wasmJs in Node and browsers. Functionality should use the same public contracts across these targets, with explicit platform access and resource-lifetime rules.
