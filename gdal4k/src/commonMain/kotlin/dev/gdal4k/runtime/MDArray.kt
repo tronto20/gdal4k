@@ -6,6 +6,17 @@ interface MDArray {
     suspend fun getName(): String
     suspend fun getFullName(): String
     suspend fun getDimensions(): List<Dimension>
+    /** Typed NoData, preserving exact integers and complex/string values; null means unset. */
+    suspend fun getNoDataValue(): MDValue?
+    /** null removes NoData. A non-null value must match the array's exact stored type. */
+    suspend fun setNoDataValue(value: MDValue?): Boolean
+    suspend fun getUnit(): String
+    suspend fun setUnit(unit: String): Boolean
+    /** null means no explicit scale/offset. Values are metadata, not applied to read/write. */
+    suspend fun getScale(): Double?
+    suspend fun getOffset(): Double?
+    suspend fun setScale(scale: Double): Boolean
+    suspend fun setOffset(offset: Double): Boolean
     /** GDAL numeric type; non-numeric arrays return GdalDataType.Unknown. */
     suspend fun getDataType(): Int
     /** Numeric slices are converted to Float64, in row-major dimension order.

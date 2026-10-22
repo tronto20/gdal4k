@@ -38,6 +38,9 @@ internal class BundledGdalRuntime(engine: RuntimeEngine) : RuntimeHandle(engine,
 }
 
 internal class BundledDataset(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), Dataset {
+    override suspend fun multiDimTranslate(arguments: List<String>): Dataset { val result = invoke("Dataset", "multiDimTranslate_List_String", mapOf("arguments" to encode(arguments))); return requireNotNull(engine.wrapDataset(result, null)) }
+    override suspend fun multiDimTranslateFiles(driver: String, name: String, arguments: List<String>): GdalFiles { return fileOutputCall("Dataset", "multiDimTranslateFiles_String_String_List_String", mapOf("driver" to encode(driver), "name" to encode(name), "arguments" to encode(arguments))) }
+    override suspend fun multiDimTranslateTo(path: String, driver: String, arguments: List<String>): Unit { invoke("Dataset", "multiDimTranslateTo_String_String_List_String", mapOf("path" to encode(path), "driver" to encode(driver), "arguments" to encode(arguments))); return Unit }
     override suspend fun grid(driver: String, name: String, arguments: List<String>): GdalFiles { return fileOutputCall("Dataset", "grid_String_String_List_String", mapOf("driver" to encode(driver), "name" to encode(name), "arguments" to encode(arguments))) }
     override suspend fun gridTo(path: String, driver: String, arguments: List<String>): Unit { invoke("Dataset", "gridTo_String_String_List_String", mapOf("path" to encode(path), "driver" to encode(driver), "arguments" to encode(arguments))); return Unit }
     override suspend fun viewshed(options: ViewshedOptions, band: Int, driver: String, name: String, creationOptions: List<String>): GdalFiles { return fileOutputCall("Dataset", "viewshed_ViewshedOptions_Int_String_String_List_String", mapOf("options" to encode(options), "band" to encode(band), "driver" to encode(driver), "name" to encode(name), "creationOptions" to encode(creationOptions))) }
@@ -609,6 +612,7 @@ internal class BundledGroup(engine: RuntimeEngine, id: String, parent: RuntimeHa
     override suspend fun getFullName(): String { val result = invoke("Group", "getFullName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getGroupNames(options: List<String>): List<String> { val result = invoke("Group", "getGroupNames_List_String", mapOf("options" to encode(options))); return result.jsonArray.map { it.jsonPrimitive.content } }
     override suspend fun getArrayNames(options: List<String>): List<String> { val result = invoke("Group", "getArrayNames_List_String", mapOf("options" to encode(options))); return result.jsonArray.map { it.jsonPrimitive.content } }
+    override suspend fun getDimensions(options: List<String>): List<Dimension> { val result = invoke("Group", "getDimensions_List_String", mapOf("options" to encode(options))); return result.jsonArray.map { requireNotNull(engine.wrapDimension(it, this)) } }
     override suspend fun openGroup(name: String, options: List<String>): Group? { val result = invoke("Group", "openGroup_String_List_String", mapOf("name" to encode(name), "options" to encode(options))); return engine.wrapGroup(result, this) }
     override suspend fun openArray(name: String, options: List<String>): MDArray? { val result = invoke("Group", "openArray_String_List_String", mapOf("name" to encode(name), "options" to encode(options))); return engine.wrapMDArray(result, this) }
     override suspend fun createGroup(name: String, options: List<String>): Group? { val result = invoke("Group", "createGroup_String_List_String", mapOf("name" to encode(name), "options" to encode(options))); return engine.wrapGroup(result, this) }
@@ -626,6 +630,14 @@ internal class BundledMDArray(engine: RuntimeEngine, id: String, parent: Runtime
     override suspend fun getName(): String { val result = invoke("MDArray", "getName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getFullName(): String { val result = invoke("MDArray", "getFullName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getDimensions(): List<Dimension> { val result = invoke("MDArray", "getDimensions", mapOf()); return result.jsonArray.map { requireNotNull(engine.wrapDimension(it, this)) } }
+    override suspend fun getNoDataValue(): MDValue? { val result = invoke("MDArray", "getNoDataValue", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> decodeMDValue(v) } }
+    override suspend fun setNoDataValue(value: MDValue?): Boolean { val result = invoke("MDArray", "setNoDataValue_MDValue", mapOf("value" to encode(value))); return result.jsonPrimitive.boolean }
+    override suspend fun getUnit(): String { val result = invoke("MDArray", "getUnit", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
+    override suspend fun setUnit(unit: String): Boolean { val result = invoke("MDArray", "setUnit_String", mapOf("unit" to encode(unit))); return result.jsonPrimitive.boolean }
+    override suspend fun getScale(): Double? { val result = invoke("MDArray", "getScale", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> v.jsonPrimitive.content.toDouble() } }
+    override suspend fun getOffset(): Double? { val result = invoke("MDArray", "getOffset", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> v.jsonPrimitive.content.toDouble() } }
+    override suspend fun setScale(scale: Double): Boolean { val result = invoke("MDArray", "setScale_Double", mapOf("scale" to encode(scale))); return result.jsonPrimitive.boolean }
+    override suspend fun setOffset(offset: Double): Boolean { val result = invoke("MDArray", "setOffset_Double", mapOf("offset" to encode(offset))); return result.jsonPrimitive.boolean }
     override suspend fun getDataType(): Int { val result = invoke("MDArray", "getDataType", mapOf()); return result.jsonPrimitive.int }
     override suspend fun read(start: LongArray, count: LongArray): DoubleArray { return mdReadRasterCall(start, count) }
     override suspend fun write(start: LongArray, count: LongArray, values: DoubleArray): Boolean { return mdWriteRasterCall(start, count, values) }
@@ -645,6 +657,8 @@ internal class BundledDimension(engine: RuntimeEngine, id: String, parent: Runti
     override suspend fun getType(): String { val result = invoke("Dimension", "getType", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getDirection(): String { val result = invoke("Dimension", "getDirection", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getSize(): Long { val result = invoke("Dimension", "getSize", mapOf()); return result.jsonPrimitive.content.toLong() }
+    override suspend fun getIndexingVariable(): MDArray? { val result = invoke("Dimension", "getIndexingVariable", mapOf()); return engine.wrapMDArray(result, this) }
+    override suspend fun setIndexingVariable(array: MDArray?): Boolean { val result = invoke("Dimension", "setIndexingVariable_MDArray", mapOf("array" to handle(array))); return result.jsonPrimitive.boolean }
 }
 
 internal class BundledFieldDomain(engine: RuntimeEngine, id: String, parent: RuntimeHandle?) : RuntimeHandle(engine, id, parent), FieldDomain {

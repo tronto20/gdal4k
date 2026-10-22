@@ -20,6 +20,9 @@ struct gdal4k_control {
     double fraction = 0;
     std::string message;
     unsigned long long sequence = 0;
+    // Counts callbacks originating in GDALMultiDimTranslate, independently of
+    // wrapper checkpoints and binary output transfers.
+    unsigned long long multiDimTranslateProgressCalls = 0;
 #ifdef __EMSCRIPTEN__
     double lastYield = -100;
 #endif
@@ -47,5 +50,13 @@ inline int progress(double fraction, const char* message, void* data) {
     }
 #endif
     return !control->cancelled.load();
+}
+inline int multiDimTranslateProgress(double fraction, const char* message, void* data) {
+    auto control = static_cast<gdal4k_control*>(data);
+    if (control) {
+        std::lock_guard<std::mutex> lock(control->mutex);
+        ++control->multiDimTranslateProgressCalls;
+    }
+    return progress(fraction, message, data);
 }
 }

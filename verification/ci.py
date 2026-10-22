@@ -118,6 +118,10 @@ def main():
                 '--library', BUILD/f'jvm-resources/gdal4k/{PLATFORMS[target]}/{library}',
                 '--manifest', BUILD/f'engine/{PLATFORMS[target]}/manifest.json',
                 '--label', 'ci-current')
+            run(sys.executable, ROOT/'verification/md-translate-memory-report.py',
+                '--library', BUILD/f'jvm-resources/gdal4k/{PLATFORMS[target]}/{library}',
+                '--manifest', BUILD/f'engine/{PLATFORMS[target]}/manifest.json',
+                '--label', 'ci-current')
         run(sys.executable, ROOT/'verification/audit-engine.py', PLATFORMS[target])
         publish(target)
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))

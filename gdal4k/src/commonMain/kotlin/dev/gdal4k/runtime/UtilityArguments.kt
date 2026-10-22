@@ -25,6 +25,17 @@ suspend fun GdalRuntime.warpTo(
 
 suspend fun Dataset.info(vararg arguments: String): String = info(arguments.asList())
 
+suspend fun Dataset.multiDimTranslate(vararg arguments: String): Dataset =
+    multiDimTranslate(arguments.asList())
+
+suspend fun Dataset.multiDimTranslateFiles(
+    vararg arguments: String, driver: String = "GTiff", name: String = "converted.tif",
+): GdalFiles = multiDimTranslateFiles(driver, name, arguments.asList())
+
+suspend fun Dataset.multiDimTranslateTo(
+    path: String, vararg arguments: String, driver: String = "GTiff",
+) = multiDimTranslateTo(path, driver, arguments.asList())
+
 suspend fun Dataset.translate(
     vararg arguments: String, driver: String = "GTiff", name: String = "output.tif",
 ): GdalFiles = translate(driver, name, arguments.asList())

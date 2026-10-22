@@ -110,6 +110,9 @@ jobs:
             verification/results/tile-index-memory-*.json
             verification/results/tile-index-memory/
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/TileIndexMemoryProbe*.class
+            verification/results/md-translate-memory-*.json
+            verification/results/md-translate-memory/
+            gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/MultiDimTranslateMemoryProbe*.class
             verification/results/footprint-memory-*.json
             verification/results/footprint-memory/
             gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/FootprintMemoryProbe*.class
