@@ -36,6 +36,7 @@ jobs:
           - { profile: parquet, target: macos-arm64, native: macosArm64, os: macos-15 }
           - { profile: http, target: linux-amd64, native: linuxX64, os: ubuntu-24.04 }
           - { profile: http, target: macos-arm64, native: macosArm64, os: macos-15 }
+          - { profile: combined, target: macos-arm64, native: macosArm64, os: macos-15 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     env:
@@ -57,7 +58,7 @@ jobs:
             optional-${{ matrix.profile }}-${{ matrix.target }}-
             engine-${{ matrix.native }}-
       - name: Modern Bison for macOS Parquet Thrift parser
-        if: matrix.profile == 'parquet' && runner.os == 'macOS'
+        if: runner.os == 'macOS' && (matrix.profile == 'parquet' || matrix.profile == 'combined')
         run: |
           brew install bison
           bison_bin="$(brew --prefix bison)/bin"
@@ -90,6 +91,7 @@ jobs:
             build/driver-profiles/**/source/gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt
             build/driver-profiles/**/source/gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt
             build/driver-profiles/**/source/gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/CombinedDriverMemoryProbe.kt
+            build/driver-profiles/**/source/gdal4k-runtime/build/combined-driver-memory-classpath.json
             build/driver-profiles/**/source/gdal4k-runtime/build/test-results/
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/HttpMemoryProbe*.class
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CombinedDriverMemoryProbe*.class
@@ -98,9 +100,11 @@ jobs:
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DriverProfileFixtures*.class
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DatasetApiTestKt*.class
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DatasetOutputPathKt*.class
+            build/driver-profiles/**/source/verification/results/native-postgis-profile/
             build/driver-profiles/**/source/verification/results/
             build/driver-profiles/**/source/verification/build/arrow-ipc-regression/arrow-ipc-check
             build/driver-profiles/**/source/gdal4k-engine/build/engine/*/cmake/gdal4k_http_probe
+            verification/results/postgis-fixtures/**
             verification/results/native-http-fixture-*/*-requests.json
             verification/results/native-http-fixture-*/*.crt
             build/driver-profiles/**/source/verification/tools/vcpkg/buildtrees/*/*.log
@@ -176,6 +180,7 @@ jobs:
             build/driver-profiles/**/source/gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt
             build/driver-profiles/**/source/gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt
             build/driver-profiles/**/source/gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/CombinedDriverMemoryProbe.kt
+            build/driver-profiles/**/source/gdal4k-runtime/build/combined-driver-memory-classpath.json
             build/driver-profiles/**/source/gdal4k-runtime/build/test-results/
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/HttpMemoryProbe*.class
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CombinedDriverMemoryProbe*.class

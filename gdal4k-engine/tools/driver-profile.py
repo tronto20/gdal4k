@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,7 @@ PROFILES = {
                      {'name': 'netcdf-c', 'default-features': False, 'features': ['netcdf-4']},
                      {'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}],
                  'capabilities': ['scientific', 'parquet', 'http', 'postgresql'],
-                 'targets': ['linux-amd64']},
+                 'targets': ['linux-amd64', 'macos-arm64']},
 }
 TARGETS = {'linux-amd64': ('Linux', 'x86_64', 'LinuxX64', 'linux-x64-gnu'),
            'macos-arm64': ('Darwin', 'arm64', 'MacosArm64', 'macos-arm64')}
@@ -61,15 +62,59 @@ def source_files(root):
     return result
 
 
-def prepare(root, profile, target, http_fixture=None):
+def postgresql_identity(profile, target, fixture):
+    """Only public endpoint/locked-input identity may enter generated sources."""
+    if not has_capability(profile, 'postgresql'):
+        if fixture is not None:
+            raise ValueError('PostGIS fixture supplied to a profile without PostgreSQL')
+        return None
+    if fixture is None:
+        if target == 'macos-arm64':
+            raise ValueError('Mac PostgreSQL requires its owned running PostGIS fixture')
+        return None  # Existing Linux CI service keeps its public test credentials.
+    if not isinstance(fixture, dict) or not isinstance(fixture.get('identity'), dict):
+        raise ValueError('Unsafe or mismatched owned PostGIS fixture identity')
+    dsn = fixture.get('dsn', '')
+    if not isinstance(dsn, str):
+        raise ValueError('Unsafe or mismatched owned PostGIS fixture identity')
+    match = re.fullmatch(r'PG:host=127\.0\.0\.1 port=([1-9][0-9]{0,4}) '
+                         r'dbname=([a-z][a-z0-9_]{0,62}) user=\2', dsn)
+    identity = fixture.get('identity', {})
+    digest = identity.get('archiveSha256', '')
+    if (not match or not 0 < int(match.group(1)) < 65536
+            or identity.get('target') != target
+            or identity.get('safeDSN') != dsn
+            or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)):
+        raise ValueError('Unsafe or mismatched owned PostGIS fixture identity')
+    return dict(target=target, dsn=dsn, archiveSha256=digest)
+
+
+def postgresql_child_environment(environment, fixture):
+    """Pass owned libpq authentication to tests without sharing the server environment."""
+    result = {key: value for key, value in environment.items() if not key.startswith('PG')}
+    private = fixture['env']
+    if not private.get('PGPASSFILE') or not set(private) <= {'PGPASSFILE', 'PGCONNECT_TIMEOUT'}:
+        raise ValueError('Unexpected owned PostGIS child environment')
+    password_file = Path(private['PGPASSFILE'])
+    if (not password_file.is_absolute() or not password_file.is_file()
+            or password_file.is_symlink() or password_file.stat().st_mode & 0o077):
+        raise ValueError('Owned PGPASSFILE must be a private regular file')
+    result.update(private)
+    return result
+
+
+def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None):
     spec = PROFILES[profile]
     if target not in spec['targets']:
         raise ValueError('Profile has no verified build matrix for this target: ' + target)
+    pg_identity = postgresql_identity(profile, target, postgresql_fixture)
     properties = (root / 'gradle.properties').read_text()
     base = next(line.split('=', 1)[1] for line in properties.splitlines() if line.startswith('gdal4kVersion='))
     version = profile_version(base, profile)
     inventory = source_files(root)
     identity = {'profile': profile, 'target': target, 'version': version, 'sources': inventory}
+    if pg_identity is not None:
+        identity['postgresqlFixture'] = pg_identity
     if has_capability(profile, 'http'):
         if not http_fixture:
             raise ValueError('HTTP profile requires its owned running HTTP/TLS fixture')
@@ -110,7 +155,9 @@ gradle.taskGraph.whenReady {
 ''')
     fixture = root / 'verification/driver-profile/DriverProfileApiTest.kt'
     test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
-    replacements = {'@PROFILE@': profile, '@HDF5_PATH@': (snapshot / 'verification/build/driver-profile.h5').as_posix()}
+    replacements = {'@PROFILE@': profile, '@HDF5_PATH@': (snapshot / 'verification/build/driver-profile.h5').as_posix(),
+                    '@POSTGRESQL_DSN@': pg_identity['dsn'] if pg_identity else
+                    'PG:host=127.0.0.1 port=5432 dbname=gdal4k user=gdal4k password=profile-fixture'}
     if has_capability(profile, 'http'):
         replacements.update({'@HTTP_BASE@': http_fixture['urls']['http'], '@HTTPS_BASE@': http_fixture['urls']['https'],
                              '@UNTRUSTED_BASE@': http_fixture['urls']['untrusted'], '@WRONG_NAME_BASE@': http_fixture['urls']['wrong-name']})
@@ -142,15 +189,30 @@ def main():
     parser.add_argument('profile', choices=PROFILES)
     parser.add_argument('target', choices=TARGETS)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--postgis-archive', type=Path,
+                        help='Existing pinned Mac fixture archive; read without modifying it')
     args = parser.parse_args()
     with ExitStack() as stack:
         http_fixture = None
+        postgresql_fixture = None
+        if has_capability(args.profile, 'postgresql') and args.target == 'macos-arm64':
+            if args.prepare_only:
+                parser.error('Mac PostGIS prepare-only requires injected metadata through prepare(); no server is started')
+            pg_spec = importlib.util.spec_from_file_location('postgis_fixture', ROOT / 'verification/driver-profile/postgis-fixture.py')
+            pg_module = importlib.util.module_from_spec(pg_spec); pg_spec.loader.exec_module(pg_module)
+            pg_output = ROOT / 'verification/results/postgis-fixtures' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            postgresql_fixture = stack.enter_context(pg_module.fixture(pg_output, args.target, args.postgis_archive))
         if has_capability(args.profile, 'http'):
             spec = importlib.util.spec_from_file_location('native_http_fixture', ROOT / 'verification/driver-profile/http-fixture.py')
             module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
             output = ROOT / 'verification/results' / ('native-http-fixture-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
             http_fixture = stack.enter_context(module.fixture(output))
-        snapshot = run_profile(args, http_fixture)
+        snapshot = run_profile(args, http_fixture, postgresql_fixture)
+    if postgresql_fixture is not None:
+        # Only sanitized evidence is copied. Provider, PGDATA and private credentials
+        # stay outside uploaded results; the final receipt includes terminal shutdown.
+        evidence = snapshot / 'verification/results/native-postgis-profile'
+        shutil.copytree(postgresql_fixture['output'], evidence)
     if has_capability(args.profile, 'http') and not args.prepare_only:
         evidence = snapshot / 'verification/results/native-http-profile'
         evidence.mkdir(parents=True, exist_ok=False)
@@ -169,8 +231,8 @@ def main():
         subprocess.run([sys.executable, str(ROOT / 'verification/driver-profile/report.py'), str(snapshot), args.profile, args.target], check=True)
 
 
-def run_profile(args, http_fixture):
-    snapshot, identity = prepare(ROOT, args.profile, args.target, http_fixture)
+def run_profile(args, http_fixture, postgresql_fixture=None):
+    snapshot, identity = prepare(ROOT, args.profile, args.target, http_fixture, postgresql_fixture)
     print(json.dumps({'source': str(snapshot), 'version': identity['version']}), flush=True)
     if args.prepare_only:
         return
@@ -178,6 +240,8 @@ def run_profile(args, http_fixture):
     if (platform.system(), platform.machine().lower()) != (system, arch):
         raise ValueError('Run the profile on its matching native host; cross builds are not yet verified')
     env = os.environ.copy()
+    if postgresql_fixture is not None:
+        env = postgresql_child_environment(env, postgresql_fixture)
     if http_fixture:
         env['CURL_CA_BUNDLE'] = http_fixture['ca']
         env['NO_PROXY'] = ','.join(filter(None, [env.get('NO_PROXY', ''), '127.0.0.1', 'localhost']))

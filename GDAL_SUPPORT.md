@@ -12,9 +12,9 @@ Generated adapters cover the declared Kotlin interfaces. Successful generation a
 
 Optional scientific, Parquet, HTTP and PostgreSQL profiles currently have separate versioned dependency configurations and limited tested host matrices. Passing each isolated profile does not establish that their combined capabilities work in one process. Complete JVM support therefore requires a coherent combined-capability engine distribution and tests of its dependency closure and combined runtime behavior on all four JVM classifiers. The small default distribution remains a separate packaging policy.
 
-The first combined profile is being implemented for Linux x64 glibc. It brings HDF5/netCDF, Parquet/Arrow, HTTP/TLS and PostgreSQL into one isolated engine and Maven version. Its current validation status is **pending**: workflow wiring and fixture intent do not establish a successful producer, packaged dependency closure or actual runtime execution. The existing seven isolated profile jobs remain separate checks. See [combined driver verification](verification/combined-drivers.md) for the acceptance scope and evidence requirements.
+The Linux x64 glibc combined profile was verified and merged in PR38. It brings HDF5/netCDF, Parquet/Arrow, HTTP/TLS and PostgreSQL into one isolated engine and Maven version, with source and independent published-consumer runtime fixtures. The macOS ARM64 combined CI cell uses an owned loopback PostGIS provider and the same acceptance gates. Its host evidence must include the actual current producer, packaged dependency closure, runtime cases and completed server cleanup; workflow wiring alone is insufficient. The existing seven isolated profile jobs remain separate checks. See [combined driver verification](verification/combined-drivers.md) for the acceptance scope and evidence requirements.
 
-Combined Linux ARM64, macOS ARM64 and Windows x64 engine/runtime coverage also remains pending. Linux x64 combined verification is the first step toward the four-classifier acceptance matrix, not completion of that matrix or full GDAL support.
+Combined Linux ARM64 and Windows x64 engine/runtime coverage remains pending. Linux x64 verification and the macOS ARM64 acceptance cell do not complete the four-classifier matrix or establish full GDAL support.
 
 ## Extend the same contracts to the other current platforms
 
@@ -34,7 +34,7 @@ Performance claims require a measured bottleneck and controlled before/after run
 
 ## Remaining coverage assessment
 
-After multidimensional conversion, build the JVM acceptance matrix and close the remaining API and packaging gaps. The initial source inspection identifies multidimensional views and metadata, algorithm registry and pipelines, additional utility algorithms, Arrow writes, geometry precision and style tables, general VSI access, scoped configuration and error handling, and asynchronous/thread-safe dataset facilities as areas requiring further assessment. Existing APIs must be checked before adding overlapping replacements.
+With multidimensional conversion merged in PR37, continue the JVM acceptance matrix and close the remaining API and packaging gaps. The initial source inspection identifies multidimensional views and metadata, algorithm registry and pipelines, additional utility algorithms, Arrow writes, geometry precision and style tables, general VSI access, scoped configuration and error handling, and asynchronous/thread-safe dataset facilities as areas requiring further assessment. Existing APIs must be checked before adding overlapping replacements.
 
 The portable multidimensional string schema currently exposes maximum length but does not expose GDAL's JSON string subtype. Native conversion validation compares subtypes, but Kotlin subtype creation/inspection and a representative JSON-subtype runtime fixture remain coverage gaps.
 

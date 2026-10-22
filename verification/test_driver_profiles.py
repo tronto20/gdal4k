@@ -20,7 +20,7 @@ def checkout(root):
              'build.gradle.kts': '// default build\n',
              'gdal4k-engine/engine/vcpkg.json': json.dumps({'dependencies': [{'name': 'gdal', 'default-features': False, 'features': ['geos']}]}),
              'verification/consumer.py': "for test_name in ['DatasetApiTest']: pass\n",
-             'verification/driver-profile/DriverProfileApiTest.kt': '@PROFILE@ @HDF5_PATH@ @HTTP_BASE@ @HTTPS_BASE@',
+             'verification/driver-profile/DriverProfileApiTest.kt': '@PROFILE@ @HDF5_PATH@ @HTTP_BASE@ @HTTPS_BASE@ @POSTGRESQL_DSN@',
              'verification/driver-profile/NativeHttpProfileTest.kt': '@HTTP_BASE@ @HTTPS_BASE@ @UNTRUSTED_BASE@ @WRONG_NAME_BASE@',
              'verification/driver-profile/CombinedDriverMemoryProbe.kt': '// combined probe template\n',
              'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/Existing.kt': '// API test\n',
@@ -35,6 +35,10 @@ def checkout(root):
 
 HTTP_FIXTURE = {'urls': {'http': 'http://127.0.0.1:10001', 'https': 'https://127.0.0.1:10002',
                          'untrusted': 'https://127.0.0.1:10003', 'wrong-name': 'https://127.0.0.1:10004'}}
+POSTGIS_FIXTURE = {'dsn': 'PG:host=127.0.0.1 port=16432 dbname=gdal4k user=gdal4k',
+                   'identity': {'target': 'macos-arm64', 'archiveSha256': 'a' * 64,
+                                'safeDSN': 'PG:host=127.0.0.1 port=16432 dbname=gdal4k user=gdal4k'},
+                   'env': {'PGPASSFILE': '/private/owned-fixture/passfile'}}
 
 class ProfileIsolationTest(unittest.TestCase):
     def test_isolated_sources_version_and_tamper_guard(self):
@@ -89,10 +93,82 @@ class ProfileIsolationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'no verified build matrix'):
                 module.prepare(root, 'postgresql', 'macos-arm64')
             self.assertFalse((root / 'build').exists())
-            for target in ['macos-arm64', 'linux-arm64', 'windows-amd64']:
+            for target in ['linux-arm64', 'windows-amd64']:
                 with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'no verified build matrix'):
                     module.prepare(root, 'combined', target, HTTP_FIXTURE)
                 self.assertFalse((root / 'build').exists())
+
+    def test_mac_combined_owned_postgis_identity_and_isolation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before = checkout(root)
+            with self.assertRaisesRegex(ValueError, 'owned running PostGIS fixture'):
+                module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE)
+            self.assertFalse((root / 'build').exists())
+            snapshot, identity = module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE, POSTGIS_FIXTURE)
+            expected = {key: POSTGIS_FIXTURE['identity'][key] for key in ['target', 'archiveSha256']}
+            expected['dsn'] = POSTGIS_FIXTURE['dsn']
+            self.assertEqual(expected, identity['postgresqlFixture'])
+            self.assertNotIn('/private/', json.dumps(identity))
+            generated = (snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt').read_text()
+            self.assertIn(POSTGIS_FIXTURE['dsn'], generated)
+            self.assertNotIn('@POSTGRESQL_DSN@', generated)
+            self.assertNotIn('password=', generated)
+            self.assertNotIn('/private/', generated)
+            changed = dict(POSTGIS_FIXTURE, dsn=POSTGIS_FIXTURE['dsn'].replace('16432', '16433'))
+            changed['identity'] = dict(changed['identity'], safeDSN=changed['dsn'])
+            self.assertNotEqual(snapshot, module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE, changed)[0])
+            random_dsn = 'PG:host=127.0.0.1 port=16434 dbname=g4k_0123456789abcdef user=g4k_0123456789abcdef'
+            randomized = dict(POSTGIS_FIXTURE, dsn=random_dsn,
+                              identity=dict(POSTGIS_FIXTURE['identity'], safeDSN=random_dsn))
+            self.assertEqual(random_dsn, module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE, randomized)[1]['postgresqlFixture']['dsn'])
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
+            self.assertEqual(snapshot, module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE, POSTGIS_FIXTURE)[0])
+            (snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt').write_text('// changed fixture')
+            with self.assertRaisesRegex(ValueError, 'source changed'):
+                module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE, POSTGIS_FIXTURE)
+
+    def test_unsafe_postgis_identity_rejected_before_output(self):
+        invalid = [dict(POSTGIS_FIXTURE, dsn=dsn) for dsn in [
+            POSTGIS_FIXTURE['dsn'] + ' password=secret',
+            POSTGIS_FIXTURE['dsn'] + '\noptions=-csearch_path=public',
+            POSTGIS_FIXTURE['dsn'].replace('127.0.0.1', 'localhost'),
+            POSTGIS_FIXTURE['dsn'].replace('16432', '0'),
+            POSTGIS_FIXTURE['dsn'].replace('16432', '65536'),
+            POSTGIS_FIXTURE['dsn'].replace('user=gdal4k', 'user=other'), None]]
+        invalid += [dict(POSTGIS_FIXTURE, identity=identity) for identity in [
+            None, dict(POSTGIS_FIXTURE['identity'], target='linux-amd64'),
+            dict(POSTGIS_FIXTURE['identity'], archiveSha256='bad'),
+            dict(POSTGIS_FIXTURE['identity'], archiveSha256=None),
+            dict(POSTGIS_FIXTURE['identity'], safeDSN=POSTGIS_FIXTURE['dsn'].replace('16432', '16433'))]]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout(root)
+            for fixture in invalid:
+                with self.subTest(fixture=fixture), self.assertRaisesRegex(ValueError, 'Unsafe or mismatched'):
+                    module.prepare(root, 'combined', 'macos-arm64', HTTP_FIXTURE, fixture)
+                self.assertFalse((root / 'build').exists())
+
+    def test_owned_postgis_child_environment_keeps_private_credentials_isolated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            password = Path(temporary) / 'pgpass'
+            password.write_text('private fixture credentials\n')
+            password.chmod(0o600)
+            inherited = {'PATH': '/tools/bin', 'CURL_CA_BUNDLE': '/owned/ca.crt',
+                         'PGPASSWORD': 'personal', 'PGHOST': 'personal', 'PGOPTIONS': 'personal', 'PGSERVICE': 'personal'}
+            private = {'PGPASSFILE': str(password), 'PGCONNECT_TIMEOUT': '10'}
+            env = module.postgresql_child_environment(inherited, {'env': private})
+            self.assertEqual({'PATH': '/tools/bin', 'CURL_CA_BUNDLE': '/owned/ca.crt', **private}, env)
+            self.assertEqual('personal', inherited['PGPASSWORD'])
+            password.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, 'private regular file'):
+                module.postgresql_child_environment(inherited, {'env': private})
+            password.chmod(0o600)
+            link = password.parent / 'link'; link.symlink_to(password)
+            with self.assertRaisesRegex(ValueError, 'private regular file'):
+                module.postgresql_child_environment(inherited, {'env': dict(private, PGPASSFILE=str(link))})
+            with self.assertRaisesRegex(ValueError, 'Unexpected'):
+                module.postgresql_child_environment(inherited, {'env': dict(private, DYLD_LIBRARY_PATH='/server')})
 
     def test_combined_requires_owned_http_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:

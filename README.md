@@ -407,7 +407,8 @@ JNI·Native는 독립 control의 atomic 취소/진행률을 읽으며 GDAL nativ
 
 입력은 호출자 소유이며 이미 쓴 출력·cursor·metadata 변경은 rollback하지 않습니다. 직접 출력의 부분 파일도 호출자가 정리합니다. HTTP·파일 mount 단계의 전송 정책은 별개이며, native 진행률 자체가 전송 제한 시간이나 무조건적인 네트워크 중단을 제공하지는 않습니다.
 
-선택적 HDF5·netCDF, Parquet, PostgreSQL 엔진은 [드라이버 프로필](gdal4k-engine/DRIVER-PROFILES.md)에서 별도 버전·로컬 Maven 아카이브로 빌드합니다. 기본 패키지와 타깃은 유지하며, 추가 드라이버 지원은 해당 프로필의 실제 CI 검증 범위에 한정합니다.
+선택 scientific·Parquet·HTTP·PostgreSQL·combined 엔진은 [드라이버 프로필](gdal4k-engine/DRIVER-PROFILES.md)에서 별도 버전·로컬 Maven 아카이브로 빌드합니다. 기본 패키지와 타깃은 유지하며, 추가 드라이버 지원은 프로필별 실제 호스트 검증 범위에 한정합니다.
+`combined`는 같은 엔진과 runtime에서 HDF5/netCDF·Parquet·HTTP/TLS·PostGIS를 함께 검증합니다. Linux x64/glibc 결합 검증은 PR38에서 완료했습니다. macOS ARM64 결합 CI 셀도 현재 산출물, source·독립 published 소비 테스트와 소유 서버 종료 증거를 통과해야 하며, 셀 추가만으로 실행 성공을 뜻하지 않습니다. [결합 검증 범위](verification/combined-drivers.md)를 참고하세요.
 
 ### OGR 컬럼 읽기
 
@@ -609,8 +610,8 @@ This overload uses `dev.gdal4k.runtime.openDataset` on JS/wasmJs. The main URL m
 This policy covers direct JS/wasmJs HTTP inputs and related sidecars. Explicit selection is rejected for local/memory/File inputs and default Native/JNI engines, whose optional CURL backend is not supplied. Engine bootstrap and bundled resource loading are separate; no HTTP support is silently claimed for the other targets.
 
 The isolated `http` profile adds a native CURL range handler while retaining the
-default dependency manifest. It is under verification on Linux x64 and macOS
-ARM64 for JVM/JNI and Kotlin/Native source and published consumers. The profile
+default dependency manifest. Linux x64 and macOS ARM64 have actual JVM/JNI and
+Kotlin/Native source and published-consumer fixture verification. The profile
 uses separate local/CI Maven versions (`0.1.0-http-SNAPSHOT`); it does not replace
 default artifacts or imply a remotely published HTTP package. The actual engine
 negotiates policy support. Native direct HTTP inputs and sibling probes are
@@ -621,7 +622,7 @@ copied to inferred siblings. TLS peer/hostname verification stays enabled, with
 `CURL_CA_BUNDLE` or `SSL_CERT_FILE` for a caller-managed trust file. Local files,
 GDAL's internal cache, output buffers and multiple datasets are outside that
 range-cache bound. See [native HTTP verification](verification/native-http.md)
-for the preserved original baseline and the remaining runtime/evidence gates.
+for the preserved original baseline, controlled measurements and their limits.
 
 ### Raster array transport and cancellation
 
@@ -707,7 +708,7 @@ Public types/signatures, window/scalar validation and handle lifetime are unchan
 Packing and decoding stay inside the runtime operation lock with cancellation
 checkpoints; complete buffers and public value/string allocations remain. A driver
 write already in progress can leave caller-owned partial changes on cancellation.
-The versioned `verification/md-transfer.md` investigation records the original
-macOS ARM64 JVM baseline; the new implementation still requires actual fresh
-producer/runtime/consumer validation and controlled after measurements. No measured
-improvement, zero-copy or cross-platform performance promise is established yet.
+The versioned `verification/md-transfer.md` records the preserved original baseline
+and completed controlled macOS ARM64 JVM comparison, with source, class, probe,
+engine and raw-log bindings. Those measured results retain their stated input and
+host scope; they establish no zero-copy or cross-platform performance promise.
