@@ -124,17 +124,36 @@ class Win32:
             raise C.WinError(error)
         return handle
 
-    def identity_from_handle(self, handle, pid):
+    def creation_time_from_handle(self, handle):
         created, exited, kernel, user = (FILETIME() for _ in range(4))
         self.check(self.k.GetProcessTimes(handle, C.byref(created), C.byref(exited), C.byref(kernel), C.byref(user)))
+        return (created.high << 32) | created.low
+
+    def exited(self, handle, timeout_ms=0):
+        result = self.k.WaitForSingleObject(handle, timeout_ms)
+        if result not in (0, 258):
+            raise C.WinError(C.get_last_error())
+        return result == 0
+
+    def identity_from_handle(self, handle, pid):
+        created = self.creation_time_from_handle(handle)
         size = DWORD(32768); image = C.create_unicode_buffer(size.value)
         self.check(self.k.QueryFullProcessImageNameW(handle, 0, image, C.byref(size)))
-        return dict(pid=int(pid), creationTime100ns=(created.high << 32) | created.low, imagePath=image.value)
+        return dict(pid=int(pid), creationTime100ns=created, imagePath=image.value)
 
     def identity(self, pid):
         handle = self.open_process(pid)
         try:
-            return self.identity_from_handle(handle, pid)
+            if self.exited(handle):
+                raise ProcessLookupError(pid)
+            try:
+                return self.identity_from_handle(handle, pid)
+            except OSError:
+                # Image queries can fail if the process exits during the query.
+                # Only a signaled held handle proves exit; live errors propagate.
+                if self.exited(handle):
+                    raise ProcessLookupError(pid) from None
+                raise
         finally:
             self.close(handle)
 
@@ -289,12 +308,9 @@ def wait_process_exit(identity, timeout):
     except ProcessLookupError:
         return True
     try:
-        if not same_identity(identity, api.identity_from_handle(handle, identity['pid'])):
+        if api.creation_time_from_handle(handle) != identity['creationTime100ns']:
             return True  # Original process exited; this reused PID is never stopped.
-        result = api.k.WaitForSingleObject(handle, max(0, int(timeout * 1000)))
-        if result not in (0, 258):
-            raise C.WinError(C.get_last_error())
-        return result == 0
+        return api.exited(handle, max(0, int(timeout * 1000)))
     finally:
         api.close(handle)
 
@@ -370,12 +386,14 @@ class OwnedProcess:
     def peak_after_exit(self):
         if self.process.poll() is None:
             raise ValueError('Final kernel peak requires actual process exit')
-        identity = self.api.identity_from_handle(self.process._handle, self.process.pid)
-        if not same_identity(identity, self.identity):
+        # Keep the handle and image captured before resume. Windows can no longer
+        # query an exited image, but its held process object retains creation time.
+        if (self.process.pid != self.identity['pid'] or
+                self.api.creation_time_from_handle(self.process._handle) != self.identity['creationTime100ns']):
             raise RuntimeError('Owned Windows process identity changed')
         return dict(collector='Win32 GetProcessMemoryInfo', field='PeakWorkingSetSize',
                     reportedUnit='bytes', peakWorkingSetSizeBytes=self.api.memory(self.process._handle),
-                    windowsProcess=identity, queryPhase='after-process-exit-before-handle-close',
+                    windowsProcess=dict(self.identity), queryPhase='after-process-exit-before-handle-close',
                     returncode=self.process.returncode)
 
     def terminate_tree(self):

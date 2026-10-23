@@ -168,6 +168,68 @@ class WindowsReceiptTest(unittest.TestCase):
             self.assertEqual(hashlib.sha256((root/'evidence/001.log').read_bytes()).hexdigest(), actual['logSha256'])
             owned.close.assert_called_once()
 
+    def test_final_peak_keeps_live_image_and_queries_only_the_held_handle(self):
+        api = MagicMock(); process = MagicMock(pid=123, _handle=456, returncode=0)
+        process.poll.return_value = 0
+        api.identity_from_handle.return_value = identity()
+        api.creation_time_from_handle.return_value = identity()['creationTime100ns']
+        api.memory.return_value = 32 * 1024 * 1024
+        with patch.object(windows, '_api', return_value=api), \
+                patch.object(windows.subprocess, 'Popen', return_value=process):
+            owned = windows.OwnedProcess(['unit-only.exe'])
+            # Actual Windows CI rejected the image query after this child exited.
+            api.identity_from_handle.side_effect = OSError('post-exit image unavailable')
+            peak = owned.peak_after_exit()
+            self.assertEqual(identity(), peak['windowsProcess'])
+            self.assertEqual(32 * 1024 * 1024, peak['peakWorkingSetSizeBytes'])
+            api.creation_time_from_handle.assert_called_once_with(456)
+            api.memory.assert_called_once_with(456)
+            api.identity_from_handle.assert_called_once_with(456, 123)
+            api.open_process.assert_not_called()
+            for pid, created in [(124, identity()['creationTime100ns']), (123, 1)]:
+                process.pid = pid; api.creation_time_from_handle.return_value = created
+                with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                    owned.peak_after_exit()
+            process.pid = 123; process.poll.return_value = None
+            with self.assertRaisesRegex(ValueError, 'actual process exit'):
+                owned.peak_after_exit()
+            self.assertEqual(1, api.memory.call_count)
+
+    def test_exit_wait_uses_creation_time_without_querying_a_terminated_image(self):
+        for created, signaled, expected in [(identity()['creationTime100ns'], True, True),
+                                            (identity()['creationTime100ns'], False, False),
+                                            (1, False, True)]:
+            with self.subTest(created=created, signaled=signaled):
+                api = MagicMock(); api.open_process.return_value = 456
+                api.creation_time_from_handle.return_value = created
+                api.exited.return_value = signaled
+                api.identity_from_handle.side_effect = OSError('post-exit image unavailable')
+                with patch.object(windows, '_api', return_value=api):
+                    self.assertIs(expected, windows.wait_process_exit(identity(), 10))
+                api.identity_from_handle.assert_not_called()
+                api.close.assert_called_once_with(456)
+        api = MagicMock(); api.creation_time_from_handle.side_effect = PermissionError('query denied')
+        with patch.object(windows, '_api', return_value=api), self.assertRaises(PermissionError):
+            windows.wait_process_exit(identity(), 10)
+        api.close.assert_called_once()
+
+    def test_live_identity_query_race_requires_observed_exit_on_the_same_handle(self):
+        for signaled in [True, False]:
+            with self.subTest(signaled=signaled):
+                api = object.__new__(windows.Win32)
+                api.open_process = MagicMock(return_value=456)
+                api.close = MagicMock()
+                api.exited = MagicMock(side_effect=[False, signaled])
+                denied = PermissionError('post-exit image unavailable or live access denied')
+                api.identity_from_handle = MagicMock(side_effect=denied)
+                with self.assertRaises(ProcessLookupError if signaled else PermissionError) as caught:
+                    api.identity(123)
+                if not signaled:
+                    self.assertIs(denied, caught.exception)
+                self.assertEqual([(456,), (456,)],
+                                 [call.args for call in api.exited.call_args_list])
+                api.close.assert_called_once_with(456)
+
 
 @unittest.skipUnless(os.name == 'nt', 'Actual Windows kernel/DACL acceptance runs only on Windows')
 class ActualWindowsKernelTest(unittest.TestCase):
