@@ -21,6 +21,13 @@ Windows. A Linux source test or a mocked Win32 receipt cannot replace them.
 Use normal Gradle tasks and the versioned verification scripts for all producers
 and consumers. Inspect available disk space before builds or large downloads.
 
+Windows profile snapshots use `build/driver-profiles/w/<24-hex-key>/source` to
+leave room for vcpkg's versioned-port Git index locks and other native build
+paths. The full canonical source/fixture identity remains in `inputs.json`;
+existing-directory identity mismatches and prepared-source changes are rejected.
+Install, buildtrees and package directories remain inside that isolated source
+checkout. Reports and evidence paths still derive from the snapshot directory.
+
 ## Remaining acceptance
 
 - Actual Windows kernel peak working-set collection, protected private ACLs,

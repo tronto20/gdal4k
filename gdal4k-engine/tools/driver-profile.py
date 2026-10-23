@@ -155,7 +155,11 @@ def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None, *
             raise ValueError('HTTP profile requires its owned running HTTP/TLS fixture')
         identity['httpFixtureUrls'] = http_fixture['urls']
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    output = root / 'build/driver-profiles' / profile / target / digest
+    # Git's vcpkg versioning index path exceeds Windows MAX_PATH beneath the
+    # full source-digest layout. The complete identity remains checked below;
+    # the shorter directory key must never authorize reuse on its own.
+    output = (root / 'build/driver-profiles/w' / digest[:24] if target == 'windows-amd64'
+              else root / 'build/driver-profiles' / profile / target / digest)
     snapshot = output / 'source'
     if output.exists():
         if output.is_symlink() or not (output / 'inputs.json').is_file() or json.loads((output / 'inputs.json').read_text(encoding='utf-8')) != identity:

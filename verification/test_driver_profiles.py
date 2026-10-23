@@ -2,7 +2,7 @@
 import importlib.util
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import tempfile
 import unittest
@@ -145,6 +145,32 @@ class ProfileIsolationTest(unittest.TestCase):
             self.assertNotIn(b'\r', generated.read_bytes())
             generated.write_text('// changed generated fixture\n', encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'source changed'):
+                module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE, fixture)
+
+    def test_windows_snapshot_bounds_vcpkg_versioning_path_and_checks_full_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout(root)
+            fixture = dict(POSTGIS_FIXTURE, identity=dict(POSTGIS_FIXTURE['identity'], target='windows-amd64'))
+            snapshot, identity = module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE, fixture)
+            digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            self.assertEqual(Path('build/driver-profiles/w') / digest[:24] / 'source', snapshot.relative_to(root))
+            # This is the actual Git read-tree index filename that failed in CI.
+            index = (PureWindowsPath('D:/a/gdal4k/gdal4k') / snapshot.relative_to(root).as_posix()
+                     / 'gdal4k-engine/build/engine/windows-amd64/vcpkg-buildtrees/versioning_/versions/expat'
+                     / ('a' * 40 + '_6256.index.lock'))
+            self.assertLess(len(str(index)), 240)
+            self.assertEqual(identity, json.loads((snapshot.parent / 'inputs.json').read_text(encoding='utf-8')))
+            self.assertEqual(snapshot, module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE, fixture)[0])
+            other_fixture = copy.deepcopy(HTTP_FIXTURE)
+            other_fixture['urls']['http'] = 'http://127.0.0.1:10005'
+            other, other_identity = module.prepare(root, 'combined', 'windows-amd64', other_fixture, fixture)
+            self.assertNotEqual(snapshot, other)
+            self.assertNotEqual(identity, other_identity)
+            # Model a truncated-key collision/unrecognized directory: complete
+            # identity equality is mandatory even when prepared bytes still match.
+            (snapshot.parent / 'inputs.json').write_text(json.dumps(other_identity), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'unrecognized profile directory'):
                 module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE, fixture)
 
     def test_arm_cross_sources_require_runtime_configuration_without_producer_endpoints(self):
