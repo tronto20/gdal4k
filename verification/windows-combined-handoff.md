@@ -37,6 +37,14 @@ pinned revision and private Git metadata before mutation. A public configuration
 receipt is rechecked against the physical clone during final reporting; shared
 tool stores and user/global Git configuration are not modified.
 
+The Windows-only libpq overlay canonicalizes source paths in PostgreSQL's shared
+storage, utility, catalog and node header generators. Meson's `File` objects can
+retain parent segments, leaving a Perl script's raw Windows path longer than its
+canonical path. The patch preserves the pinned scripts, inputs, targets and
+dependency tracking. Offline fixtures check all four Meson files and execute the
+lock-name and wait-event generators; actual Windows build/runtime acceptance
+still requires the current CI evidence.
+
 Windows publication verification keeps the JVM classifier `windows-x64` separate
 from the Native engine module `gdal4k-engine-native-mingw-x64`. The reporter uses
 the shared publication coordinate policy and checks the actual JAR/KLIB members

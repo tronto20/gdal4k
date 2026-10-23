@@ -36,6 +36,30 @@
       "archiveMember": "postgresql-18.4/src/backend/utils/activity/wait_event_names.txt",
       "bytes": 26505,
       "sha256": "98c63a5d1b7a506dc1bc88898bb148e90bd1db61233aed1c09d168f3169e7648"
+    },
+    {
+      "path": "src/include/utils/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/utils/meson.build",
+      "bytes": 2614,
+      "sha256": "7a535b26ea040ab8998cd7eef9c0e343e8ad5e7074757e69944e51bfa69335b2"
+    },
+    {
+      "path": "src/include/catalog/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/catalog/meson.build",
+      "bytes": 4096,
+      "sha256": "2184478e28095dce38c97449007d5dff7f1c9c197031bdf82980354d9878f84b"
+    },
+    {
+      "path": "src/include/nodes/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/nodes/meson.build",
+      "bytes": 1730,
+      "sha256": "803050337a41394b959c136b6f8e95e3352c79183d970e8151d808a9f1c65f16"
+    },
+    {
+      "path": "src/backend/utils/activity/generate-wait_event_types.pl",
+      "archiveMember": "postgresql-18.4/src/backend/utils/activity/generate-wait_event_types.pl",
+      "bytes": 10039,
+      "sha256": "1370f2ae2cb030968bfa5dcb0d09b3ce470de995681b6e713e0170dbaf5d4f70"
     }
   ],
   "mesonFileClass": {

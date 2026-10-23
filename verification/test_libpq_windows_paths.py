@@ -27,6 +27,30 @@ SOURCE_SUBDIR = 'src/include/storage'
 SCRIPT = 'src/backend/storage/lmgr/generate-lwlocknames.pl'
 INPUTS = ['src/include/storage/lwlocklist.h',
           'src/backend/utils/activity/wait_event_names.txt']
+WAIT_SCRIPT = 'src/backend/utils/activity/generate-wait_event_types.pl'
+FILE_CHANGES = {
+    MESON_FILE: {
+        '../../include/storage/lwlocklist.h': INPUTS[0],
+        '../../backend/utils/activity/wait_event_names.txt': INPUTS[1],
+        '../../backend/storage/lmgr/generate-lwlocknames.pl': SCRIPT,
+    },
+    'src/include/utils/meson.build': {
+        '../../backend/utils/activity/wait_event_names.txt': INPUTS[1],
+        '../../backend/utils/activity/generate-wait_event_types.pl': WAIT_SCRIPT,
+        '../../backend/utils/errcodes.txt': 'src/backend/utils/errcodes.txt',
+        '../../backend/utils/generate-errcodes.pl': 'src/backend/utils/generate-errcodes.pl',
+        '../../backend/utils/probes.d': 'src/backend/utils/probes.d',
+        '../../backend/utils/Gen_dummy_probes.pl': 'src/backend/utils/Gen_dummy_probes.pl',
+        '../catalog/pg_proc.dat': 'src/include/catalog/pg_proc.dat',
+        '../../backend/utils/Gen_fmgrtab.pl': 'src/backend/utils/Gen_fmgrtab.pl',
+    },
+    'src/include/catalog/meson.build': {
+        '../../backend/catalog/genbki.pl': 'src/backend/catalog/genbki.pl',
+    },
+    'src/include/nodes/meson.build': {
+        '../../backend/nodes/gen_node_support.pl': 'src/backend/nodes/gen_node_support.pl',
+    },
+}
 ARCHIVE_SHA512 = ('1a7606b5b2460a4fc817d491e1e03262df17ece6869fa3d2b80647baffcfb790'
                   'fbcfa019c3b10fab9f9a14218651b6a358864e40a5d8c5ddc796db2d6e5b469c')
 MESON_EXCERPT_SHA256 = '4064630fa1e1673da4bf0f07e1ba84c7049b75e358856653f887fed82e1f73b2'
@@ -38,8 +62,8 @@ def patched_source(directory, git):
                    check=True, capture_output=True)
     subprocess.run([git, 'apply', str(PATCH)], cwd=directory,
                    check=True, capture_output=True)
-    patched = (directory / MESON_FILE).read_text()
-    if 'meson.project_source_root()' not in patched:
+    patched = {name: (directory / name).read_text() for name in FILE_CHANGES}
+    if sum(text.count('meson.project_source_root()') for text in patched.values()) != 14:
         raise AssertionError('Git did not apply the canonical-path patch to the fixture')
     return patched
 
@@ -52,8 +76,10 @@ class LibpqWindowsPathsTest(unittest.TestCase):
         if cls.git is None or cls.perl is None:
             raise RuntimeError('Git and Perl are required for the libpq path regression')
         cls.original = (FIXTURE / MESON_FILE).read_text()
+        cls.original_files = {name: (FIXTURE / name).read_text() for name in FILE_CHANGES}
         with tempfile.TemporaryDirectory() as temporary:
-            cls.patched = patched_source(Path(temporary), cls.git)
+            cls.patched_files = patched_source(Path(temporary), cls.git)
+        cls.patched = cls.patched_files[MESON_FILE]
 
     def test_fixture_members_match_the_pinned_archive_and_meson_source(self):
         provenance = json.loads((FIXTURE / 'provenance.json').read_text())
@@ -61,7 +87,7 @@ class LibpqWindowsPathsTest(unittest.TestCase):
         self.assertEqual(ARCHIVE_SHA512, provenance['archive']['sha512'])
         self.assertIn('SHA512 ' + ARCHIVE_SHA512, (PORT / 'portfile.cmake').read_text())
         self.assertEqual('18.4', json.loads((PORT / 'vcpkg.json').read_text())['version'])
-        self.assertEqual({'COPYRIGHT', MESON_FILE, SCRIPT, *INPUTS},
+        self.assertEqual({'COPYRIGHT', *FILE_CHANGES, SCRIPT, WAIT_SCRIPT, *INPUTS},
                          {member['path'] for member in provenance['members']})
         for member in provenance['members']:
             with self.subTest(member=member['path']):
@@ -96,23 +122,26 @@ class LibpqWindowsPathsTest(unittest.TestCase):
         # empty conditional patch list leaves the upstream File paths intact.
         self.assertIn("files('../../backend/storage/lmgr/generate-lwlocknames.pl')", self.original)
 
-    def test_patch_preserves_three_file_dependencies_and_the_existing_target(self):
-        canonical = re.findall(r"meson\.project_source_root\(\) / '([^']+)'", self.patched)
-        self.assertEqual([*INPUTS, SCRIPT], canonical)
-        self.assertRegex(self.patched, r'input:\s*files\(\s*meson\.project_source_root\(\)')
-        self.assertIn("perl, files(meson.project_source_root() / '" + SCRIPT + "')", self.patched)
-        self.assertIn("'@INPUT@'", self.patched)
-        # Only the three File names change: target dependencies, output,
-        # installation, Perl selection and generator code remain identical.
-        restored = self.patched
-        for source in [*INPUTS, SCRIPT]:
-            relative = ntpath.relpath(source, SOURCE_SUBDIR).replace('\\', '/')
-            # Upstream intentionally spells the first input as ../../include/...
-            if source == INPUTS[0]:
-                relative = '../../include/storage/lwlocklist.h'
-            restored = restored.replace("meson.project_source_root() / '" + source + "'",
-                                        "'" + relative + "'")
-        self.assertEqual(self.original, restored)
+    def test_patch_preserves_shared_header_file_dependencies_and_existing_targets(self):
+        count = 0
+        for name, replacements in FILE_CHANGES.items():
+            with self.subTest(meson=name):
+                original, patched = self.original_files[name], self.patched_files[name]
+                expected = [replacements[value] for value in re.findall(r"'([^']+)'", original)
+                            if value in replacements]
+                canonical = re.findall(r"meson\.project_source_root\(\) / '([^']+)'", patched)
+                self.assertEqual(expected, canonical)
+                count += len(canonical)
+                restored = patched
+                for relative, source in replacements.items():
+                    restored = restored.replace("meson.project_source_root() / '" + source + "'",
+                                                "'" + relative + "'")
+                # Only path spelling changes; file tracking, target dependencies,
+                # output, installation, Perl selection and scripts remain identical.
+                self.assertEqual(original, restored)
+        self.assertEqual(14, count)
+        self.assertIn("perl, files(meson.project_source_root() / '" + WAIT_SCRIPT + "')",
+                      self.patched_files['src/include/utils/meson.build'])
 
     def test_pinned_meson_file_paths_remove_the_logged_parent_segments(self):
         # Execute the exact pinned Meson File class with Windows lexical path
@@ -132,11 +161,13 @@ class LibpqWindowsPathsTest(unittest.TestCase):
                'gdal4k-windows-amd64-rel')
         build_to_source = '../src/tgresql-18-5510452789.clean'
         source_root = ntpath.normpath(ntpath.join(cwd, build_to_source))
-        for source in [*INPUTS, SCRIPT]:
-            with self.subTest(source=source):
-                relative = '../../' + source.removeprefix('src/')
-                before = meson_file.from_source_file(source_root, SOURCE_SUBDIR, relative)
-                after = meson_file.from_source_file(source_root, SOURCE_SUBDIR,
+        path_count = 0
+        for name, replacements in FILE_CHANGES.items():
+            subdir = str(Path(name).parent).replace('\\', '/')
+            for relative, source in replacements.items():
+                path_count += 1
+                before = meson_file.from_source_file(source_root, subdir, relative)
+                after = meson_file.from_source_file(source_root, subdir,
                                                     ntpath.join(source_root, source))
                 self.assertIsInstance(before, meson_file)
                 self.assertIsInstance(after, meson_file)
@@ -151,7 +182,10 @@ class LibpqWindowsPathsTest(unittest.TestCase):
                 if source == SCRIPT:
                     self.assertEqual(269, len(cwd + '/' + old_argument))
                     self.assertEqual(219, len(new_argument))
-        self.assertEqual(6, len(checked))
+                if source == WAIT_SCRIPT:
+                    self.assertGreaterEqual(len(cwd + '/' + old_argument), 260)
+        self.assertEqual(13, path_count)  # probes.d occurs in both DTrace branches.
+        self.assertEqual(26, len(checked))
 
     def test_real_perl_generator_output_is_byte_identical_for_original_and_canonical_paths(self):
         with tempfile.TemporaryDirectory(prefix='gdal4k-pg-') as temporary:
@@ -179,6 +213,33 @@ class LibpqWindowsPathsTest(unittest.TestCase):
             self.assertIn(b'#define NUM_INDIVIDUAL_LWLOCKS\t\t54', original)
             # The pinned list has 43 named locks and gaps in its index space.
             self.assertEqual(43, original.count(b'(&MainLWLockArray['))
+
+    def test_real_wait_event_generator_preserves_all_three_outputs(self):
+        with tempfile.TemporaryDirectory(prefix='gdal4k-pg-wait-') as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            source.mkdir()
+            patched_source(source, self.git)
+            build = root / 'build'
+            build.mkdir()
+            original_output, canonical_output = root / 'original', root / 'canonical'
+            original_output.mkdir()
+            canonical_output.mkdir()
+            prefix = os.path.join(os.path.relpath(source, build), 'src/include/utils', '../..')
+            old_paths = [os.path.join(prefix, name.removeprefix('src/'))
+                         for name in [WAIT_SCRIPT, INPUTS[1]]]
+            new_paths = [str(source / name) for name in [WAIT_SCRIPT, INPUTS[1]]]
+            for paths, output in [(old_paths, original_output), (new_paths, canonical_output)]:
+                subprocess.run([self.perl, paths[0], '--outdir', str(output), '--code', paths[1]],
+                               cwd=build, check=True, capture_output=True)
+            expected = {'wait_event_types.h', 'pgstat_wait_event.c', 'wait_event_funcs_data.c'}
+            self.assertEqual(expected, {path.name for path in original_output.iterdir()})
+            self.assertEqual(expected, {path.name for path in canonical_output.iterdir()})
+            for name in expected:
+                data = (original_output / name).read_bytes()
+                self.assertEqual(data, (canonical_output / name).read_bytes())
+                self.assertGreater(len(data), 1000)
+            self.assertIn(b'WAIT_EVENT_ARCHIVER_MAIN', (canonical_output / 'wait_event_types.h').read_bytes())
 
 
 if __name__ == '__main__':
