@@ -147,11 +147,15 @@ val requestedJvmClassifiers = providers.gradleProperty("gdal4kJvmClassifiers").o
     .split(',').map(String::trim).filter(String::isNotEmpty).toSet()
 val jvmClassifierTasks = mapOf("macos-arm64" to "macosArm64Jar", "linux-x64-gnu" to "linuxX64GnuJar", "linux-arm64-gnu" to "linuxArm64GnuJar", "windows-x64" to "windowsX64Jar")
 require(requestedJvmClassifiers.all { it in jvmClassifierTasks }) { "Unknown gdal4kJvmClassifiers: $requestedJvmClassifiers" }
-gradle.projectsEvaluated {
-    publishing.publications.named<MavenPublication>("kotlinMultiplatform") {
-        requestedJvmClassifiers.forEach { selected ->
-            artifact(project(":gdal4k-jvm-binaries").tasks.named(jvmClassifierTasks.getValue(selected))) {
-                classifier = selected
+// Unsupported Native compiler hosts can still run JVM tests without publishing.
+// KGP creates no root publication there, so only resolve it for requested artifacts.
+if (requestedJvmClassifiers.isNotEmpty()) {
+    gradle.projectsEvaluated {
+        publishing.publications.named<MavenPublication>("kotlinMultiplatform") {
+            requestedJvmClassifiers.forEach { selected ->
+                artifact(project(":gdal4k-jvm-binaries").tasks.named(jvmClassifierTasks.getValue(selected))) {
+                    classifier = selected
+                }
             }
         }
     }
