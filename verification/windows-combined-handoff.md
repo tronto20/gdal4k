@@ -37,6 +37,11 @@ pinned revision and private Git metadata before mutation. A public configuration
 receipt is rechecked against the physical clone during final reporting; shared
 tool stores and user/global Git configuration are not modified.
 
+Windows publication verification keeps the JVM classifier `windows-x64` separate
+from the Native engine module `gdal4k-engine-native-mingw-x64`. The reporter uses
+the shared publication coordinate policy and checks the actual JAR/KLIB members
+against the current producer classes, DLL and static archive.
+
 ## Remaining acceptance
 
 - Actual Windows kernel peak working-set collection, protected private ACLs,

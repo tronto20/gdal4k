@@ -19,6 +19,9 @@ profile_spec = importlib.util.spec_from_file_location('driver_profile', ROOT / '
 profile_api = importlib.util.module_from_spec(profile_spec)
 profile_spec.loader.exec_module(profile_api)
 has_capability = profile_api.has_capability
+publication_spec = importlib.util.spec_from_file_location('driver_profile_publication_versions', ROOT / 'verification/publication_versions.py')
+publication_policy = importlib.util.module_from_spec(publication_spec)
+publication_spec.loader.exec_module(publication_policy)
 
 def sha(path):
     with path.open('rb') as file:
@@ -52,9 +55,9 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
             if dependency.findtext(ns + 'groupId') == 'dev.tronto.gdal4k':
                 assert dependency.findtext(ns + 'version') == version, 'Mixed profile dependency version'
     native = profile_api.TARGETS[target][2].lower()
-    engine = profile_api.TARGETS[target][3]
+    engine = publication_policy.ENGINE_COORDINATES[native]
     expected = {m + suffix for m in ['gdal4k', 'gdal4k-runtime'] for suffix in ['', '-jvm', '-' + native]}
-    assert coordinates == expected | {'gdal4k-engine', 'gdal4k-engine-native-' + engine}, coordinates
+    assert coordinates == expected | {'gdal4k-engine', engine}, coordinates
     base = repo / 'dev/tronto/gdal4k'
     production = {}
     for module in ['gdal4k', 'gdal4k-runtime']:
@@ -76,7 +79,7 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
         with archive.open(resource) as file:
             jni_hash = hashlib.file_digest(file, 'sha256').hexdigest()
     assert jni_hash == artifacts['jvm-resources/' + resource]
-    module = 'gdal4k-engine-native-' + engine
+    module = engine
     klib = base / module / version / f'{module}-{version}-cinterop-engine.klib'
     with zipfile.ZipFile(klib) as archive:
         members = [n for n in archive.namelist() if n.endswith('/included/libgdal4k.a')]

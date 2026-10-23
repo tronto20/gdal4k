@@ -38,6 +38,7 @@ jobs:
           python -m unittest discover -s verification -p test_arm64_postgis_report.py
           python -m unittest discover -s verification -p test_postgis_arm64_fixture.py
           python -m unittest discover -s verification -p test_driver_profiles.py
+          python -m unittest discover -s verification -p test_driver_profile_publications.py
           python -m unittest discover -s verification -p test_combined_driver_memory_report.py
           python -m unittest discover -s verification -p test_postgis_fixture.py
           python -m unittest discover -s verification -p test_postgis_profile_report.py
