@@ -9,11 +9,11 @@ import kotlin.time.Duration.Companion.seconds
 
 /** Added only to the isolated HTTP profile, and copied unchanged to real published consumers. */
 class NativeHttpProfileTest {
-    private fun url(case: String, suffix: String = "", origin: String = "@HTTP_BASE@") =
+    private fun url(case: String, suffix: String = "", origin: String = driverProfileRuntimeFixture.httpBase) =
         "$origin/$case/$datasetOutputPrefix$suffix/fixture.tif"
     private suspend fun stats(case: String, suffix: String = ""): Map<String, Int> {
         val r = Gdal4k.runtime()
-        return r.openDataset("@HTTP_BASE@/stats/$datasetOutputPrefix$suffix/$case.geojson", DatasetOpenOptions(httpInputPolicy = HttpInputPolicy())).use { ds ->
+        return r.openDataset("${driverProfileRuntimeFixture.httpBase}/stats/$datasetOutputPrefix$suffix/$case.geojson", DatasetOpenOptions(httpInputPolicy = HttpInputPolicy())).use { ds ->
             requireNotNull(ds.getLayer(0)).use { layer -> requireNotNull(layer.getNextFeature()).use { feature ->
                 listOf("requests", "bodyBytes", "maxRange", "status503", "status401", "ifRange", "modifiedRange").associateWith { feature.getFieldAsInteger(it) }
             } }
@@ -88,8 +88,8 @@ class NativeHttpProfileTest {
     }
     @Test fun trustedTlsAndUntrustedOrWrongHostnameRejection() = runTest(timeout = 30.seconds) {
         val r = Gdal4k.runtime()
-        r.openDataset(url("ok", origin = "@HTTPS_BASE@"), DatasetOpenOptions(httpInputPolicy = HttpInputPolicy())).use { readLast(it) }
-        for (origin in listOf("@UNTRUSTED_BASE@", "@WRONG_NAME_BASE@"))
+        r.openDataset(url("ok", origin = driverProfileRuntimeFixture.httpsBase), DatasetOpenOptions(httpInputPolicy = HttpInputPolicy())).use { readLast(it) }
+        for (origin in listOf(driverProfileRuntimeFixture.untrustedBase, driverProfileRuntimeFixture.wrongNameBase))
             assertFailsWith<GdalException> { r.openDataset(url("ok", origin = origin), DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(maxRetries = 2))) }
     }
     @Test fun requestDeadlineHasBoundedRetryAndNoFullDownloadFallback() = runTest(timeout = 30.seconds) {

@@ -51,7 +51,7 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
             if dependency.findtext(ns + 'groupId') == 'dev.tronto.gdal4k':
                 assert dependency.findtext(ns + 'version') == version, 'Mixed profile dependency version'
     native = profile_api.TARGETS[target][2].lower()
-    engine = {'linux-amd64': 'linux-x64-gnu', 'macos-arm64': 'macos-arm64'}[target]
+    engine = {'linux-amd64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu', 'macos-arm64': 'macos-arm64'}[target]
     expected = {m + suffix for m in ['gdal4k', 'gdal4k-runtime'] for suffix in ['', '-jvm', '-' + native]}
     assert coordinates == expected | {'gdal4k-engine', 'gdal4k-engine-native-' + engine}, coordinates
     base = repo / 'dev/tronto/gdal4k'
@@ -92,7 +92,8 @@ def combined_execution_bindings(snapshot, data):
     """Bind command/PID/exit receipts omitted by Darwin's raw time output."""
     snapshot = snapshot.resolve()
     hosts = {'macos-arm64': ('Darwin', 'arm64', '-l', 'Darwin time -l', 'bytes', 1, 'libgdal4k.dylib'),
-             'linux-amd64': ('Linux', 'x86_64', '-v', 'GNU time -v', 'KiB', 1024, 'libgdal4k.so')}
+             'linux-amd64': ('Linux', 'x86_64', '-v', 'GNU time -v', 'KiB', 1024, 'libgdal4k.so'),
+             'linux-arm64': ('Linux', 'aarch64', '-v', 'GNU time -v', 'KiB', 1024, 'libgdal4k.so')}
     assert data['target'] in hosts, 'Unsupported combined command host'
     system, machine, flag, time_format, unit, multiplier, library = hosts[data['target']]
     assert (data['system'], data['machine'].lower()) == (system, machine), 'Combined command host metadata mismatch'
@@ -132,6 +133,240 @@ def combined_execution_bindings(snapshot, data):
         assert execution['command'] == expected, 'Combined time/Java/probe/library command mismatch'
         logs[relative.as_posix()] = record['executionLogSha256']
     return logs
+
+
+def arm64_api():
+    spec = importlib.util.spec_from_file_location('profile_arm64_runtime', ROOT / 'verification/driver-profile/arm64-profile.py')
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+    return api
+
+
+def owned_file(root, name):
+    """Use an existing regular evidence file inside its declared source tree."""
+    relative = Path(name)
+    assert name and not relative.is_absolute() and '..' not in relative.parts and relative.as_posix() == name
+    path = root / relative
+    assert not any(root.joinpath(*relative.parts[:i]).is_symlink() for i in range(1, len(relative.parts) + 1))
+    assert path.is_file(), 'Missing current evidence file: ' + name
+    return path
+
+
+def arm64_transfer_bindings(snapshot):
+    """Recheck transported immutable inputs without relabeling compilation as runtime."""
+    restored_path = snapshot / 'verification/results/arm64-transfer-restored.json'
+    restored = json.loads(restored_path.read_text(encoding='utf-8'))
+    transfer = restored['transfer']
+    assert (transfer['schemaVersion'], transfer['target'], transfer['profile']) == (1, 'linux-arm64', 'combined')
+    assert transfer['producerHost'] == dict(system='Linux', machine='x86_64')
+    assert restored['actualHost'] == dict(system='Linux', machine='aarch64')
+    assert re.fullmatch(r'[0-9a-f]{64}', restored['archiveSha256'])
+    assert re.fullmatch(r'build/driver-profiles/combined/linux-arm64/[0-9a-f]{64}', transfer['output'])
+    project = snapshot
+    for part in reversed((*Path(transfer['output']).parts, 'source')):
+        assert project.name == part, 'Restored source location differs from transfer'
+        project = project.parent
+    api = arm64_api()
+    assert transfer['git'] == api.git_identity(project), 'Restored transfer differs from the current Git identity'
+    assert transfer['sourceBinary'] == transfer['output'] + '/source/gdal4k-runtime/build/bin/linuxArm64/debugTest/test.kexe'
+    assert transfer['consumerBinary'].startswith(transfer['output'] + '/source/verification/results/published-consumer-linuxArm64/bin/')
+    assert transfer['consumerBinary'].endswith('/test.kexe')
+    for name, metadata in transfer['files'].items():
+        assert name.startswith(transfer['output'] + '/') or name.startswith('gdal4k-engine/build/')
+        path = owned_file(project, name)
+        assert (path.stat().st_size, path.stat().st_mode & 0o777, sha(path)) == \
+               (metadata['bytes'], metadata['mode'], metadata['sha256']), 'Transported input changed: ' + name
+    for name in ['sourceBinary', 'consumerBinary']:
+        assert transfer[name] in transfer['files']
+        api.elf_arm64(owned_file(project, transfer[name]))
+    prepared_path = snapshot.parent / 'prepared.json'
+    inputs_path = snapshot.parent / 'inputs.json'
+    for path in [prepared_path, inputs_path]:
+        assert path.relative_to(project).as_posix() in transfer['files']
+    prepared = json.loads(prepared_path.read_text(encoding='utf-8'))
+    for name, digest in prepared.items():
+        source = owned_file(snapshot, name)
+        assert transfer['files'][source.relative_to(project).as_posix()]['sha256'] == digest == sha(source)
+    identity = json.loads(inputs_path.read_text(encoding='utf-8'))
+    assert (identity['profile'], identity['target'], identity['runtimeFixtures']) == \
+           ('combined', 'linux-arm64', 'required-on-execution-host')
+    return dict(restoredReceiptSha256=sha(restored_path), archiveSha256=restored['archiveSha256'],
+                transfer=transfer, project=project, preparedSha256=sha(prepared_path), inputsSha256=sha(inputs_path))
+
+
+def runtime_fixture_source_bindings(snapshot):
+    """Bind generated source and both independently copied platform actuals."""
+    prepared = json.loads((snapshot.parent / 'prepared.json').read_text(encoding='utf-8'))
+    generated = {}
+    for suffix, source_set in [('', 'commonTest'), ('Jvm', 'jvmTest'), ('Native', 'nativeTest')]:
+        name = f'gdal4k-runtime/src/{source_set}/kotlin/dev/gdal4k/DriverProfileRuntimeFixture{suffix}.kt'
+        path = owned_file(snapshot, name)
+        assert sha(path) == prepared[name], 'Runtime fixture generated source changed'
+        template = owned_file(snapshot, 'verification/driver-profile/DriverProfileRuntimeFixture' + suffix + '.kt')
+        expected = template.read_text(encoding='utf-8').replace('@RUNTIME_FIXTURES_REQUIRED@', 'true')
+        for key in ['@HDF5_PATH@', '@POSTGRESQL_DSN@', '@HTTP_BASE@', '@HTTPS_BASE@', '@UNTRUSTED_BASE@', '@WRONG_NAME_BASE@']:
+            expected = expected.replace(key, '')
+        assert path.read_bytes() == expected.encode('utf-8'), 'ARM fixture helper must require runtime input without producer endpoints'
+        generated[name] = sha(path)
+    consumers = {}
+    for target, suffix in [('jvm', 'Jvm'), ('linuxArm64', 'Native')]:
+        folder = snapshot / ('verification/results/published-consumer-' + target)
+        result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+        receipts = result['profile_runtime_fixture_sources']
+        assert len(receipts) == 2
+        expected_sources = {
+            'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileRuntimeFixture.kt':
+                'src/commonTest/kotlin/consumer/DriverProfileRuntimeFixture.kt',
+            f'gdal4k-runtime/src/{"jvmTest" if target == "jvm" else "nativeTest"}/kotlin/dev/gdal4k/DriverProfileRuntimeFixture{suffix}.kt':
+                f'src/{target}Test/kotlin/consumer/DriverProfileRuntimeFixture{suffix}.kt'}
+        assert {item['source']: item['consumer'] for item in receipts} == expected_sources
+        for item in receipts:
+            source = owned_file(snapshot, item['source'])
+            assert item['sourceSha256'] == generated[item['source']] == sha(source)
+            assert item['preservedSource'] == 'fixture-sources/' + item['consumer']
+            preserved = owned_file(folder, item['preservedSource'])
+            copied = source.read_text(encoding='utf-8').replace('package dev.gdal4k\n', 'package consumer\n').encode('utf-8')
+            assert preserved.read_bytes() == copied
+            assert sha(preserved) == item['consumerSha256'], 'Independent runtime fixture source changed'
+        consumers[target] = dict(resultSha256=sha(folder / 'result.json'), sources=receipts)
+    return dict(generatedSourceSha256=generated, independentConsumerSources=consumers)
+
+
+def arm64_native_bindings(snapshot, label, configuration, restored):
+    assert label in ['source', 'consumer']
+    path = snapshot / f'verification/results/arm64-native-{label}.json'
+    value = json.loads(path.read_text(encoding='utf-8'))
+    assert value['result'] == 'passed' and value['target'] == 'linux-arm64'
+    assert value['actual_execution'] is True and value['compiled_only'] is False
+    assert value['host'] == dict(system='Linux', machine='aarch64')
+    transfer = restored['transfer']
+    transfer_name = transfer[label + 'Binary']
+    executable = owned_file(snapshot, value['executable'])
+    assert executable == restored['project'] / transfer_name
+    api = arm64_api()
+    api.elf_arm64(executable)
+    assert sha(executable) == value['executableSha256'] == transfer['files'][transfer_name]['sha256']
+    command = owned_file(snapshot, value['command'])
+    log = owned_file(snapshot, value['log'])
+    assert sha(command) == value['commandSha256'] and sha(log) == value['logSha256']
+    receipt = json.loads(command.read_text(encoding='utf-8'))
+    assert command.parent == log.parent and receipt['log'] == log.name
+    assert receipt['command'] == [str(executable)] and receipt['cwd'] == str(snapshot)
+    assert receipt['status'] == 'passed' and receipt['outputComplete'] is True
+    assert type(receipt['returncode']) is int and receipt['returncode'] == 0
+    assert type(receipt['pid']) is int and receipt['pid'] > 0
+    assert receipt['timeoutSeconds'] == 1800 and receipt['elapsedSeconds'] > 0
+    assert receipt['startedAtUtc'] and receipt['completedAtUtc']
+    raw = log.read_text(encoding='utf-8')
+    assert value['counts'] == api.native_cases(raw), 'Native case receipts differ from actual stdout'
+    namespace = 'dev.gdal4k.' if label == 'source' else 'consumer.'
+    assert all(name.startswith(namespace) for name in value['counts']['cases']), 'Native source/consumer test namespace mismatch'
+    assert value['runtimeFixture'] == api.fixture_markers(raw, configuration)
+    expected_http = re.findall(r'@Test\s+fun\s+(\w+)\(',
+                              (snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt').read_text(encoding='utf-8'))
+    assert set(value['counts']['httpCases']) == set(expected_http) and len(expected_http) == len(set(expected_http))
+    if label == 'consumer':
+        compile_path = snapshot / 'verification/results/published-consumer-linuxArm64/result.json'
+        assert value['compilationReceipt'] == dict(path=compile_path.relative_to(snapshot).as_posix(), sha256=sha(compile_path))
+        compiled = json.loads(compile_path.read_text(encoding='utf-8'))
+        assert compiled['result'] == 'passed' and compiled['target'] == 'linuxArm64'
+        assert compiled['version'] == json.loads((snapshot.parent / 'inputs.json').read_text(encoding='utf-8'))['version']
+        assert compiled['compiled_only'] is True and compiled['producer_paths_hidden'] is True
+        assert compiled['producer_paths_hidden_count'] == 3
+        assert set(compiled['producer_paths_hidden_names']) == {
+            'gdal4k-engine/build/engine/linux-arm64',
+            'gdal4k-engine/build/classes/kotlin/linuxArm64/main/cinterop',
+            'gdal4k-runtime/build/classes/kotlin/linuxArm64/main/cinterop'}
+        assert compile_path.relative_to(restored['project']).as_posix() in transfer['files']
+    else:
+        assert value['compilationReceipt'] is None
+    return dict(receiptSha256=sha(path), executableSha256=value['executableSha256'], executable=value['executable'],
+                commandSha256=value['commandSha256'], command=value['command'], log=value['log'], logSha256=value['logSha256'],
+                counts=value['counts'], runtimeFixture=value['runtimeFixture'], compilationReceipt=value['compilationReceipt'],
+                scope='Actual AArch64 Native execution; transported compilation receipts remain compiled_only:true')
+
+
+def arm64_runtime_fixture_bindings(snapshot, diagnostics, policy_keys, native):
+    configuration_path = snapshot / 'verification/results/arm64-runtime-configuration.json'
+    configuration = json.loads(configuration_path.read_text(encoding='utf-8'))
+    api = arm64_api()
+    # This validates the whole public configuration atomically before interpreting endpoints.
+    contract = api.load('report_runtime_fixture_contract', 'verification/driver-profile/runtime-fixture.py')
+    assert contract.validate(configuration) == configuration
+    assert configuration['hdf5Path'] == str((snapshot / 'verification/build/driver-profile.h5').resolve())
+    http = json.loads((snapshot / 'verification/results/native-http-profile/fixture.json').read_text(encoding='utf-8'))
+    assert configuration['httpUrls'] == http['urls']
+    markers, raw_hashes = {}, {}
+    for name, folder in [('sourceJvm', snapshot / 'gdal4k-runtime/build/test-results/jvmTest'),
+                         ('consumerJvm', snapshot / 'verification/results/published-consumer-jvm')]:
+        xml = sorted(folder.rglob('TEST-*.xml'))
+        assert xml
+        text = '\n'.join(output.text or '' for path in xml for output in ET.parse(path).getroot().iter('system-out'))
+        markers[name] = api.fixture_markers(text, configuration)
+        raw_hashes[name] = {path.relative_to(snapshot).as_posix(): sha(path) for path in xml}
+    for label in ['source', 'consumer']:
+        item = native[label]
+        path = owned_file(snapshot, item['log'])
+        assert sha(path) == item['logSha256']
+        markers[label + 'Native'] = api.fixture_markers(path.read_text(encoding='utf-8'), configuration)
+        raw_hashes[label + 'Native'] = {item['log']: item['logSha256']}
+    assert len({value['contextKey'] for value in markers.values()}) == 4
+    assert {value['contextKey'] for value in markers.values()} == set(policy_keys), 'Actual fixture markers differ from the four HTTP contexts'
+    for record in diagnostics['records']:
+        path = owned_file(snapshot, record['log'])
+        marker = api.fixture_markers(path.read_text(encoding='utf-8'), configuration)
+        assert marker['contextKey'] == record['contextKey']
+        name = 'combinedJvm' + str(record['trial'])
+        assert name not in markers
+        markers[name] = marker
+        raw_hashes[name] = {record['log']: record['logSha256']}
+        assert sha(path) == record['logSha256']
+    assert len(markers) == len({value['contextKey'] for value in markers.values()}) == 7
+    sources = runtime_fixture_source_bindings(snapshot)
+    return dict(configuration=configuration, configurationSha256=sha(configuration_path),
+                canonicalConfigurationSha256=hashlib.sha256(contract.canonical_json(configuration).encode('utf-8')).hexdigest(),
+                processMarkers=markers, actualOutputSha256=raw_hashes, sourceBindings=sources,
+                scope='Seven actual process markers; four source/consumer test contexts and three fresh combined JVMs')
+
+
+def postgis_arm64_fixture_bindings(snapshot, target):
+    assert target == 'linux-arm64'
+    spec = importlib.util.spec_from_file_location('arm64_postgis_report', ROOT / 'verification/driver-profile/arm64-postgis-report.py')
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+    return api.bindings(snapshot, target)
+
+
+def arm64_ipc_bindings(snapshot, ipc):
+    """Require the actual ARM execution and the unchanged cross-build receipt."""
+    build_path = snapshot / 'verification/results/arrow-ipc-build-linux-arm64.json'
+    built = json.loads(build_path.read_text(encoding='utf-8'))
+    assert built['result'] == 'compiled' and built['compiled_only'] is True and built['actual_execution'] is False
+    assert built['target'] == 'linux-arm64' and built['compilerHost'] == dict(system='Linux', architecture='x86_64')
+    assert ipc['compiled_only'] is False and ipc['actual_execution'] is True
+    assert ipc['host'] == dict(system='Linux', architecture='aarch64')
+    assert ipc['buildReceiptSha256'] == sha(build_path)
+    for key in ['sourceSha256', 'archiveSha256', 'engineManifestSha256', 'engineSourceFingerprint', 'executableSha256']:
+        assert ipc[key] == built[key], 'IPC runtime/build identity mismatch: ' + key
+    program = owned_file(snapshot, built['executablePath'])
+    arm64_api().elf_arm64(program)
+    assert sha(program) == built['executableSha256']
+    manifest_path = snapshot / 'gdal4k-engine/build/engine/linux-arm64/manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    assert sha(manifest_path) == built['engineManifestSha256']
+    assert manifest['source_fingerprint'] == built['engineSourceFingerprint']
+    execution = ipc['execution']
+    assert execution['argv'] == [str(program)] and execution['cwd'] == str(snapshot)
+    assert execution['processStarted'] is True and execution['timedOut'] is False and execution['error'] is None
+    assert type(execution['returncode']) is int and execution['returncode'] == 0
+    assert execution['timeoutSeconds'] == 120 and execution['startedAtUtc'] and execution['completedAtUtc']
+    for stream in ['stdout', 'stderr']:
+        path = owned_file(snapshot, execution[stream + 'Log'])
+        assert sha(path) == execution[stream + 'Sha256']
+        assert path.read_text(encoding='utf-8') == ipc[stream]
+    assert ipc['stdout'].splitlines().count('GDAL4K_ARROW_IPC_VARIADIC_PREFETCH_OK') == 1
+    return dict(buildReceiptSha256=sha(build_path), executableSha256=sha(program), execution=execution,
+                scope='Cross-compiled IPC executable actually ran on Linux ARM64; compiler receipt remains compile-only')
 
 
 def diagnostic_bindings(snapshot, data, measured, publication):
@@ -324,6 +559,15 @@ def main():
     output = snapshot.parent
     identity = json.loads((output / 'inputs.json').read_text())
     assert identity['profile'] == profile and identity['target'] == target
+    arm_runtime = target == 'linux-arm64'
+    restored = None
+    native_runtime = {}
+    if arm_runtime:
+        assert profile == 'combined' and identity['runtimeFixtures'] == 'required-on-execution-host'
+        restored = arm64_transfer_bindings(snapshot)
+        configuration = json.loads((snapshot / 'verification/results/arm64-runtime-configuration.json').read_text(encoding='utf-8'))
+        for label in ['source', 'consumer']:
+            native_runtime[label] = arm64_native_bindings(snapshot, label, configuration, restored)
     for name, digest in json.loads((output / 'prepared.json').read_text()).items():
         assert sha(snapshot / name) == digest, 'Prepared source changed during profile verification: ' + name
     version = identity['version']
@@ -344,6 +588,8 @@ def main():
     postgis_fixture = None
     if target == 'macos-arm64' and has_capability(profile, 'postgresql'):
         postgis_fixture = postgis_fixture_bindings(snapshot, target)
+    elif arm_runtime and has_capability(profile, 'postgresql'):
+        postgis_fixture = postgis_arm64_fixture_bindings(snapshot, target)
     repo = snapshot / 'verification/build/consumer-maven'
     publication = publication_bindings(snapshot, repo, version, target, measurements['profile']['artifactHashes'])
     proof = {}
@@ -353,6 +599,12 @@ def main():
                        ('sourceNative', snapshot / ('gdal4k-runtime/build/test-results/' + ('macosArm64Test' if target.startswith('macos') else 'linuxX64Test'))),
                        ('consumerJvm', snapshot / 'verification/results/published-consumer-jvm'),
                        ('consumerNative', snapshot / ('verification/results/published-consumer-' + ('macosArm64' if target.startswith('macos') else 'linuxX64')))]:
+        if arm_runtime and name.endswith('Native'):
+            actual = native_runtime['source' if name == 'sourceNative' else 'consumer']['counts']
+            proof[name] = {key: actual[key] for key in ['tests', 'failures', 'errors', 'skipped']}
+            fixture_contexts[name] = actual['fixture']
+            http_test_contexts[name] = actual['httpCases']
+            continue
         xml = list(path.rglob('TEST-*.xml'))
         assert xml, name
         counts = {k: sum(int(ET.parse(p).getroot().get(k, 0)) for p in xml) for k in ['tests', 'failures', 'errors', 'skipped']}
@@ -366,7 +618,7 @@ def main():
             cases = [c.get('name') for p in xml for c in ET.parse(p).getroot().iter('testcase') if 'NativeHttpProfileTest' in c.get('classname', '')]
             assert len(cases) == 10 and len(set(cases)) == 10, (name, cases)
             http_test_contexts[name] = cases
-    for name in ['jvm', 'macosArm64' if target.startswith('macos') else 'linuxX64']:
+    for name in ['jvm'] + ([] if arm_runtime else ['macosArm64' if target.startswith('macos') else 'linuxX64']):
         result = json.loads((snapshot / f'verification/results/published-consumer-{name}/result.json').read_text())
         assert result['result'] == 'passed' and not result['compiled_only'] and result['version'] == version
         if name != 'jvm':
@@ -391,6 +643,8 @@ def main():
         assert ipc['archiveSha256'] == sha(snapshot / f'gdal4k-engine/build/engine/{target}/libgdal4k.a')
         assert ipc['sourceSha256'] == sha(snapshot / 'verification/driver-profile/arrow-ipc-check.cpp')
         assert ipc['stdout'].strip() == 'GDAL4K_ARROW_IPC_VARIADIC_PREFETCH_OK'
+        if arm_runtime:
+            ipc['stagedExecutionBindings'] = arm64_ipc_bindings(snapshot, ipc)
     combined = None
     combined_diagnostics = None
     if profile == 'combined':
@@ -416,9 +670,15 @@ def main():
             assert value == statistics.median(r[key] for r in combined_diagnostics['records'])
         generated_test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
         test_classes = snapshot / 'gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k'
-        fixture_classes = sorted({p for pattern in ['DriverProfileApiTest*.class', 'DriverProfileFixtures*.class']
+        fixture_classes = sorted({p for pattern in ['DriverProfileApiTest*.class', 'DriverProfileFixtures*.class',
+                                                   'DriverProfileRuntimeFixture*.class']
                                   for p in test_classes.glob(pattern)})
         assert any(p.name == 'DriverProfileFixtures.class' for p in fixture_classes), 'Missing actual same-process fixture implementation'
+        for required in ['DriverProfileRuntimeFixture.class', 'DriverProfileRuntimeFixtureKt.class',
+                         'DriverProfileRuntimeFixtureJvmKt.class']:
+            assert any(p.name == required for p in fixture_classes), 'Missing actual test runtime configuration class: ' + required
+        assert all(bindings['compiledProbeSha256'].get(str(path.relative_to(snapshot))) == sha(path)
+                   for path in fixture_classes), 'Combined diagnostic receipt omitted or changed a fixture helper class'
         combined = dict(diagnosticsSha256=sha(diagnostics), currentBindings=bindings,
                         sameProcessFixtureContexts=fixture_contexts, generatedFixtureSourceSha256=sha(generated_test),
                         actualFixtureClassSha256={str(p.relative_to(snapshot)): sha(p) for p in fixture_classes},
@@ -458,6 +718,8 @@ def main():
         assert {r['key'] for r in tls if r['name'] == 'fixture.tif' and r['case'] != 'combined'} == keys
         if combined is not None:
             combined['httpAndTlsInvocations'] = combined_request_bindings(records, tls, keys, combined_diagnostics)
+            if arm_runtime:
+                combined['runtimeFixtureBindings'] = arm64_runtime_fixture_bindings(snapshot, combined_diagnostics, keys, native_runtime)
         else:
             assert not any(r['case'] == 'combined' for r in records + tls)
         for name in ['untrusted', 'wrong-name']:
@@ -490,6 +752,8 @@ def main():
               'archive': archive.name, 'archiveSha256': sha(archive), 'httpRegression': http,
               'combinedRegression': combined, 'publicationBindings': publication, 'scientificFixture': scientific_fixture,
               'postgisFixture': postgis_fixture,
+              'arm64RuntimeBindings': (dict(transfer={key: value for key, value in restored.items() if key != 'project'},
+                                            native=native_runtime) if arm_runtime else None),
               'publication': 'isolated local Maven archive only; no remote upload or default coordinate replacement'}
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({key: report[key] for key in ['profile', 'target', 'version', 'measured', 'tests', 'publication']}), flush=True)

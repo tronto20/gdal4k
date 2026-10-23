@@ -24,16 +24,39 @@ def sha(path):
 
 
 def host_settings(manifest, system, machine):
-    hosts = {('Linux', 'x86_64'): ('linux-amd64', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
-             ('Darwin', 'arm64'): ('macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1)}
+    hosts = {('Linux', 'x86_64'): ('linux-amd64', 'LinuxX64', 'linux-x64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
+             ('Linux', 'aarch64'): ('linux-arm64', 'LinuxArm64', 'linux-arm64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
+             ('Darwin', 'arm64'): ('macos-arm64', 'MacosArm64', 'macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1)}
     host = (system, machine.lower())
     if host not in hosts:
-        raise ValueError('Combined JVM diagnostics require Linux x64 or macOS ARM64: ' + repr(host))
-    target, library, flag, time_format, unit, multiplier = hosts[host]
+        raise ValueError('Combined JVM diagnostics require Linux x64, Linux ARM64 or macOS ARM64: ' + repr(host))
+    target, gradle_target, classifier, library, flag, time_format, unit, multiplier = hosts[host]
     if manifest['target'] != target:
         raise ValueError('Combined engine target does not match actual host: ' + manifest['target'])
-    return dict(target=target, library=library, flag=flag, timeFormat=time_format,
+    return dict(target=target, gradleTarget=gradle_target, classifier=classifier,
+                library=library, flag=flag, timeFormat=time_format,
                 reportedRssUnit=unit, rssMultiplierToBytes=multiplier)
+
+
+def prepare_classpath():
+    # Preserve the orchestrator's verified staged-engine Gradle property on ARM.
+    subprocess.run([str(ROOT / 'gradlew'), '--console=plain', ':gdal4k-runtime:writeCombinedDriverMemoryClasspath',
+                    '-I', str(ROOT / 'verification/combined-driver-memory.init.gradle'), '--no-configuration-cache'],
+                   cwd=ROOT, env=os.environ.copy(), check=True)
+
+
+def compiled_probe_classes(test_root):
+    patterns = ['CombinedDriverMemoryProbe*.class', 'DriverProfileApiTest*.class',
+                'DriverProfileFixtures*.class', 'DriverProfileRuntimeFixture*.class',
+                'DatasetApiTestKt*.class', 'DatasetOutputPathKt*.class']
+    classes = sorted({path for pattern in patterns for path in test_root.glob(pattern)})
+    required = {'CombinedDriverMemoryProbe.class', 'DriverProfileApiTestKt.class',
+                'DriverProfileFixtures.class', 'DriverProfileRuntimeFixture.class',
+                'DriverProfileRuntimeFixtureKt.class', 'DriverProfileRuntimeFixtureJvmKt.class'}
+    missing = required - {path.name for path in classes}
+    if missing:
+        raise ValueError('Missing combined diagnostic classes: ' + ', '.join(sorted(missing)))
+    return classes
 
 
 def run_timed(command, log, evidence_path, *, cwd, timeout=600):
@@ -108,21 +131,13 @@ def main():
     report_path = ROOT / f'verification/results/combined-driver-memory-{target}.json'
     assert not report_path.exists(), 'Preserve old evidence before a new diagnostic run'
     assert shutil.disk_usage(ROOT).free > 512 * 1024 ** 2, 'Insufficient metadata/log headroom'
-    subprocess.run([str(ROOT / 'gradlew'), '--console=plain', ':gdal4k-runtime:writeCombinedDriverMemoryClasspath',
-                    '-I', str(ROOT / 'verification/combined-driver-memory.init.gradle'), '--no-configuration-cache'],
-                   cwd=ROOT, check=True)
+    prepare_classpath()
     cp = json.loads((ROOT / 'gdal4k-runtime/build/combined-driver-memory-classpath.json').read_text())
     test_root = ROOT / 'gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k'
-    classes = sorted({p for pattern in ['CombinedDriverMemoryProbe*.class', 'DriverProfileApiTest*.class',
-                                      'DriverProfileFixtures*.class',
-                                      'DatasetApiTestKt*.class', 'DatasetOutputPathKt*.class']
-                      for p in test_root.glob(pattern)})
+    classes = compiled_probe_classes(test_root)
     production = sorted(p for module in ['gdal4k', 'gdal4k-runtime']
                         for p in (ROOT / module / 'build/classes/kotlin/jvm/main').rglob('*.class'))
-    assert classes and production
-    assert any(p.name == 'CombinedDriverMemoryProbe.class' for p in classes)
-    assert any(p.name == 'DriverProfileApiTestKt.class' for p in classes)
-    assert any(p.name == 'DriverProfileFixtures.class' for p in classes)
+    assert production
     sources = json.loads((ROOT.parent / 'prepared.json').read_text())
     for name, digest in sources.items():
         assert sha(ROOT / name) == digest, name
@@ -163,7 +178,8 @@ def main():
     assert all(sha(ROOT / name) == digest for name, digest in sources.items()), 'Prepared source changed during diagnostics'
     report = dict(result='passed', utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   testedHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
-                  target=target, platform=platform.platform(), system=system, machine=machine,
+                  target=target, gradleTarget=host['gradleTarget'], classifier=host['classifier'],
+                  platform=platform.platform(), system=system, machine=machine,
                   osRss=dict(timeExecutable='/usr/bin/time', timeArgument=host['flag'],
                              timeFormat=host['timeFormat'], reportedUnit=host['reportedRssUnit'],
                              multiplierToBytes=host['rssMultiplierToBytes']),

@@ -26,10 +26,11 @@ coverage on the other existing targets follows with actual platform execution ev
 Isolated optional driver profiles do not establish a combined JVM distribution or complete
 GDAL API/driver support.
 
-The Linux x64 combined dependency profile was verified and merged in PR38. The macOS
-ARM64 combined CI cell adds the same source/published-consumer gates with an owned
-loopback PostGIS fixture; its workflow wiring alone establishes no runtime result.
-Combined Linux ARM64 and Windows x64 verification remains pending.
+The Linux x64 combined dependency profile was verified and merged in PR38, followed
+by macOS ARM64 in PR40 with actual source/published consumers and owned PostGIS cleanup.
+Linux ARM64 now has separate x64 cross-build and actual ARM64 execution phases; its
+current producer/package/runtime evidence remains pending. Windows x64 combined
+verification and the remaining JVM API/driver acceptance matrix are still open.
 
 Performance claims require identical-input/environment speed, cumulative allocation and OS peak
 RSS diagnostics with raw logs/hashes. Functional additions require correctness/error/lifetime
