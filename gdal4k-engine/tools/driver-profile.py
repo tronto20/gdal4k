@@ -35,11 +35,20 @@ PROFILES = {
                      {'name': 'netcdf-c', 'default-features': False, 'features': ['netcdf-4']},
                      {'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}],
                  'capabilities': ['scientific', 'parquet', 'http', 'postgresql'],
-                 'targets': ['linux-amd64', 'macos-arm64', 'linux-arm64']},
+                 'targets': ['linux-amd64', 'macos-arm64', 'linux-arm64', 'windows-amd64']},
 }
 TARGETS = {'linux-amd64': ('Linux', 'x86_64', 'LinuxX64', 'linux-x64-gnu'),
            'macos-arm64': ('Darwin', 'arm64', 'MacosArm64', 'macos-arm64'),
-           'linux-arm64': ('Linux', 'aarch64', 'LinuxArm64', 'linux-arm64-gnu')}
+           'linux-arm64': ('Linux', 'aarch64', 'LinuxArm64', 'linux-arm64-gnu'),
+           'windows-amd64': ('Windows', 'amd64', 'MingwX64', 'windows-x64')}
+
+
+def jni_library(target):
+    return 'gdal4k.dll' if target.startswith('windows') else 'libgdal4k.dylib' if target.startswith('macos') else 'libgdal4k.so'
+
+
+def cache_probe(target):
+    return 'gdal4k_http_probe.exe' if target.startswith('windows') else 'gdal4k_http_probe'
 
 
 def has_capability(profile, capability):
@@ -70,8 +79,8 @@ def postgresql_identity(profile, target, fixture):
             raise ValueError('PostGIS fixture supplied to a profile without PostgreSQL')
         return None
     if fixture is None:
-        if target == 'macos-arm64':
-            raise ValueError('Mac PostgreSQL requires its owned running PostGIS fixture')
+        if target in ['macos-arm64', 'windows-amd64']:
+            raise ValueError('Mac/Windows PostgreSQL requires its owned running PostGIS fixture')
         return None  # Existing Linux CI service keeps its public test credentials.
     if not isinstance(fixture, dict) or not isinstance(fixture.get('identity'), dict):
         raise ValueError('Unsafe or mismatched owned PostGIS fixture identity')
@@ -90,15 +99,34 @@ def postgresql_identity(profile, target, fixture):
     return dict(target=target, dsn=dsn, archiveSha256=digest)
 
 
-def postgresql_child_environment(environment, fixture):
+def windows_process_api():
+    spec = importlib.util.spec_from_file_location('profile_windows_process', ROOT / 'verification/windows_process.py')
+    windows = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(windows)
+    return windows
+
+
+def windows_pe_api(root):
+    spec = importlib.util.spec_from_file_location('profile_windows_pe', root / 'verification/windows_pe.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def postgresql_child_environment(environment, fixture, target=None):
     """Pass owned libpq authentication to tests without sharing the server environment."""
-    result = {key: value for key, value in environment.items() if not key.startswith('PG')}
+    result = {key: value for key, value in environment.items()
+              if not (key.upper() if target == 'windows-amd64' else key).startswith('PG')}
     private = fixture['env']
     if not private.get('PGPASSFILE') or not set(private) <= {'PGPASSFILE', 'PGCONNECT_TIMEOUT'}:
         raise ValueError('Unexpected owned PostGIS child environment')
     password_file = Path(private['PGPASSFILE'])
     if (not password_file.is_absolute() or not password_file.is_file()
-            or password_file.is_symlink() or password_file.stat().st_mode & 0o077):
+            or password_file.is_symlink()):
+        raise ValueError('Owned PGPASSFILE must be a private regular file')
+    if target == 'windows-amd64':
+        windows_process_api().verify_private_path(password_file)
+    elif password_file.stat().st_mode & 0o077:
         raise ValueError('Owned PGPASSFILE must be a private regular file')
     result.update(private)
     return result
@@ -113,7 +141,7 @@ def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None, *
     if runtime_fixtures and (http_fixture is not None or postgresql_fixture is not None):
         raise ValueError('Cross-build sources cannot capture producer-host runtime fixtures')
     pg_identity = None if runtime_fixtures else postgresql_identity(profile, target, postgresql_fixture)
-    properties = (root / 'gradle.properties').read_text()
+    properties = (root / 'gradle.properties').read_text(encoding='utf-8')
     base = next(line.split('=', 1)[1] for line in properties.splitlines() if line.startswith('gdal4kVersion='))
     version = profile_version(base, profile)
     inventory = source_files(root)
@@ -130,9 +158,9 @@ def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None, *
     output = root / 'build/driver-profiles' / profile / target / digest
     snapshot = output / 'source'
     if output.exists():
-        if output.is_symlink() or not (output / 'inputs.json').is_file() or json.loads((output / 'inputs.json').read_text()) != identity:
+        if output.is_symlink() or not (output / 'inputs.json').is_file() or json.loads((output / 'inputs.json').read_text(encoding='utf-8')) != identity:
             raise ValueError('Refusing to overwrite an unrecognized profile directory: ' + str(output))
-        for name, expected in json.loads((output / 'prepared.json').read_text()).items():
+        for name, expected in json.loads((output / 'prepared.json').read_text(encoding='utf-8')).items():
             path = snapshot / name
             if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 raise ValueError('Prepared profile source changed; do not reuse it: ' + name)
@@ -144,15 +172,15 @@ def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None, *
         shutil.copy2(root / name, destination)
     # An independent manifest ensures vcpkg never adds dependencies to the default prefix.
     manifest = snapshot / 'gdal4k-engine/engine/vcpkg.json'
-    value = json.loads(manifest.read_text())
+    value = json.loads(manifest.read_text(encoding='utf-8'))
     dependency = next(d for d in value['dependencies'] if isinstance(d, dict) and d['name'] == 'gdal')
     dependency['features'] = sorted(set(dependency['features'] + spec['features']))
     value['dependencies'].extend(spec.get('dependencies', []))
-    manifest.write_text(json.dumps(value, indent=2) + '\n')
+    manifest.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8', newline='\n')
     updated = '\n'.join('gdal4kVersion=' + version if line.startswith('gdal4kVersion=') else line for line in properties.splitlines()) + '\n'
-    (snapshot / 'gradle.properties').write_text(updated)
+    (snapshot / 'gradle.properties').write_text(updated, encoding='utf-8', newline='\n')
     # Profile snapshots are local/CI artifacts. Keep release credentials out of their use.
-    with (snapshot / 'build.gradle.kts').open('a') as file:
+    with (snapshot / 'build.gradle.kts').open('a', encoding='utf-8', newline='\n') as file:
         file.write('''\n// Isolated optional driver profile: remote publication is deliberately disabled.
 gradle.taskGraph.whenReady {
     require(allTasks.none { it.name.startsWith("publish") && !it.name.endsWith("ToMavenLocal") }) {
@@ -173,34 +201,34 @@ gradle.taskGraph.whenReady {
     def replace(text):
         for key, value in replacements.items(): text = text.replace(key, value)
         return text
-    test.write_text(replace(fixture.read_text()))
+    test.write_text(replace(fixture.read_text(encoding='utf-8')), encoding='utf-8', newline='\n')
     generated_helpers = []
     for suffix, source_set in [('', 'commonTest'), ('Jvm', 'jvmTest'), ('Native', 'nativeTest')]:
         name = 'DriverProfileRuntimeFixture' + suffix + '.kt'
         destination = snapshot / 'gdal4k-runtime/src' / source_set / 'kotlin/dev/gdal4k' / name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(replace((root / 'verification/driver-profile' / name).read_text()))
-        if re.search(r'@[A-Z_]+@', destination.read_text()):
+        destination.write_text(replace((root / 'verification/driver-profile' / name).read_text(encoding='utf-8')), encoding='utf-8', newline='\n')
+        if re.search(r'@[A-Z_]+@', destination.read_text(encoding='utf-8')):
             raise ValueError('Unrendered test runtime fixture placeholder')
         generated_helpers.append(destination)
     http_test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt'
     if has_capability(profile, 'http'):
-        http_test.write_text(replace((root / 'verification/driver-profile/NativeHttpProfileTest.kt').read_text()))
+        http_test.write_text(replace((root / 'verification/driver-profile/NativeHttpProfileTest.kt').read_text(encoding='utf-8')), encoding='utf-8', newline='\n')
     combined_probe = snapshot / 'gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/CombinedDriverMemoryProbe.kt'
     if profile == 'combined':
-        combined_probe.write_text((root / 'verification/driver-profile/CombinedDriverMemoryProbe.kt').read_text())
+        combined_probe.write_text((root / 'verification/driver-profile/CombinedDriverMemoryProbe.kt').read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
     consumer = snapshot / 'verification/consumer.py'
-    consumer.write_text(consumer.read_text().replace("for test_name in ['DatasetApiTest'", "for test_name in ['DriverProfileApiTest', 'DatasetApiTest'"))
+    consumer.write_text(consumer.read_text(encoding='utf-8').replace("for test_name in ['DatasetApiTest'", "for test_name in ['DriverProfileApiTest', 'DatasetApiTest'"), encoding='utf-8', newline='\n')
     if has_capability(profile, 'http'):
-        consumer.write_text(consumer.read_text().replace("'DriverProfileApiTest', 'DatasetApiTest'", "'DriverProfileApiTest', 'NativeHttpProfileTest', 'DatasetApiTest'"))
+        consumer.write_text(consumer.read_text(encoding='utf-8').replace("'DriverProfileApiTest', 'DatasetApiTest'", "'DriverProfileApiTest', 'NativeHttpProfileTest', 'DatasetApiTest'"), encoding='utf-8', newline='\n')
     prepared = {name: hashlib.sha256((snapshot / name).read_bytes()).hexdigest() for name in inventory}
     prepared[test.relative_to(snapshot).as_posix()] = hashlib.sha256(test.read_bytes()).hexdigest()
     for helper in generated_helpers:
         prepared[helper.relative_to(snapshot).as_posix()] = hashlib.sha256(helper.read_bytes()).hexdigest()
     if has_capability(profile, 'http'): prepared[http_test.relative_to(snapshot).as_posix()] = hashlib.sha256(http_test.read_bytes()).hexdigest()
     if profile == 'combined': prepared[combined_probe.relative_to(snapshot).as_posix()] = hashlib.sha256(combined_probe.read_bytes()).hexdigest()
-    (output / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n')
-    (output / 'inputs.json').write_text(json.dumps(identity, indent=2) + '\n')
+    (output / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n', encoding='utf-8', newline='\n')
+    (output / 'inputs.json').write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8', newline='\n')
     return snapshot, identity
 
 
@@ -211,19 +239,39 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--postgis-archive', type=Path,
                         help='Existing pinned Mac fixture archive; read without modifying it')
+    parser.add_argument('--postgis-postgres-archive', type=Path,
+                        help='Existing pinned Windows PostgreSQL ZIP; read without modifying it')
+    parser.add_argument('--postgis-extension-archive', type=Path,
+                        help='Existing pinned Windows PostGIS archive (official EXE archive); read without executing or modifying it')
+    parser.add_argument('--postgis-runtime-archive', type=Path,
+                        help='Existing pinned Microsoft Desktop VCLibs appx archive; read without installing it')
     args = parser.parse_args()
     if args.target == 'linux-arm64':
         parser.error('Use verification/driver-profile/arm64-profile.py cross-build and run phases')
     with ExitStack() as stack:
         http_fixture = None
         postgresql_fixture = None
-        if has_capability(args.profile, 'postgresql') and args.target == 'macos-arm64':
+        if has_capability(args.profile, 'postgresql') and args.target in ['macos-arm64', 'windows-amd64']:
             if args.prepare_only:
-                parser.error('Mac PostGIS prepare-only requires injected metadata through prepare(); no server is started')
-            pg_spec = importlib.util.spec_from_file_location('postgis_fixture', ROOT / 'verification/driver-profile/postgis-fixture.py')
+                parser.error('Owned PostGIS prepare-only requires injected metadata through prepare(); no server is started')
+            windows = args.target == 'windows-amd64'
+            if windows and args.postgis_archive:
+                parser.error('Windows PostGIS uses PostgreSQL, PostGIS and Microsoft runtime archive options')
+            if not windows and (args.postgis_postgres_archive or args.postgis_extension_archive or args.postgis_runtime_archive):
+                parser.error('Windows PostgreSQL/PostGIS archive options require windows-amd64')
+            manager = 'postgis-windows-fixture.py' if windows else 'postgis-fixture.py'
+            pg_spec = importlib.util.spec_from_file_location('postgis_fixture', ROOT / 'verification/driver-profile' / manager)
             pg_module = importlib.util.module_from_spec(pg_spec); pg_spec.loader.exec_module(pg_module)
-            pg_output = ROOT / 'verification/results/postgis-fixtures' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-            postgresql_fixture = stack.enter_context(pg_module.fixture(pg_output, args.target, args.postgis_archive))
+            public_folder = 'postgis-windows-fixtures' if windows else 'postgis-fixtures'
+            pg_output = ROOT / 'verification/results' / public_folder / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            if windows:
+                archives = {key: value for key, value in [('postgres', args.postgis_postgres_archive),
+                            ('postgis', args.postgis_extension_archive), ('microsoft', args.postgis_runtime_archive)] if value is not None}
+                if archives and set(archives) != {'postgres', 'postgis', 'microsoft'}:
+                    parser.error('Supply all three locked Windows fixture archives together; partial overrides never trigger acquisition')
+                postgresql_fixture = stack.enter_context(pg_module.fixture(pg_output, args.target, archives or None))
+            else:
+                postgresql_fixture = stack.enter_context(pg_module.fixture(pg_output, args.target, args.postgis_archive))
         if has_capability(args.profile, 'http'):
             spec = importlib.util.spec_from_file_location('native_http_fixture', ROOT / 'verification/driver-profile/http-fixture.py')
             module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -239,7 +287,11 @@ def main():
         evidence = snapshot / 'verification/results/native-http-profile'
         evidence.mkdir(parents=True, exist_ok=False)
         fixture_root = Path(http_fixture['output'])
-        for file in [*fixture_root.glob('*-requests.json'), *fixture_root.glob('*.crt')]:
+        public_files = [*fixture_root.glob('*-requests.json'), *fixture_root.glob('*.crt')]
+        if args.target == 'windows-amd64':
+            public_files += [fixture_root / 'certificate-tool.json',
+                             *(fixture_root / (name + '-generator.json') for name in ['ca', 'trusted', 'untrusted', 'wrong-name'])]
+        for file in public_files:
             shutil.copy2(file, evidence / file.name)
         checksum = 1125899906842597
         for byte in (fixture_root / 'fixture.tif').read_bytes(): checksum = (checksum * 31 + byte) & ((1 << 64) - 1)
@@ -249,7 +301,7 @@ def main():
             'imageBytes': (fixture_root / 'fixture.tif').stat().st_size,
             'serverSourceSha256': hashlib.sha256((ROOT / 'verification/driver-profile/http-fixture.py').read_bytes()).hexdigest(),
             'testSourceSha256': hashlib.sha256((snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt').read_bytes()).hexdigest()
-        }, indent=2) + '\n')
+        }, indent=2) + '\n', encoding='utf-8', newline='\n')
         subprocess.run([sys.executable, str(ROOT / 'verification/driver-profile/report.py'), str(snapshot), args.profile, args.target], check=True)
 
 
@@ -263,7 +315,7 @@ def run_profile(args, http_fixture, postgresql_fixture=None):
         raise ValueError('Run the profile on its matching native host; cross builds are not yet verified')
     env = os.environ.copy()
     if postgresql_fixture is not None:
-        env = postgresql_child_environment(env, postgresql_fixture)
+        env = postgresql_child_environment(env, postgresql_fixture, args.target)
     if http_fixture:
         env['CURL_CA_BUNDLE'] = http_fixture['ca']
         env['NO_PROXY'] = ','.join(filter(None, [env.get('NO_PROXY', ''), '127.0.0.1', 'localhost']))
@@ -271,7 +323,7 @@ def run_profile(args, http_fixture, postgresql_fixture=None):
         env.pop(key, None)
     # Cache downloads/binaries may be explicitly shared; source, install and CMake stay local.
     env['VCPKG_ROOT'] = str(snapshot / 'verification/tools/vcpkg')
-    gradle = snapshot / 'gradlew'
+    gradle = snapshot / ('gradlew.bat' if system == 'Windows' else 'gradlew')
     def run(*command):
         subprocess.run([str(x) for x in command], cwd=snapshot, env=env, check=True)
     if has_capability(args.profile, 'scientific'):
@@ -280,23 +332,30 @@ def run_profile(args, http_fixture, postgresql_fixture=None):
         ':gdal4k-runtime:jvmTest', ':gdal4k-runtime:' + native[0].lower() + native[1:] + 'Test')
     run(sys.executable, snapshot / 'verification/audit-engine.py', args.target)
     if has_capability(args.profile, 'http'):
-        probe = snapshot / 'gdal4k-engine/build/engine' / args.target / 'cmake/gdal4k_http_probe'
+        probe = snapshot / 'gdal4k-engine/build/engine' / args.target / 'cmake' / cache_probe(args.target)
+        dependency_audit = None
+        if args.target == 'windows-amd64':
+            path = snapshot / 'verification/results/native-http-cache-probe-pe.json'
+            windows_pe_api(snapshot).audit(probe, root=snapshot, output=path)
+            dependency_audit = dict(path=path.relative_to(snapshot).as_posix(), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
         result = subprocess.run([str(probe), http_fixture['urls']['http'] + '/cache/internal/fixture.tif'],
                                 cwd=snapshot, env=env, text=True, capture_output=True)
-        (snapshot / 'verification/results/native-http-cache-check.log').write_text(result.stdout + result.stderr)
+        (snapshot / 'verification/results/native-http-cache-check.log').write_text(result.stdout + result.stderr, encoding='utf-8', newline='\n')
         if result.returncode:
             raise RuntimeError('Actual optional producer cache probe failed; inspect verification/results/native-http-cache-check.log')
         evidence = json.loads(result.stdout)
         assert evidence['result'] == 'passed' and evidence['peakCachedBytes'] <= 8 * 1024 * 1024
         evidence.update(probeSha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
                         sourceSha256=hashlib.sha256((snapshot / 'gdal4k/native/http-cache-probe.cpp').read_bytes()).hexdigest())
-        (snapshot / 'verification/results/native-http-cache-check.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        if dependency_audit is not None:
+            evidence['windowsDependencyAudit'] = dependency_audit
+        (snapshot / 'verification/results/native-http-cache-check.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8', newline='\n')
     if has_capability(args.profile, 'parquet'):
         run(sys.executable, snapshot / 'verification/driver-profile/arrow-ipc-check.py', snapshot, args.target)
     run(sys.executable, snapshot / 'verification/consumer.py', '--target', 'jvm', '--jvm-binary', classifier)
     run(sys.executable, snapshot / 'verification/consumer.py', '--target', native[0].lower() + native[1:])
     if has_capability(args.profile, 'http'):
-        library = snapshot / 'gdal4k-engine/build/jvm-resources/gdal4k' / args.target / ('libgdal4k.dylib' if system == 'Darwin' else 'libgdal4k.so')
+        library = snapshot / 'gdal4k-engine/build/jvm-resources/gdal4k' / args.target / jni_library(args.target)
         if args.profile == 'combined':
             run(sys.executable, snapshot / 'verification/combined-driver-memory-report.py', '--library', library,
                 '--manifest', snapshot / 'gdal4k-engine/build/engine' / args.target / 'manifest.json')

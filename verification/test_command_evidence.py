@@ -73,7 +73,9 @@ class CommandEvidenceTest(unittest.TestCase):
             self.assertLess(record['elapsedSeconds'], 10)
             self.assertIn(b'descendant started', (root / 'evidence/001.log').read_bytes())
             if os.name == 'nt':
-                self.assertEqual(record['cleanupReturncode'], 0)
+                self.assertEqual(record['cleanup'], {'activeProcessesAfter': 0, 'jobClosed': True,
+                                                     'forcedTreeTermination': True})
+                self.assertEqual(record['ownership']['kind'], 'Windows Job Object')
 
     def test_consumer_timeout_preserves_partial_xml_before_temporary_directory_removal(self):
         with tempfile.TemporaryDirectory() as retained:

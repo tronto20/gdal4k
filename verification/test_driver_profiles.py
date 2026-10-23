@@ -6,6 +6,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
+import copy
+import io
+import urllib.request
+from verification.test_windows_pe import pe_image
 
 spec = importlib.util.spec_from_file_location('driver_profile', Path(__file__).resolve().parents[1] / 'gdal4k-engine/tools/driver-profile.py')
 module = importlib.util.module_from_spec(spec)
@@ -44,6 +49,18 @@ POSTGIS_FIXTURE = {'dsn': 'PG:host=127.0.0.1 port=16432 dbname=gdal4k user=gdal4
                    'env': {'PGPASSFILE': '/private/owned-fixture/passfile'}}
 
 class ProfileIsolationTest(unittest.TestCase):
+    def test_windows_partial_archive_overrides_fail_before_acquisition(self):
+        options = ['--postgis-postgres-archive', '--postgis-extension-archive', '--postgis-runtime-archive']
+        for option in options:
+            with self.subTest(option=option), \
+                 patch.object(module.sys, 'argv', ['driver-profile.py', 'combined', 'windows-amd64', option, 'owned-input']), \
+                 patch.object(module.sys, 'stderr', io.StringIO()), \
+                 patch.object(urllib.request, 'urlopen') as download, \
+                 self.assertRaises(SystemExit) as failure:
+                module.main()
+            self.assertEqual(2, failure.exception.code)
+            download.assert_not_called()
+
     def test_isolated_sources_version_and_tamper_guard(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -96,10 +113,39 @@ class ProfileIsolationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'no verified build matrix'):
                 module.prepare(root, 'postgresql', 'macos-arm64')
             self.assertFalse((root / 'build').exists())
-            for target in ['windows-amd64']:
-                with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'no verified build matrix'):
-                    module.prepare(root, 'combined', target, HTTP_FIXTURE)
+            for profile in ['scientific', 'parquet', 'http', 'postgresql']:
+                with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, 'no verified build matrix'):
+                    module.prepare(root, profile, 'windows-amd64', HTTP_FIXTURE)
                 self.assertFalse((root / 'build').exists())
+
+    def test_windows_combined_prepares_current_utf8_sources_with_owned_public_identity(self):
+        with tempfile.TemporaryDirectory(prefix='Windows profile ') as temporary:
+            root = Path(temporary)
+            before = checkout(root)
+            fixture = dict(POSTGIS_FIXTURE, identity=dict(POSTGIS_FIXTURE['identity'], target='windows-amd64'))
+            with self.assertRaisesRegex(ValueError, 'owned running PostGIS fixture'):
+                module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE)
+            self.assertFalse((root / 'build').exists())
+            source = root / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/Existing.kt'
+            source.write_text('// UTF-8 source: 日本語 한글 ©\n', encoding='utf-8', newline='\n')
+            snapshot, identity = module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE, fixture)
+            self.assertEqual(source.read_bytes(), (snapshot / source.relative_to(root)).read_bytes())
+            self.assertEqual(('Windows', 'amd64', 'MingwX64', 'windows-x64'), module.TARGETS['windows-amd64'])
+            self.assertEqual('gdal4k.dll', module.jni_library('windows-amd64'))
+            self.assertEqual('gdal4k_http_probe.exe', module.cache_probe('windows-amd64'))
+            generated = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
+            self.assertIn(fixture['dsn'], generated.read_text(encoding='utf-8'))
+            self.assertNotIn('/private/', generated.read_text(encoding='utf-8'))
+            self.assertNotIn('password=', generated.read_text(encoding='utf-8'))
+            self.assertEqual('windows-amd64', identity['postgresqlFixture']['target'])
+            self.assertNotIn('PGPASSFILE', json.dumps(identity))
+            manifest = json.loads((snapshot / 'gdal4k-engine/engine/vcpkg.json').read_text(encoding='utf-8'))
+            self.assertEqual(['curl', 'geos', 'hdf5', 'netcdf', 'parquet', 'postgresql'], manifest['dependencies'][0]['features'])
+            self.assertEqual(before['gdal4k-engine/engine/vcpkg.json'], (root / 'gdal4k-engine/engine/vcpkg.json').read_bytes())
+            self.assertNotIn(b'\r', generated.read_bytes())
+            generated.write_text('// changed generated fixture\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'source changed'):
+                module.prepare(root, 'combined', 'windows-amd64', HTTP_FIXTURE, fixture)
 
     def test_arm_cross_sources_require_runtime_configuration_without_producer_endpoints(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -196,6 +242,22 @@ class ProfileIsolationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Unexpected'):
                 module.postgresql_child_environment(inherited, {'env': dict(private, DYLD_LIBRARY_PATH='/server')})
 
+    def test_windows_child_environment_requires_actual_acl_without_server_dll_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            password = Path(temporary) / 'pgpass'; password.write_text('unit private file\n')
+            private = {'PGPASSFILE': str(password), 'PGCONNECT_TIMEOUT': '10'}
+            inherited = {'Path': r'C:\owned compiler', 'pgpassword': 'personal', 'PgHost': 'personal', 'PGOPTIONS': 'personal'}
+            windows = Mock()
+            with patch.object(module, 'windows_process_api', return_value=windows):
+                value = module.postgresql_child_environment(inherited, {'env': private}, 'windows-amd64')
+                windows.verify_private_path.assert_called_once_with(password)
+                self.assertEqual({'Path': r'C:\owned compiler', **private}, value)
+                windows.verify_private_path.side_effect = ValueError('ACL is not private')
+                with self.assertRaisesRegex(ValueError, 'ACL'):
+                    module.postgresql_child_environment(inherited, {'env': private}, 'windows-amd64')
+                with self.assertRaisesRegex(ValueError, 'Unexpected'):
+                    module.postgresql_child_environment(inherited, {'env': dict(private, PATH=r'C:\server')}, 'windows-amd64')
+
     def test_combined_requires_owned_http_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -211,6 +273,169 @@ class ProfileIsolationTest(unittest.TestCase):
 
 
 class ProfileReportBindingsTest(unittest.TestCase):
+    def test_windows_probe_receipt_rechecks_actual_exe_and_shared_inspector(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'verification/windows_pe.py'; source.parent.mkdir()
+            source.write_bytes((report.ROOT / 'verification/windows_pe.py').read_bytes())
+            program = root / 'verification/build/arrow-ipc-regression/arrow-ipc-check.exe'
+            program.parent.mkdir(parents=True); program.write_bytes(pe_image(delay=['ws2_32.dll']))
+            path = root / 'verification/results/arrow-ipc-probe-pe.json'
+            inspector = module.windows_pe_api(root)
+            inspector.audit(program, root=root, output=path)
+            reference = dict(path=path.relative_to(root).as_posix(), sha256=report.sha(path))
+            result = report.windows_probe_bindings(root, reference, program)
+            self.assertEqual(report.sha(program), result['executableSha256'])
+            original = program.read_bytes(); program.write_bytes(pe_image(delay=['libwinpthread-1.dll']))
+            with self.assertRaises(AssertionError): report.windows_probe_bindings(root, reference, program)
+            program.write_bytes(original)
+            source.write_bytes(source.read_bytes()+b'\n# changed inspector\n')
+            with self.assertRaises(AssertionError): report.windows_probe_bindings(root, reference, program)
+
+    def windows_receipt(self, root, combined=True):
+        """Synthetic verifier inputs only; no Windows process is launched."""
+        windows = module.windows_process_api()
+        family = 'combined-driver' if combined else 'http'
+        cp = {'java': r'C:\Program Files\JDK\bin\java.exe', 'classpath': r'C:\unit classes;C:\unit library.jar'}
+        cp_path = root / f'gdal4k-runtime/build/{family}-memory-classpath.json'
+        cp_path.parent.mkdir(parents=True)
+        cp_path.write_text(json.dumps(cp), encoding='utf-8')
+        folder = f'verification/results/{family}-memory/unit'
+        mode = 'range'
+        stem = '0' if combined else '0-' + mode
+        log = folder + '/' + stem + '.log'; rss = folder + '/' + stem + '.time.txt'
+        execution_log = folder + '/' + stem + '.command.json'
+        (root / log).parent.mkdir(parents=True)
+        (root / log).write_bytes(b'synthetic verifier stdout\n')
+        identity = dict(pid=1234, creationTime100ns=123456789, imagePath=cp['java'])
+        peak = dict(collector=windows.OS_RSS['collector'], field=windows.OS_RSS['field'], reportedUnit='bytes',
+                    peakWorkingSetSizeBytes=80000000, windowsProcess=identity,
+                    queryPhase='after-process-exit-before-handle-close', returncode=0)
+        (root / rss).write_text(json.dumps(peak), encoding='utf-8')
+        settings = ['-Xms32m', '-Xmx1536m', '-XX:+UseG1GC']
+        library = str((root / 'gdal4k-engine/build/jvm-resources/gdal4k/windows-amd64/gdal4k.dll').resolve())
+        command = [cp['java'], *settings, '-cp', cp['classpath']]
+        command += (['dev.gdal4k.CombinedDriverMemoryProbe', library] if combined else
+                    ['dev.gdal4k.HttpMemoryProbe', mode, 'http://127.0.0.1:12345/fixture.tif',
+                     str(root / 'fixture.tif'), '8192', library])
+        execution = dict(command=command, cwd=str(root), status='passed', returncode=0, pid=1234,
+                         windowsProcess=identity, pidRole='owned JVM process', outputComplete=True,
+                         logSha256=report.sha(root / log),
+                         ownership=dict(kind='Windows Job Object', assignedBeforeResume=True, killOnClose=True),
+                         cleanup=dict(activeProcessesAfter=0, jobClosed=True, forcedTreeTermination=False), peakMemory=peak,
+                         startedAtUtc='2026-10-23T00:00:00+00:00', completedAtUtc='2026-10-23T00:00:01+00:00',
+                         elapsedSeconds=1.0, environmentOverrides={'LC_ALL': 'C'}, timeoutSeconds=600 if combined else 300)
+        (root / execution_log).write_text(json.dumps(execution), encoding='utf-8')
+        record = dict(trial=0, mode=mode, executionLog=execution_log,
+                      executionLogSha256=report.sha(root / execution_log), execution=execution,
+                      log=log, logSha256=report.sha(root / log), rssLog=rss, rssLogSha256=report.sha(root / rss),
+                      peakRssBytes=80000000)
+        data = dict(target='windows-amd64', gradleTarget='MingwX64', classifier='windows-x64',
+                    system='Windows', machine='AMD64', osRss=windows.OS_RSS.copy(),
+                    settings={'jvm': settings, 'side': 8192}, fixture={'path': 'fixture.tif'}, records=[record])
+        if combined: data['profile'] = 'combined'
+        return data
+
+    def test_windows_combined_and_http_bind_exact_owned_kernel_receipts(self):
+        for combined in [True, False]:
+            with self.subTest(combined=combined), tempfile.TemporaryDirectory(prefix='Windows evidence ') as temporary:
+                root = Path(temporary)
+                data = self.windows_receipt(root, combined)
+                self.assertEqual({data['records'][0]['executionLog']: data['records'][0]['executionLogSha256']},
+                                 report.windows_execution_bindings(root, data))
+
+    def test_windows_bindings_reject_wrong_units_raw_peak_and_embedded_command(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); data = self.windows_receipt(root)
+            changed = copy.deepcopy(data); changed['osRss']['reportedUnit'] = 'KiB'
+            with self.assertRaisesRegex(AssertionError, 'RSS collector'):
+                report.windows_execution_bindings(root, changed)
+            changed = copy.deepcopy(data); changed['records'][0]['peakRssBytes'] += 1
+            with self.assertRaisesRegex(AssertionError, 'reported peak'):
+                report.windows_execution_bindings(root, changed)
+            changed = copy.deepcopy(data); changed['records'][0]['execution']['command'][-1] = 'unrelated.dll'
+            with self.assertRaisesRegex(AssertionError, 'embedded command'):
+                report.windows_execution_bindings(root, changed)
+            changed = copy.deepcopy(data); changed['records'] *= 2
+            with self.assertRaises(AssertionError): report.windows_execution_bindings(root, changed)
+            peak_path = root / data['records'][0]['rssLog']
+            peak = json.loads(peak_path.read_text(encoding='utf-8')); peak['windowsProcess']['creationTime100ns'] += 1
+            peak_path.write_text(json.dumps(peak), encoding='utf-8')
+            data['records'][0]['rssLogSha256'] = report.sha(peak_path)
+            with self.assertRaisesRegex(ValueError, 'final kernel peak'):
+                report.windows_execution_bindings(root, data)
+
+    def test_windows_diagnostics_require_both_actual_kernel_collector_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); data = self.windows_receipt(root, combined=False)
+            files = {'verification/windows_process.py': b'synthetic current kernel collector source',
+                     'verification/command_evidence.py': b'synthetic current command owner source',
+                     'source.kt': b'synthetic current probe source', 'probe.class': b'synthetic current probe class',
+                     'gdal4k-engine/build/engine/windows-amd64/manifest.json': b'synthetic current manifest'}
+            for name, raw in files.items():
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw)
+            digest = lambda name: hashlib.sha256(files[name]).hexdigest()
+            publication = dict(jniSha256='unit-current-jni', compiledProductionSha256={'current.class': 'unit-current-class'})
+            sources = {name: digest(name) for name in ['source.kt', 'verification/windows_process.py', 'verification/command_evidence.py']}
+            data.update(engineFingerprint='unit-current-fingerprint', engineLibrarySha256='unit-current-jni',
+                        engineManifestSha256=digest('gdal4k-engine/build/engine/windows-amd64/manifest.json'),
+                        compiledProductionSha256=publication['compiledProductionSha256'],
+                        compiledProbeSha256={'probe.class': digest('probe.class')}, sourceSha256=sources)
+            measured = {'fingerprint': 'unit-current-fingerprint'}
+            report.diagnostic_bindings(root, data, measured, publication)
+            for helper in ['verification/windows_process.py', 'verification/command_evidence.py']:
+                changed = copy.deepcopy(data); del changed['sourceSha256'][helper]
+                with self.subTest(helper=helper), self.assertRaisesRegex(AssertionError, 'kernel collector source'):
+                    report.diagnostic_bindings(root, changed, measured, publication)
+            (root / 'verification/windows_process.py').write_bytes(b'changed collector source')
+            with self.assertRaisesRegex(AssertionError, 'source/probe changed'):
+                report.diagnostic_bindings(root, data, measured, publication)
+
+    def test_windows_tls_public_evidence_requires_tool_certificates_and_private_acl(self):
+        """Synthetic public receipts test binding only, never actual TLS acceptance."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); evidence = root / 'verification/results/native-http-profile'
+            evidence.mkdir(parents=True)
+            names = ['verification/driver-profile/http-fixture.py', 'verification/windows_process.py',
+                     'verification/fixtures/windows-tls-generator-lock.json',
+                     'verification/driver-profile/windows-tls-requirements.txt']
+            for name in names:
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((report.ROOT / name).read_bytes())
+            lock = json.loads((root / names[2]).read_text(encoding='utf-8'))
+            identity = dict(versions={name: value['version'] for name, value in lock['packages'].items()},
+                            python=dict(version='3.12 synthetic verifier input', executable='python.exe', sha256='a' * 64),
+                            actualInstalledModules={name: dict(filename=filename, bytes=10, sha256='b' * 64)
+                            for name, filename in [('cryptography.hazmat.bindings._rust', '_rust.pyd'),
+                                                   ('_cffi_backend', '_cffi_backend.pyd'), ('pycparser', '__init__.py')]})
+            tool = dict(schemaVersion=1, tool='pyca/cryptography', lockSha256=report.sha(root / names[2]), **identity)
+            tool_file = evidence / 'certificate-tool.json'; tool_file.write_text(json.dumps(tool), encoding='utf-8')
+            acl = dict(currentUserSid='S-1-5-21-unit', ownerSid='S-1-5-21-unit', daclProtected=True,
+                       entries=[dict(sid=sid, type=0, mask=0x1f01ff, flags=0) for sid in ['S-1-5-21-unit', 'S-1-5-18']])
+            for name, hostname, ca, trusted in [('ca', 'gdal4k-fixture-ca', True, False), ('trusted', 'localhost', False, True),
+                                               ('untrusted', 'localhost', False, False), ('wrong-name', 'wrong.invalid', False, True)]:
+                cert = evidence / (name + '.crt'); cert.write_bytes(('synthetic certificate ' + name).encode())
+                record = dict(name=name, subject='CN=' + hostname, issuer='CN=' + ('gdal4k-fixture-ca' if trusted else hostname),
+                              certificateSha256=report.sha(cert), privateKeyAcl=copy.deepcopy(acl), ca=ca,
+                              trustedIssuerProvided=trusted, san=[hostname] + (['127.0.0.1'] if hostname == 'localhost' else []))
+                (evidence / (name + '-generator.json')).write_text(json.dumps(record), encoding='utf-8')
+            with patch.object(report, 'windows_tls_tool_identity', return_value=identity):
+                bound = report.windows_tls_fixture_bindings(root, evidence)
+                self.assertEqual({'ca', 'trusted', 'untrusted', 'wrong-name'}, set(bound['certificates']))
+                tool_raw = tool_file.read_bytes(); tool_file.unlink()
+                with self.assertRaisesRegex(AssertionError, 'Missing current evidence'):
+                    report.windows_tls_fixture_bindings(root, evidence)
+                tool_file.write_bytes(tool_raw)
+                cert = evidence / 'trusted.crt'; original = cert.read_bytes(); cert.write_bytes(b'changed public certificate')
+                with self.assertRaisesRegex(AssertionError, 'public certificate changed'):
+                    report.windows_tls_fixture_bindings(root, evidence)
+                cert.write_bytes(original)
+                record_file = evidence / 'trusted-generator.json'
+                record = json.loads(record_file.read_text(encoding='utf-8')); record['privateKeyAcl']['daclProtected'] = False
+                record_file.write_text(json.dumps(record), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'Fixture DACL'):
+                    report.windows_tls_fixture_bindings(root, evidence)
+
     def test_combined_request_keys_require_all_fixture_and_fresh_process_rounds(self):
         policy = {'source-jvm', 'source-native', 'consumer-jvm', 'consumer-native'}
         diagnostics = {'settings': {'warmupRounds': 1, 'rounds': 3},

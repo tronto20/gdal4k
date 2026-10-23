@@ -112,6 +112,10 @@ if(GDAL4K_ENABLE_HTTP)
     target_include_directories(gdal4k_http_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(gdal4k_http_probe PRIVATE GDAL4K_ENABLE_HTTP)
     target_link_libraries(gdal4k_http_probe PRIVATE GDAL::GDAL CURL::libcurl)
+    if(WIN32 AND MINGW)
+        # Match the JNI runtime closure; this standalone probe has no K/N runtime.
+        target_link_options(gdal4k_http_probe PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
+    endif()
 endif()
 if(GDAL4K_DEPENDENCIES)
     # GDAL's FindJXL records libjxl.a alone. Resolve the codec's complete static closure.
