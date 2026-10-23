@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify published Maven artifacts from a fresh, unrelated Kotlin consumer build."""
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -174,6 +175,9 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
  (consumer/'build.gradle.kts').write_text(build)
  (consumer/'gradle.properties').write_text('org.gradle.jvmargs=-Xmx2g\nandroid.useAndroidX=true\n')
  path=consumer/'src/commonTest/kotlin/consumer/PublishedConsumerTest.kt';path.parent.mkdir(parents=True);path.write_text(source, encoding="utf-8")
+ profile_fixture_sources = []
+ fixture_spec = importlib.util.spec_from_file_location('driver_profile_runtime_fixture', ROOT/'verification/driver-profile/runtime-fixture.py')
+ fixture_module = importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(fixture_module)
  if not a.expect_missing_jvm_binary:
   # Exercise the expanded API from published coordinates, not producer project dependencies.
   for test_name in ['DatasetApiTest', 'AdvancedDatasetApiTest', 'BandApiTest', 'BandStructuresTest', 'MosaicApiTest', 'RasterizeApiTest', 'DemProcessingApiTest', 'PolygonizeApiTest', 'FootprintApiTest', 'TileIndexApiTest', 'MultiDimTranslateApiTest', 'OgrVectorApiTest', 'OgrSchemaApiTest', 'RasterAnalysisApiTest', 'GridViewshedApiTest', 'RasterMathApiTest', 'OgrLayerApiTest', 'GdalProgressApiTest', 'HttpInputPolicyTest', 'BinaryRasterApiTest', 'RasterWindowsApiTest', 'CoordinateArraysApiTest', 'VectorColumnsApiTest', 'FileTransferApiTest', 'MDTransferApiTest']:
@@ -195,6 +199,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
   actual_path = consumer/f'src/{actual_set}/kotlin/consumer/DatasetOutputPath.kt'
   actual_path.parent.mkdir(parents=True,exist_ok=True)
   actual_path.write_text(platform_path.read_text(encoding="utf-8").replace('package dev.gdal4k','package consumer'), encoding="utf-8")
+  profile_fixture_sources = fixture_module.copy_to_consumer(ROOT, consumer, target)
 
  if a.browser and target in ['js','wasmJs']:
   browser_source = (ROOT/f'gdal4k-runtime/src/{target}Test/kotlin/dev/gdal4k/BrowserFileTest.kt').read_text(encoding="utf-8")
@@ -208,6 +213,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
  hidden=[]
  case = '-compile' if target=='android' and a.compile_only else '-missing' if a.expect_missing_jvm_binary and not binaries else '-wrong' if a.expect_missing_jvm_binary else '-multiple' if len(binaries)>1 else ''
  destination=ROOT/'verification/results'/('published-consumer-'+target+('-browser' if a.browser else '')+case)
+ fixture_module.preserve_consumer_sources(consumer, destination, profile_fixture_sources)
  try:
   if platform:
    for original in [ROOT/f'gdal4k-engine/build/engine/{platform}',ROOT/f'gdal4k-engine/build/classes/kotlin/{target}/main/cinterop',ROOT/f'gdal4k-runtime/build/classes/kotlin/{target}/main/cinterop']:
@@ -234,6 +240,6 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
    actual_payloads = {b for b in JVM_BINARIES if any(name.endswith('-'+b+'.jar') for name in engine_files)}
    if actual_payloads != set(binaries) or len(engine_files) != len(binaries):
     raise RuntimeError(f'Unexpected JVM classifier files: {engine_files}; expected {binaries}')
-  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed'},indent=2)+'\n')
+  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'profile_runtime_fixture_sources':profile_fixture_sources,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed'},indent=2)+'\n')
  finally:
   for original,moved in reversed(hidden):moved.rename(original)

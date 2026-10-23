@@ -27,6 +27,16 @@ jobs:
           python -m unittest discover -s verification -p test_command_evidence.py
           python -m unittest discover -s verification -p test_embed_data.py
           python -m unittest discover -s verification -p test_arrow_ipc_toolchain.py
+          python -m unittest discover -s verification -p test_libpq_hwcap_compat.py
+          python -m unittest discover -s verification -p test_xsimd_hwcap_compat.py
+          python -m unittest discover -s verification -p test_arrow_ipc_staged.py
+          python -m unittest discover -s verification -p test_staged_engine.py
+          python -m unittest discover -s verification -p test_driver_profile_runtime_fixture.py
+          python -m unittest discover -s verification -p test_arm64_memory_host.py
+          python -m unittest discover -s verification -p test_arm64_profile.py
+          python -m unittest discover -s verification -p test_arm64_profile_report.py
+          python -m unittest discover -s verification -p test_arm64_postgis_report.py
+          python -m unittest discover -s verification -p test_postgis_arm64_fixture.py
           python -m unittest discover -s verification -p test_driver_profiles.py
           python -m unittest discover -s verification -p test_combined_driver_memory_report.py
           python -m unittest discover -s verification -p test_postgis_fixture.py

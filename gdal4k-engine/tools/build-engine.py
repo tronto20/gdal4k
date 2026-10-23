@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from toolchains import native_toolchain
 from versions import configured_binary_version
+from staged_engine import verify_staged_engine
 ROOT=Path(__file__).resolve().parents[2]
 BINARY=ROOT/'gdal4k-engine'
 VCPKG_REV='3cd21e48a75f67acfef289da52893ce79144aaa1'
@@ -61,7 +62,13 @@ def require_private_install_prefix(out):
   raise RuntimeError('Refusing vcpkg installation through an installed-prefix symlink; use an isolated install prefix or an explicit read-only rebuild')
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('target',choices=TARGETS);p.add_argument('--jobs',type=int,default=4);p.add_argument('--vcpkg',type=Path);p.add_argument('--build-tools',type=Path);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('target',choices=TARGETS);p.add_argument('--jobs',type=int,default=4);p.add_argument('--vcpkg',type=Path);p.add_argument('--build-tools',type=Path)
+ p.add_argument('--verify-staged-only',action='store_true',help='Verify the current Linux ARM64 engine without a compiler, installer or build fallback')
+ a=p.parse_args()
+ if a.verify_staged_only:
+  if a.vcpkg is not None or a.build_tools is not None:p.error('--verify-staged-only cannot configure producer tools')
+  receipt=verify_staged_engine(BINARY,a.target,fingerprint,VCPKG_REV,configured_binary_version())
+  print('Verified staged GDAL engine without producer execution: '+a.target+' ('+receipt['sourceFingerprint']+')');return
  source_hash=fingerprint()
  out=BINARY/'build/engine'/a.target;out.mkdir(parents=True,exist_ok=True)
  if reusable(out,source_hash):

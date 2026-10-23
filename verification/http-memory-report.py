@@ -27,6 +27,28 @@ def sha(path):
     return digest.hexdigest()
 
 
+def host_settings(manifest, system, machine):
+    hosts = {('Linux', 'x86_64'): ('linux-amd64', 'LinuxX64', 'linux-x64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
+             ('Linux', 'aarch64'): ('linux-arm64', 'LinuxArm64', 'linux-arm64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
+             ('Darwin', 'arm64'): ('macos-arm64', 'MacosArm64', 'macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1)}
+    host = (system, machine.lower())
+    if host not in hosts:
+        raise ValueError('HTTP JVM diagnostics require Linux x64, Linux ARM64 or macOS ARM64: ' + repr(host))
+    target, gradle_target, classifier, library, flag, time_format, unit, multiplier = hosts[host]
+    if manifest['target'] != target:
+        raise ValueError('HTTP engine target does not match actual host: ' + manifest['target'])
+    return dict(target=target, gradleTarget=gradle_target, classifier=classifier,
+                library=library, flag=flag, timeFormat=time_format,
+                reportedRssUnit=unit, rssMultiplierToBytes=multiplier)
+
+
+def prepare_classpath():
+    # Preserve the orchestrator's verified staged-engine Gradle property on ARM.
+    subprocess.run([str(ROOT / 'gradlew'), '--console=plain', ':gdal4k-runtime:writeHttpMemoryClasspath',
+                    '-I', str(ROOT / 'verification/http-memory.init.gradle'), '--no-configuration-cache'],
+                   cwd=ROOT, env=os.environ.copy(), check=True)
+
+
 def fixture(path, side):
     """Classic little-endian, uncompressed tiled Byte TIFF; deterministic pixel formula."""
     tiles = (side // TILE) ** 2
@@ -118,20 +140,19 @@ def main():
     assert re.fullmatch(r'[a-zA-Z0-9_-]+', args.label)
     assert args.side in range(1024, 16385, 256) and args.side % 512 == 0 and args.trials > 0
     assert len(set(args.modes)) == len(args.modes)
-    system = platform.system()
-    assert system in ('Darwin', 'Linux')
-    target = 'macos-arm64' if system == 'Darwin' else 'linux-amd64'
+    system, machine = platform.system(), platform.machine()
     manifest = json.loads(args.manifest.read_text())
+    host = host_settings(manifest, system, machine)
+    target = host['target']
     library_sha = sha(args.library)
-    assert library_sha == manifest['artifacts'][f'jvm-resources/gdal4k/{target}/{args.library.name}']
+    assert library_sha == manifest['artifacts'][f"jvm-resources/gdal4k/{target}/{host['library']}"]
     report_path = ROOT / f'verification/results/http-memory-{args.label}-{target}.json'
     assert not report_path.exists(), 'Use a new label; never overwrite evidence'
     # Fixture plus one streamed local download, and headroom for metadata/logs.
     import shutil
     assert shutil.disk_usage(ROOT).free > args.side ** 2 * 2 + 128 * 1024 ** 2, 'Insufficient safe disk headroom'
     if not args.skip_compile:
-        subprocess.run([str(ROOT / 'gradlew'), '--console=plain', ':gdal4k-runtime:writeHttpMemoryClasspath',
-                        '-I', str(ROOT / 'verification/http-memory.init.gradle'), '--no-configuration-cache'], cwd=ROOT, check=True)
+        prepare_classpath()
     cp = json.loads((ROOT / 'gdal4k-runtime/build/http-memory-classpath.json').read_text())
     frozen_paths = [p for module in ['gdal4k', 'gdal4k-runtime']
                     for p in (ROOT / module / 'build/classes/kotlin/jvm').rglob('*.class')]
@@ -159,7 +180,7 @@ def main():
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             log, rss = output / f'{trial}-{mode}.log', output / f'{trial}-{mode}.time.txt'
             try:
-                result = subprocess.run(['/usr/bin/time', '-l' if system == 'Darwin' else '-v', '-o', str(rss),
+                result = subprocess.run(['/usr/bin/time', host['flag'], '-o', str(rss),
                                          cp['java'], *settings, '-cp', cp['classpath'], 'dev.gdal4k.HttpMemoryProbe', mode,
                                          f'http://127.0.0.1:{server.server_port}/fixture.tif', str(image), str(args.side), str(args.library.resolve())],
                                         cwd=ROOT, env=dict(os.environ, LC_ALL='C'), text=True, capture_output=True, timeout=300)
@@ -200,7 +221,11 @@ def main():
     keys = ['elapsedNanos', 'jvmAllocatedBytes', 'sampledPeakHeapUsedBytes', 'peakRssBytes', 'requests', 'transferredBodyBytes']
     report = dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(), label=args.label,
                   testedHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
-                  platform=platform.platform(), target=target, records=records,
+                  platform=platform.platform(), system=system, machine=machine, target=target,
+                  gradleTarget=host['gradleTarget'], classifier=host['classifier'], records=records,
+                  osRss=dict(timeExecutable='/usr/bin/time', timeArgument=host['flag'],
+                             timeFormat=host['timeFormat'], reportedUnit=host['reportedRssUnit'],
+                             multiplierToBytes=host['rssMultiplierToBytes']),
                   median={mode: {key: statistics.median(r[key] for r in records if r['mode'] == mode) for key in keys} for mode in args.modes},
                   engineFingerprint=manifest['source_fingerprint'], engineLibrarySha256=library_sha,
                   engineLibrary=str(args.library.resolve()), engineManifestSha256=sha(args.manifest),

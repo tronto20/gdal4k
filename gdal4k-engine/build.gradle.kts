@@ -3,14 +3,24 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 plugins { alias(libs.plugins.kotlin.multiplatform); `maven-publish` }
 repositories { mavenCentral() }
 val pythonCommand = if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3"
+// Linux ARM64 executes the cross-produced engine; Kotlin/Native has no compiler
+// host there. Keep the ordinary task in the graph and verify every staged byte.
+val verifiedStagedEngine = providers.gradleProperty("gdal4kVerifiedStagedEngine").orNull
+if (verifiedStagedEngine != null) {
+    require(verifiedStagedEngine == "linux-arm64") { "gdal4kVerifiedStagedEngine currently supports only linux-arm64" }
+    require(System.getProperty("os.name") == "Linux" && System.getProperty("os.arch").lowercase() in setOf("aarch64", "arm64")) {
+        "gdal4kVerifiedStagedEngine=linux-arm64 requires a Linux ARM64 runtime host"
+    }
+}
 fun registerEngineBuild(target: String) = tasks.register<Exec>("buildEngine" + target.split('-','_').joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }) {
     group = "GDAL runtime"
     // These outputs can arrive from verified CI artifacts. Gradle's first-run
     // stale-output cleanup must not delete them before the producer checks hashes.
     doNotTrackState("The engine producer fingerprints sources and verifies every artifact hash")
     workingDir(rootDir)
+    val verifyStaged = verifiedStagedEngine == target
     val toolsKind = if (target == "web") "web" else "native"
-    dependsOn(if (target == "web") ":prepareWebBuildTools" else ":prepareNativeBuildTools")
+    if (!verifyStaged) dependsOn(if (target == "web") ":prepareWebBuildTools" else ":prepareNativeBuildTools")
     // The API module has no engine/cinterop dependency. Its Native compilation
     // lets KGP install the matching compiler and target dependencies first.
     val bootstrapTarget = when (target) {
@@ -19,7 +29,7 @@ fun registerEngineBuild(target: String) = tasks.register<Exec>("buildEngine" + t
         "windows-amd64" -> "MingwX64"
         else -> null
     }
-    if (bootstrapTarget != null) {
+    if (bootstrapTarget != null && !verifyStaged) {
         dependsOn(":gdal4k:compileKotlin$bootstrapTarget")
         // Keep the Python producer aligned with KGP's configurable data directory.
         providers.gradleProperty("konan.data.dir").orNull?.let {
@@ -32,8 +42,12 @@ fun registerEngineBuild(target: String) = tasks.register<Exec>("buildEngine" + t
             }
         }
     }
-    commandLine(pythonCommand, "gdal4k-engine/tools/build-engine.py", target,
-        "--build-tools", rootProject.layout.buildDirectory.file("build-tools/$toolsKind.json").get().asFile.absolutePath)
+    if (verifyStaged) {
+        commandLine(pythonCommand, "gdal4k-engine/tools/build-engine.py", target, "--verify-staged-only")
+    } else {
+        commandLine(pythonCommand, "gdal4k-engine/tools/build-engine.py", target,
+            "--build-tools", rootProject.layout.buildDirectory.file("build-tools/$toolsKind.json").get().asFile.absolutePath)
+    }
     environment("GDAL4K_BINARY_VERSION", rootProject.version.toString())
     inputs.files(fileTree("ports") { exclude("**/__pycache__/**") })
     inputs.dir("engine")
@@ -133,11 +147,15 @@ val requestedJvmClassifiers = providers.gradleProperty("gdal4kJvmClassifiers").o
     .split(',').map(String::trim).filter(String::isNotEmpty).toSet()
 val jvmClassifierTasks = mapOf("macos-arm64" to "macosArm64Jar", "linux-x64-gnu" to "linuxX64GnuJar", "linux-arm64-gnu" to "linuxArm64GnuJar", "windows-x64" to "windowsX64Jar")
 require(requestedJvmClassifiers.all { it in jvmClassifierTasks }) { "Unknown gdal4kJvmClassifiers: $requestedJvmClassifiers" }
-gradle.projectsEvaluated {
-    publishing.publications.named<MavenPublication>("kotlinMultiplatform") {
-        requestedJvmClassifiers.forEach { selected ->
-            artifact(project(":gdal4k-jvm-binaries").tasks.named(jvmClassifierTasks.getValue(selected))) {
-                classifier = selected
+// Unsupported Native compiler hosts can still run JVM tests without publishing.
+// KGP creates no root publication there, so only resolve it for requested artifacts.
+if (requestedJvmClassifiers.isNotEmpty()) {
+    gradle.projectsEvaluated {
+        publishing.publications.named<MavenPublication>("kotlinMultiplatform") {
+            requestedJvmClassifiers.forEach { selected ->
+                artifact(project(":gdal4k-jvm-binaries").tasks.named(jvmClassifierTasks.getValue(selected))) {
+                    classifier = selected
+                }
             }
         }
     }

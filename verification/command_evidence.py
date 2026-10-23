@@ -10,7 +10,7 @@ import threading
 import time
 
 
-def run_with_evidence(args, *, cwd, directory, timeout):
+def run_with_evidence(args, *, cwd, directory, timeout, env=None):
     """The caller owns this process tree; never terminate unrelated processes."""
     if timeout <= 0:
         raise ValueError('Command timeout must be positive')
@@ -36,7 +36,7 @@ def run_with_evidence(args, *, cwd, directory, timeout):
     with log_path.open('xb') as log:
         try:
             process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT, **options)
+                                       stderr=subprocess.STDOUT, env=env, **options)
         except OSError as error:
             record.update(status='failed', exception=type(error).__name__, outputComplete=False)
             save()
@@ -90,3 +90,4 @@ def run_with_evidence(args, *, cwd, directory, timeout):
             raise subprocess.CalledProcessError(process.returncode, command)
         if output.is_alive() or pump_errors:
             raise RuntimeError('CI command output was not completely retained')
+    return record_path

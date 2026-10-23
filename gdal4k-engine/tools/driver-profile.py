@@ -35,10 +35,11 @@ PROFILES = {
                      {'name': 'netcdf-c', 'default-features': False, 'features': ['netcdf-4']},
                      {'name': 'curl', 'default-features': False, 'features': ['ssl', 'c-ares']}],
                  'capabilities': ['scientific', 'parquet', 'http', 'postgresql'],
-                 'targets': ['linux-amd64', 'macos-arm64']},
+                 'targets': ['linux-amd64', 'macos-arm64', 'linux-arm64']},
 }
 TARGETS = {'linux-amd64': ('Linux', 'x86_64', 'LinuxX64', 'linux-x64-gnu'),
-           'macos-arm64': ('Darwin', 'arm64', 'MacosArm64', 'macos-arm64')}
+           'macos-arm64': ('Darwin', 'arm64', 'MacosArm64', 'macos-arm64'),
+           'linux-arm64': ('Linux', 'aarch64', 'LinuxArm64', 'linux-arm64-gnu')}
 
 
 def has_capability(profile, capability):
@@ -103,19 +104,25 @@ def postgresql_child_environment(environment, fixture):
     return result
 
 
-def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None):
+def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None, *, runtime_fixtures=False):
     spec = PROFILES[profile]
     if target not in spec['targets']:
         raise ValueError('Profile has no verified build matrix for this target: ' + target)
-    pg_identity = postgresql_identity(profile, target, postgresql_fixture)
+    if runtime_fixtures != (target == 'linux-arm64') or (runtime_fixtures and profile != 'combined'):
+        raise ValueError('Linux ARM64 combined requires explicit cross-build/runtime fixture phases')
+    if runtime_fixtures and (http_fixture is not None or postgresql_fixture is not None):
+        raise ValueError('Cross-build sources cannot capture producer-host runtime fixtures')
+    pg_identity = None if runtime_fixtures else postgresql_identity(profile, target, postgresql_fixture)
     properties = (root / 'gradle.properties').read_text()
     base = next(line.split('=', 1)[1] for line in properties.splitlines() if line.startswith('gdal4kVersion='))
     version = profile_version(base, profile)
     inventory = source_files(root)
     identity = {'profile': profile, 'target': target, 'version': version, 'sources': inventory}
+    if runtime_fixtures:
+        identity['runtimeFixtures'] = 'required-on-execution-host'
     if pg_identity is not None:
         identity['postgresqlFixture'] = pg_identity
-    if has_capability(profile, 'http'):
+    if has_capability(profile, 'http') and not runtime_fixtures:
         if not http_fixture:
             raise ValueError('HTTP profile requires its owned running HTTP/TLS fixture')
         identity['httpFixtureUrls'] = http_fixture['urls']
@@ -155,16 +162,27 @@ gradle.taskGraph.whenReady {
 ''')
     fixture = root / 'verification/driver-profile/DriverProfileApiTest.kt'
     test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
-    replacements = {'@PROFILE@': profile, '@HDF5_PATH@': (snapshot / 'verification/build/driver-profile.h5').as_posix(),
+    replacements = {'@PROFILE@': profile, '@RUNTIME_FIXTURES_REQUIRED@': str(runtime_fixtures).lower(),
+                    '@HDF5_PATH@': '' if runtime_fixtures else (snapshot / 'verification/build/driver-profile.h5').as_posix(),
                     '@POSTGRESQL_DSN@': pg_identity['dsn'] if pg_identity else
-                    'PG:host=127.0.0.1 port=5432 dbname=gdal4k user=gdal4k password=profile-fixture'}
-    if has_capability(profile, 'http'):
+                    ('' if runtime_fixtures else 'PG:host=127.0.0.1 port=5432 dbname=gdal4k user=gdal4k password=profile-fixture')}
+    replacements.update({key: '' for key in ['@HTTP_BASE@', '@HTTPS_BASE@', '@UNTRUSTED_BASE@', '@WRONG_NAME_BASE@']})
+    if has_capability(profile, 'http') and not runtime_fixtures:
         replacements.update({'@HTTP_BASE@': http_fixture['urls']['http'], '@HTTPS_BASE@': http_fixture['urls']['https'],
                              '@UNTRUSTED_BASE@': http_fixture['urls']['untrusted'], '@WRONG_NAME_BASE@': http_fixture['urls']['wrong-name']})
     def replace(text):
         for key, value in replacements.items(): text = text.replace(key, value)
         return text
     test.write_text(replace(fixture.read_text()))
+    generated_helpers = []
+    for suffix, source_set in [('', 'commonTest'), ('Jvm', 'jvmTest'), ('Native', 'nativeTest')]:
+        name = 'DriverProfileRuntimeFixture' + suffix + '.kt'
+        destination = snapshot / 'gdal4k-runtime/src' / source_set / 'kotlin/dev/gdal4k' / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(replace((root / 'verification/driver-profile' / name).read_text()))
+        if re.search(r'@[A-Z_]+@', destination.read_text()):
+            raise ValueError('Unrendered test runtime fixture placeholder')
+        generated_helpers.append(destination)
     http_test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt'
     if has_capability(profile, 'http'):
         http_test.write_text(replace((root / 'verification/driver-profile/NativeHttpProfileTest.kt').read_text()))
@@ -177,6 +195,8 @@ gradle.taskGraph.whenReady {
         consumer.write_text(consumer.read_text().replace("'DriverProfileApiTest', 'DatasetApiTest'", "'DriverProfileApiTest', 'NativeHttpProfileTest', 'DatasetApiTest'"))
     prepared = {name: hashlib.sha256((snapshot / name).read_bytes()).hexdigest() for name in inventory}
     prepared[test.relative_to(snapshot).as_posix()] = hashlib.sha256(test.read_bytes()).hexdigest()
+    for helper in generated_helpers:
+        prepared[helper.relative_to(snapshot).as_posix()] = hashlib.sha256(helper.read_bytes()).hexdigest()
     if has_capability(profile, 'http'): prepared[http_test.relative_to(snapshot).as_posix()] = hashlib.sha256(http_test.read_bytes()).hexdigest()
     if profile == 'combined': prepared[combined_probe.relative_to(snapshot).as_posix()] = hashlib.sha256(combined_probe.read_bytes()).hexdigest()
     (output / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n')
@@ -192,6 +212,8 @@ def main():
     parser.add_argument('--postgis-archive', type=Path,
                         help='Existing pinned Mac fixture archive; read without modifying it')
     args = parser.parse_args()
+    if args.target == 'linux-arm64':
+        parser.error('Use verification/driver-profile/arm64-profile.py cross-build and run phases')
     with ExitStack() as stack:
         http_fixture = None
         postgresql_fixture = None

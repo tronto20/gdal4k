@@ -14,6 +14,7 @@ class DriverProfileApiTest {
     private val profile = "@PROFILE@"
 
     @Test fun requiredDriversAndRealDataRoundTrip() = runTest(timeout = 120.seconds) {
+        driverProfileRuntimeFixture // Validate required runtime settings before opening anything.
         val r = Gdal4k.runtime()
         when (profile) {
             "http" -> DriverProfileFixtures.requiredHttp(r)
@@ -32,14 +33,17 @@ class DriverProfileApiTest {
 }
 
 /** One supplied Runtime and fresh owned names per call, including diagnostic rounds. */
-internal suspend fun combinedRoundTrip(r: GdalRuntime) = DriverProfileFixtures.combined(r)
+internal suspend fun combinedRoundTrip(r: GdalRuntime) {
+    driverProfileRuntimeFixture
+    DriverProfileFixtures.combined(r)
+}
 
 private object DriverProfileFixtures {
-    private const val postgresqlConnection = "@POSTGRESQL_DSN@"
+    private val postgresqlConnection: String get() = driverProfileRuntimeFixture.postgresqlDsn
     private fun token() = kotlin.random.Random.nextLong().toULong().toString(16)
 
     suspend fun requiredHttp(r: GdalRuntime) {
-        r.openDataset("@HTTP_BASE@/required/$datasetOutputPrefix/fixture.tif",
+        r.openDataset("${driverProfileRuntimeFixture.httpBase}/required/$datasetOutputPrefix/fixture.tif",
             DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(requireStrongETag = true))).use {
             assertEquals(2048, it.getRasterXSize()); assertEquals(2048, it.getRasterYSize())
         }
@@ -103,7 +107,7 @@ private object DriverProfileFixtures {
 
     suspend fun scientific(r: GdalRuntime, name: String = "profile") {
         requireNotNull(r.getDriver("HDF5")).use { assertEquals("HDF5", it.getShortName()) }
-        r.openDataset("HDF5:\"@HDF5_PATH@\"://values").use {
+        r.openDataset("HDF5:\"${driverProfileRuntimeFixture.hdf5Path}\"://values").use {
             assertEquals(2, it.getRasterXSize()); assertEquals(2, it.getRasterYSize())
             assertContentEquals(doubleArrayOf(1.0, 2.0, 3.0, 4.0), it.readRaster())
         }
@@ -120,7 +124,7 @@ private object DriverProfileFixtures {
     }
 
     private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
-        r.openDataset("@HDF5_PATH@", DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use {
+        r.openDataset("${driverProfileRuntimeFixture.hdf5Path}", DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use {
             it.multiDimTranslate(emptyList())
         }
 
@@ -170,11 +174,11 @@ private object DriverProfileFixtures {
 
     private suspend fun combinedHttpLease(r: GdalRuntime, key: String): Dataset {
         val options = DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(requireStrongETag = true))
-        return r.openDataset("@HTTP_BASE@/combined/$key/fixture.tif", options).use { source ->
+        return r.openDataset("${driverProfileRuntimeFixture.httpBase}/combined/$key/fixture.tif", options).use { source ->
             assertEquals(2048, source.getRasterXSize()); assertEquals(2048, source.getRasterYSize())
             verifyHttpPixels(source)
-            r.openDataset("@HTTPS_BASE@/combined/$key/fixture.tif", options).use { verifyHttpPixels(it) }
-            for (origin in listOf("@UNTRUSTED_BASE@", "@WRONG_NAME_BASE@")) {
+            r.openDataset("${driverProfileRuntimeFixture.httpsBase}/combined/$key/fixture.tif", options).use { verifyHttpPixels(it) }
+            for (origin in listOf(driverProfileRuntimeFixture.untrustedBase, driverProfileRuntimeFixture.wrongNameBase)) {
                 assertFailsWith<GdalException> {
                     r.openDataset("$origin/combined/$key/fixture.tif", options).use { verifyHttpPixels(it) }
                 }

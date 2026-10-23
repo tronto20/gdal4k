@@ -23,6 +23,9 @@ def checkout(root):
              'verification/driver-profile/DriverProfileApiTest.kt': '@PROFILE@ @HDF5_PATH@ @HTTP_BASE@ @HTTPS_BASE@ @POSTGRESQL_DSN@',
              'verification/driver-profile/NativeHttpProfileTest.kt': '@HTTP_BASE@ @HTTPS_BASE@ @UNTRUSTED_BASE@ @WRONG_NAME_BASE@',
              'verification/driver-profile/CombinedDriverMemoryProbe.kt': '// combined probe template\n',
+             'verification/driver-profile/DriverProfileRuntimeFixture.kt': '@RUNTIME_FIXTURES_REQUIRED@ @HDF5_PATH@ @POSTGRESQL_DSN@ @HTTP_BASE@ @HTTPS_BASE@ @UNTRUSTED_BASE@ @WRONG_NAME_BASE@',
+             'verification/driver-profile/DriverProfileRuntimeFixtureJvm.kt': '// JVM getenv actual\n',
+             'verification/driver-profile/DriverProfileRuntimeFixtureNative.kt': '// Native getenv actual\n',
              'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/Existing.kt': '// API test\n',
              'gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/ExistingProbe.kt': '// existing JVM test\n',
              '.gitignore': 'build/\n'}
@@ -93,10 +96,33 @@ class ProfileIsolationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'no verified build matrix'):
                 module.prepare(root, 'postgresql', 'macos-arm64')
             self.assertFalse((root / 'build').exists())
-            for target in ['linux-arm64', 'windows-amd64']:
+            for target in ['windows-amd64']:
                 with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'no verified build matrix'):
                     module.prepare(root, 'combined', target, HTTP_FIXTURE)
                 self.assertFalse((root / 'build').exists())
+
+    def test_arm_cross_sources_require_runtime_configuration_without_producer_endpoints(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before = checkout(root)
+            with self.assertRaisesRegex(ValueError, 'explicit cross-build/runtime'):
+                module.prepare(root, 'combined', 'linux-arm64', HTTP_FIXTURE)
+            self.assertFalse((root / 'build').exists())
+            with self.assertRaisesRegex(ValueError, 'cannot capture'):
+                module.prepare(root, 'combined', 'linux-arm64', HTTP_FIXTURE, runtime_fixtures=True)
+            snapshot, identity = module.prepare(root, 'combined', 'linux-arm64', runtime_fixtures=True)
+            self.assertEqual('required-on-execution-host', identity['runtimeFixtures'])
+            self.assertNotIn('httpFixtureUrls', identity)
+            self.assertNotIn('postgresqlFixture', identity)
+            generated = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileRuntimeFixture.kt'
+            self.assertEqual('true      ', generated.read_text())
+            prepared = json.loads((snapshot.parent / 'prepared.json').read_text())
+            helpers = [name for name in prepared if '/src/' in name and 'DriverProfileRuntimeFixture' in name]
+            self.assertEqual(3, len(helpers))
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
+            generated.write_text('changed endpoint fallback')
+            with self.assertRaisesRegex(ValueError, 'source changed'):
+                module.prepare(root, 'combined', 'linux-arm64', runtime_fixtures=True)
 
     def test_mac_combined_owned_postgis_identity_and_isolation(self):
         with tempfile.TemporaryDirectory() as temporary:

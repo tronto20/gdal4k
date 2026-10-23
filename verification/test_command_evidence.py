@@ -42,6 +42,20 @@ class CommandEvidenceTest(unittest.TestCase):
             self.assertTrue(record['outputComplete'])
             self.assertIn(b'before failure', (root / 'evidence/001.log').read_bytes())
 
+    def test_child_environment_is_isolated_and_not_serialized(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = 'GDAL4K_CHILD_ENV_TEST'
+            original = os.environ.get(marker)
+            env = dict(os.environ, **{marker: 'private-unit-value'})
+            receipt = run_with_evidence([sys.executable, '-c',
+                                        'import os; assert len(os.environ["GDAL4K_CHILD_ENV_TEST"]) == 18; print("child-env-ok")'],
+                                        cwd=root, directory=root/'evidence', timeout=10, env=env)
+            self.assertEqual(original, os.environ.get(marker))
+            self.assertEqual(root/'evidence/001.json', receipt)
+            self.assertNotIn('private-unit-value', receipt.read_text())
+            self.assertNotIn('environment', json.loads(receipt.read_text()))
+
     def test_timeout_terminates_owned_descendant_and_retains_partial_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
