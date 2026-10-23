@@ -35,7 +35,7 @@ class DriverProfileApiTest {
 internal suspend fun combinedRoundTrip(r: GdalRuntime) = DriverProfileFixtures.combined(r)
 
 private object DriverProfileFixtures {
-    private const val postgresqlConnection = "PG:host=127.0.0.1 port=5432 dbname=gdal4k user=gdal4k password=profile-fixture"
+    private const val postgresqlConnection = "@POSTGRESQL_DSN@"
     private fun token() = kotlin.random.Random.nextLong().toULong().toString(16)
 
     suspend fun requiredHttp(r: GdalRuntime) {

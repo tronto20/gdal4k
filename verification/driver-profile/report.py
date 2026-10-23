@@ -5,7 +5,9 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import shlex
 import statistics
+import struct
 import sys
 import tarfile
 import xml.etree.ElementTree as ET
@@ -86,6 +88,52 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
                 compiledProductionSha256=production, jniSha256=jni_hash, nativeSha256=native_hash)
 
 
+def combined_execution_bindings(snapshot, data):
+    """Bind command/PID/exit receipts omitted by Darwin's raw time output."""
+    snapshot = snapshot.resolve()
+    hosts = {'macos-arm64': ('Darwin', 'arm64', '-l', 'Darwin time -l', 'bytes', 1, 'libgdal4k.dylib'),
+             'linux-amd64': ('Linux', 'x86_64', '-v', 'GNU time -v', 'KiB', 1024, 'libgdal4k.so')}
+    assert data['target'] in hosts, 'Unsupported combined command host'
+    system, machine, flag, time_format, unit, multiplier, library = hosts[data['target']]
+    assert (data['system'], data['machine'].lower()) == (system, machine), 'Combined command host metadata mismatch'
+    assert isinstance(data['platform'], str) and data['platform']
+    assert data['osRss'] == dict(timeExecutable='/usr/bin/time', timeArgument=flag, timeFormat=time_format,
+                                 reportedUnit=unit, multiplierToBytes=multiplier), 'Combined time format/unit mismatch'
+    cp = json.loads((snapshot / 'gdal4k-runtime/build/combined-driver-memory-classpath.json').read_text(encoding='utf-8'))
+    assert Path(cp['java']).is_absolute() and Path(cp['java']).name == 'java', 'Invalid combined Java executable'
+    settings = ['-Xms32m', '-Xmx1536m', '-XX:+UseG1GC']
+    assert data['settings']['jvm'] == settings, 'Combined JVM settings changed'
+    logs = {}
+    for record in data['records']:
+        relative = Path(record['executionLog'])
+        assert (not relative.is_absolute() and '..' not in relative.parts
+                and relative.parts[:3] == ('verification', 'results', 'combined-driver-memory'))
+        assert relative.parent == Path(record['log']).parent == Path(record['rssLog']).parent
+        assert type(record['trial']) is int and relative.name == f"{record['trial']}.command.json"
+        assert relative.as_posix() not in logs, 'Duplicate combined command receipt'
+        path = snapshot / relative
+        assert not any(snapshot.joinpath(*relative.parts[:i]).is_symlink() for i in range(1, len(relative.parts) + 1))
+        assert sha(path) == record['executionLogSha256'], 'Combined command receipt changed'
+        execution = json.loads(path.read_text(encoding='utf-8'))
+        assert execution == record['execution'], 'Combined embedded command receipt differs'
+        assert (execution['status'] == 'passed' and type(execution['returncode']) is int
+                and execution['returncode'] == 0), 'Missing successful owned combined command'
+        assert (type(execution['pid']) is int and execution['pid'] > 0
+                and type(execution['observedProcessGroupId']) is int
+                and execution['observedProcessGroupId'] == execution['pid']), 'Combined owned PID/PGID mismatch'
+        assert type(execution['parentPid']) is int and execution['parentPid'] > 0
+        assert execution['pidRole'] == '/usr/bin/time wrapper; JVM PID is not observed'
+        assert execution['requestedNewSession'] is True and execution['timeoutSeconds'] == 600
+        assert execution['environmentOverrides'] == {'LC_ALL': 'C'} and execution['cwd'] == str(snapshot)
+        assert execution['startedAtUtc'] and execution['completedAtUtc'] and execution['elapsedSeconds'] > 0
+        library_path = snapshot / f"gdal4k-engine/build/jvm-resources/gdal4k/{data['target']}/{library}"
+        expected = ['/usr/bin/time', flag, '-o', str(snapshot / record['rssLog']), cp['java'], *settings,
+                    '-cp', cp['classpath'], 'dev.gdal4k.CombinedDriverMemoryProbe', str(library_path.resolve())]
+        assert execution['command'] == expected, 'Combined time/Java/probe/library command mismatch'
+        logs[relative.as_posix()] = record['executionLogSha256']
+    return logs
+
+
 def diagnostic_bindings(snapshot, data, measured, publication):
     assert data['engineFingerprint'] == measured['fingerprint']
     assert data['engineLibrarySha256'] == publication['jniSha256']
@@ -98,8 +146,152 @@ def diagnostic_bindings(snapshot, data, measured, publication):
     for record in data['records']:
         for path, digest in [('log', 'logSha256'), ('rssLog', 'rssLogSha256')]:
             assert sha(snapshot / record[path]) == record[digest], 'Diagnostic raw log changed'
-    return dict(compiledProbeSha256=data['compiledProbeSha256'], sourceSha256=data['sourceSha256'],
-                productionClassCount=len(data['compiledProductionSha256']))
+    bindings = dict(compiledProbeSha256=data['compiledProbeSha256'], sourceSha256=data['sourceSha256'],
+                    productionClassCount=len(data['compiledProductionSha256']))
+    if data.get('profile') == 'combined':
+        bindings['executionLogSha256'] = combined_execution_bindings(snapshot, data)
+    return bindings
+
+
+def mach_o_architectures(path):
+    """Inspect provider executable headers without running a provider binary."""
+    size = path.stat().st_size
+    with path.open('rb') as file:
+        def thin_cpu(offset, length):
+            assert length >= 32
+            file.seek(offset)
+            thin = file.read(16)
+            endian = {b'\xcf\xfa\xed\xfe': '<', b'\xfe\xed\xfa\xcf': '>'}.get(thin[:4])
+            assert endian is not None, 'PostGIS executable slice is not Mach-O64'
+            cpu, _subtype, kind = struct.unpack_from(endian + 'III', thin, 4)
+            assert kind == 2, 'PostGIS provider must contain executables'
+            return cpu
+        header = file.read(8)
+        if header[:4] in [b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf']:
+            cpus = [thin_cpu(0, size)]
+        else:
+            formats = {b'\xca\xfe\xba\xbe': ('>', False), b'\xbe\xba\xfe\xca': ('<', False),
+                       b'\xca\xfe\xba\xbf': ('>', True), b'\xbf\xba\xfe\xca': ('<', True)}
+            assert header[:4] in formats, 'PostGIS provider executable is not Mach-O'
+            endian, wide = formats[header[:4]]
+            count = struct.unpack_from(endian + 'I', header, 4)[0]
+            assert 0 < count <= 16, 'Invalid Mach-O architecture count'
+            entry_size = 32 if wide else 20
+            entries = file.read(count * entry_size)
+            assert len(entries) == count * entry_size
+            cpus = []
+            for index in range(count):
+                cpu, _subtype, offset, length = struct.unpack_from(
+                    endian + ('IIQQ' if wide else 'IIII'), entries, index * entry_size)
+                assert length > 0 and offset >= 8 + len(entries) and offset + length <= size
+                assert thin_cpu(offset, length) == cpu, 'Mach-O slice disagrees with its architecture table'
+                cpus.append(cpu)
+    names = {0x0100000C: 'arm64', 0x01000007: 'x86_64'}
+    assert len(cpus) == len(set(cpus)) and all(cpu in names for cpu in cpus)
+    return sorted(names[cpu] for cpu in cpus)
+
+
+def postgis_fixture_bindings(snapshot, target, manager_source=None, provider_lock=None):
+    """Require terminal evidence from the owned Mac server, never a machine service."""
+    assert target == 'macos-arm64'
+    intended = json.loads((snapshot.parent / 'inputs.json').read_text(encoding='utf-8'))
+    assert intended['target'] == target and has_capability(intended['profile'], 'postgresql')
+    assert 'postgresqlFixture' in intended, 'Missing intended owned PostGIS identity'
+    manager_name = 'verification/driver-profile/postgis-fixture.py'
+    lock_name = 'verification/driver-profile/postgis-fixture-lock.json'
+    manager_source = manager_source or ROOT / manager_name
+    provider_lock = provider_lock or ROOT / lock_name
+    lock = json.loads(provider_lock.read_text(encoding='utf-8'))
+    assert lock['schemaVersion'] == 1
+    expected = lock['providers'][target]
+    folder = snapshot / 'verification/results/native-postgis-profile'
+    path = folder / 'fixture.json'
+    fixture = json.loads(path.read_text(encoding='utf-8'))
+    assert fixture['schemaVersion'] == 1 and fixture['target'] == target and fixture['result'] == 'passed'
+    sources = fixture['sourceSha256']
+    assert set(sources) == {manager_name, lock_name}
+    for name, current in [(manager_name, manager_source), (lock_name, provider_lock)]:
+        assert sha(current) == sources[name] == sha(snapshot / name), 'PostGIS fixture source changed: ' + name
+    assert fixture['archive'] == {key: expected[key] for key in ['url', 'sha256', 'bytes']}
+    assert expected['url'].startswith('https://') and '@' not in expected['url']
+    assert re.fullmatch(r'[0-9a-f]{64}', expected['sha256']) and expected['bytes'] > 0
+    connection = fixture['connection']
+    assert connection['passwordIncluded'] is False
+    dsn = connection['dsn']
+    assert isinstance(dsn, str) and dsn.startswith('PG:')
+    pairs = [part.split('=', 1) for part in shlex.split(dsn[3:])]
+    assert all(len(pair) == 2 for pair in pairs)
+    values = dict(pairs)
+    assert len(pairs) == len(values) and set(values) == {'host', 'port', 'dbname', 'user'}
+    assert values['host'] == '127.0.0.1' and re.fullmatch(r'[0-9]+', values['port'])
+    assert 0 < int(values['port']) < 65536
+    assert all(re.fullmatch(r'[a-z][a-z0-9_]{0,62}', values[key]) for key in ['dbname', 'user'])
+    assert intended['postgresqlFixture'] == dict(target=target, dsn=dsn, archiveSha256=fixture['archive']['sha256']), \
+        'Terminal PostGIS receipt differs from intended fixture identity'
+    provider = fixture['provider']
+    assert provider['pgMajor'] == expected['pgMajor'] == 17
+    binaries = provider['binaries']
+    assert set(binaries) == {'postgres', 'initdb', 'pg_ctl', 'psql'}
+    actual_binaries = {}
+    parents = set()
+    for name, metadata in binaries.items():
+        binary = Path(metadata['path'])
+        suffix = Path(expected['appRelativePath']) / expected['binaryRelativePath'] / name
+        assert binary.is_absolute() and binary.parts[-len(suffix.parts):] == suffix.parts
+        assert re.fullmatch(r'[0-9a-f]{64}', metadata['sha256'])
+        binary_sha = sha(binary)
+        assert binary_sha == metadata['sha256'], 'PostGIS provider binary changed: ' + name
+        architectures = mach_o_architectures(binary)
+        assert 'arm64' in architectures and sorted(metadata['architectures']) == architectures
+        assert not binary.resolve().is_relative_to((snapshot / 'verification/results').resolve())
+        actual_binaries[name] = dict(path=str(binary), sha256=binary_sha, architectures=architectures)
+        parents.add(binary.parent)
+    assert len(parents) == 1, 'Mixed PostGIS provider binary roots'
+    server = fixture['server']
+    assert server['listenAddresses'] == ['127.0.0.1'] and server['port'] == int(values['port'])
+    data_directory = Path(server['dataDirectory'])
+    assert data_directory.is_absolute() and not data_directory.resolve().is_relative_to((snapshot / 'verification/results').resolve())
+    assert type(server['postmasterPid']) is int and server['postmasterPid'] > 0
+    assert server['serverVersionNum'] == expected['serverVersionNum']
+    assert server['serverVersionNum'] // 10000 == provider['pgMajor']
+    assert isinstance(server['serverVersion'], str) and server['serverVersion']
+    assert server['postgisVersion'] == expected['postgisVersion']
+    assert all(fixture['startup'][key] is True for key in
+               ['completed', 'healthy', 'dataDirectoryVerified', 'postgisExtensionVerified'])
+    cleanup = fixture['cleanup']
+    assert all(cleanup[key] is True for key in ['serverStopped', 'portClosed', 'ownedPostmasterExited'])
+    assert cleanup['pgCtlStopReturncode'] == 0
+    commands = fixture['commands']
+    assert commands, 'Missing PostGIS lifecycle commands'
+    logs = {}
+    for command in commands:
+        assert isinstance(command['label'], str) and command['label']
+        assert isinstance(command['argv'], list) and command['argv'] and all(isinstance(v, str) for v in command['argv'])
+        assert Path(command['cwd']).is_absolute() and isinstance(command['returncode'], int)
+        assert command['startedAt'] and command['completedAt']
+        for stream in ['stdout', 'stderr']:
+            relative = Path(command[stream])
+            assert not relative.is_absolute() and relative.parts and relative.parts[0] == 'commands' and '..' not in relative.parts
+            file = folder / relative
+            assert not folder.is_symlink() and not any((folder.joinpath(*relative.parts[:index])).is_symlink()
+                                                       for index in range(1, len(relative.parts) + 1))
+            assert file.resolve().is_relative_to(folder.resolve())
+            digest = command[stream + 'Sha256']
+            assert re.fullmatch(r'[0-9a-f]{64}', digest) and sha(file) == digest, 'PostGIS command log changed'
+            text = file.read_text(encoding='utf-8')
+            assert not re.search(r'(?i)(?:password|PGPASSWORD)\s*=', text), 'Unsanitized PostGIS command output'
+            logs[relative.as_posix()] = digest
+        assert not any(re.search(r'(?i)(?:password|PGPASSWORD)\s*=', value) for value in command['argv'])
+    for executable, operation in [('initdb', None), ('pg_ctl', 'start'), ('psql', None), ('pg_ctl', 'stop')]:
+        assert any(Path(command['argv'][0]).name == executable and
+                   (operation is None or operation in command['argv']) and command['returncode'] == 0
+                   for command in commands), 'Missing successful owned PostGIS command: ' + str((executable, operation))
+    return dict(fixtureSha256=sha(path), sourceSha256=sources, archive=fixture['archive'],
+                connection=connection, provider=dict(pgMajor=provider['pgMajor'], binaries=actual_binaries),
+                server=server, startup=fixture['startup'], cleanup=cleanup,
+                commandLogSha256=logs, commandCount=len(commands),
+                scope='Owned loopback Mac PostGIS lifecycle; provider executable bytes/architectures and sanitized command logs verified. '
+                      'Private credentials, PGDATA and the provider bundle are outside uploaded evidence.')
 
 
 def combined_request_bindings(records, tls, policy_keys, diagnostics):
@@ -149,6 +341,9 @@ def main():
         measurements[name] = {'fingerprint': manifest['source_fingerprint'], 'sizes': sizes,
                               'artifactHashes': manifest['artifacts']}
     assert measurements['default']['fingerprint'] != measurements['profile']['fingerprint']
+    postgis_fixture = None
+    if target == 'macos-arm64' and has_capability(profile, 'postgresql'):
+        postgis_fixture = postgis_fixture_bindings(snapshot, target)
     repo = snapshot / 'verification/build/consumer-maven'
     publication = publication_bindings(snapshot, repo, version, target, measurements['profile']['artifactHashes'])
     proof = {}
@@ -294,6 +489,7 @@ def main():
               'measured': measurements, 'tests': proof, 'dependencyAudit': audit, 'arrowIpcRegression': ipc,
               'archive': archive.name, 'archiveSha256': sha(archive), 'httpRegression': http,
               'combinedRegression': combined, 'publicationBindings': publication, 'scientificFixture': scientific_fixture,
+              'postgisFixture': postgis_fixture,
               'publication': 'isolated local Maven archive only; no remote upload or default coordinate replacement'}
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({key: report[key] for key in ['profile', 'target', 'version', 'measured', 'tests', 'publication']}), flush=True)
