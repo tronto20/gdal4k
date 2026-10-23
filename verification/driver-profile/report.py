@@ -191,6 +191,15 @@ def windows_execution_bindings(snapshot, data):
     return logs
 
 
+def windows_vcpkg_git_bindings(snapshot):
+    """Match the configuration receipt to the actual owned, pinned Git clone."""
+    path = owned_file(snapshot, 'verification/results/windows-vcpkg-git.json')
+    recorded = json.loads(path.read_text(encoding='utf-8'))
+    actual = profile_api.windows_vcpkg_git_identity(snapshot)
+    assert recorded == actual, 'Windows private vcpkg Git configuration differs from its receipt'
+    return dict(receiptPath=path.relative_to(snapshot).as_posix(), receiptSha256=sha(path), identity=actual)
+
+
 def windows_tls_tool_identity():
     """Read the current CI generator identity, without running certificate generation."""
     import importlib.metadata
@@ -720,6 +729,7 @@ def main():
     for name, digest in json.loads((output / 'prepared.json').read_text(encoding='utf-8')).items():
         assert sha(snapshot / name) == digest, 'Prepared source changed during profile verification: ' + name
     version = identity['version']
+    windows_vcpkg = windows_vcpkg_git_bindings(snapshot) if target == 'windows-amd64' else None
     binary_name = profile_api.jni_library(target)
     measurements = {}
     for name, root in [('default', ROOT), ('profile', snapshot)]:
@@ -915,6 +925,7 @@ def main():
               'archive': archive.name, 'archiveSha256': sha(archive), 'httpRegression': http,
               'combinedRegression': combined, 'publicationBindings': publication, 'scientificFixture': scientific_fixture,
               'postgisFixture': postgis_fixture,
+              'windowsVcpkgGit': windows_vcpkg,
               'arm64RuntimeBindings': (dict(transfer={key: value for key, value in restored.items() if key != 'project'},
                                             native=native_runtime) if arm_runtime else None),
               'publication': 'isolated local Maven archive only; no remote upload or default coordinate replacement'}

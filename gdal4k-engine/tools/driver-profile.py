@@ -132,6 +132,83 @@ def postgresql_child_environment(environment, fixture, target=None):
     return result
 
 
+def windows_profile_path(snapshot, relative, kind=None):
+    snapshot = Path(snapshot).absolute()
+    path = snapshot / relative
+    if '..' in path.parts or not path.is_relative_to(snapshot):
+        raise ValueError('Windows vcpkg path is outside the private snapshot')
+    parts = path.relative_to(snapshot).parts
+    for current in [snapshot, *(snapshot.joinpath(*parts[:i]) for i in range(1, len(parts)+1))]:
+        if (current.is_symlink() or getattr(current, 'is_junction', lambda: False)()
+                or (current.exists() and getattr(current.lstat(), 'st_file_attributes', 0) & 0x400)):
+            raise ValueError('Windows vcpkg path traverses a symlink or reparse point')
+    if (kind == 'file' and not path.is_file()) or (kind == 'directory' and not path.is_dir()):
+        raise ValueError('Windows vcpkg requires an ordinary private '+kind)
+    return path
+
+
+def windows_vcpkg_git_inputs(snapshot):
+    snapshot = Path(snapshot).absolute()
+    tools = windows_profile_path(snapshot, 'build/build-tools/native.json', 'file')
+    configured = json.loads(tools.read_text(encoding='utf-8')).get('VCPKG_ROOT')
+    repository = windows_profile_path(snapshot, 'v', 'directory')
+    if not isinstance(configured, str) or not Path(configured).is_absolute() or Path(configured) != repository:
+        raise ValueError('Prepared vcpkg does not select the exact private snapshot clone')
+    git_dir = windows_profile_path(snapshot, 'v/.git', 'directory')
+    for path in git_dir.rglob('*'):
+        windows_profile_path(snapshot, path.relative_to(snapshot))
+        if path.is_file() and path.stat().st_nlink > 1:
+            raise ValueError('Windows vcpkg Git metadata shares hard-linked files')
+    if (git_dir/'commondir').exists() or (git_dir/'objects/info/alternates').exists():
+        raise ValueError('Windows vcpkg must not share Git metadata or object storage')
+    windows_profile_path(snapshot, 'v/.git/config', 'file')
+    pins_path = 'build-logic/src/main/resources/dev/tronto/buildtools/versions.properties'
+    pins_file = windows_profile_path(snapshot, pins_path, 'file')
+    pins = dict(line.split('=', 1) for line in pins_file.read_text(encoding='utf-8').splitlines()
+                if line and not line.startswith('#') and '=' in line)
+    expected = pins.get('vcpkg.revision', '')
+    if not re.fullmatch('[0-9a-f]{40}', expected):
+        raise ValueError('Private vcpkg requires the exact pinned source revision')
+    git = ['git', '-C', str(repository), '--git-dir='+str(git_dir), '--work-tree='+str(repository)]
+    common = Path(subprocess.check_output([*git, 'rev-parse', '--git-common-dir'], text=True).strip())
+    if not common.is_absolute():
+        common = repository/common
+    if common != git_dir:
+        raise ValueError('Windows vcpkg Git metadata is shared outside its private clone')
+    revision = subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True).strip()
+    if revision != expected:
+        raise ValueError('Private vcpkg source revision differs from the pin')
+    manager_path = 'gdal4k-engine/tools/driver-profile.py'
+    manager = windows_profile_path(snapshot, manager_path, 'file')
+    identity = dict(schemaVersion=1, target='windows-amd64', repositoryRelativePath='v',
+                    revision=revision, buildTools=dict(path=tools.relative_to(snapshot).as_posix(),
+                    sha256=hashlib.sha256(tools.read_bytes()).hexdigest()),
+                    sourceSha256={pins_path:hashlib.sha256(pins_file.read_bytes()).hexdigest(),
+                                  manager_path:hashlib.sha256(manager.read_bytes()).hexdigest()})
+    return git, identity
+
+
+def windows_vcpkg_git_identity(snapshot):
+    """Read physical private-clone bindings without changing any Git configuration."""
+    git, identity = windows_vcpkg_git_inputs(snapshot)
+    value = subprocess.check_output([*git, 'config', '--local', '--type=bool', '--get', 'core.longpaths'], text=True).strip()
+    if value != 'true':
+        raise ValueError('Private Windows vcpkg Git long paths are not enabled')
+    return dict(identity, localLongpaths=True)
+
+
+def configure_windows_vcpkg_git(snapshot):
+    # Pinned vcpkg-tool supplies only GIT_INDEX_FILE to Windows read-tree and
+    # checkout-index. Its explicit --git-dir still reads this private local config.
+    git, _ = windows_vcpkg_git_inputs(snapshot)
+    subprocess.run([*git, 'config', '--local', 'core.longpaths', 'true'], check=True)
+    identity = windows_vcpkg_git_identity(snapshot)
+    receipt = windows_profile_path(snapshot, 'verification/results/windows-vcpkg-git.json')
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(identity, indent=2)+'\n', encoding='utf-8', newline='\n')
+    return identity
+
+
 def prepare(root, profile, target, http_fixture=None, postgresql_fixture=None, *, runtime_fixtures=False):
     spec = PROFILES[profile]
     if target not in spec['targets']:
@@ -192,6 +269,9 @@ gradle.taskGraph.whenReady {
     }
 }
 ''')
+        if target == 'windows-amd64':
+            file.write('\n// Keep Windows Git configuration inside this isolated producer.\n'
+                       'vcpkgTool.installationDirectory.set(layout.projectDirectory.dir("v"))\n')
     fixture = root / 'verification/driver-profile/DriverProfileApiTest.kt'
     test = snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfileApiTest.kt'
     replacements = {'@PROFILE@': profile, '@RUNTIME_FIXTURES_REQUIRED@': str(runtime_fixtures).lower(),
@@ -330,6 +410,9 @@ def run_profile(args, http_fixture, postgresql_fixture=None):
     gradle = snapshot / ('gradlew.bat' if system == 'Windows' else 'gradlew')
     def run(*command):
         subprocess.run([str(x) for x in command], cwd=snapshot, env=env, check=True)
+    if args.target == 'windows-amd64':
+        run(gradle, '--console=plain', ':prepareNativeBuildTools')
+        configure_windows_vcpkg_git(snapshot)
     if has_capability(args.profile, 'scientific'):
         run(sys.executable, '-c', "import h5py,numpy as np; from pathlib import Path; p=Path('verification/build/driver-profile.h5'); p.parent.mkdir(parents=True,exist_ok=True); f=h5py.File(p,'w'); f.create_dataset('values',data=np.array([[1,2],[3,4]],dtype='int16')); f.close()")
     run(gradle, '--console=plain', ':gdal4k:compileKotlin' + native,

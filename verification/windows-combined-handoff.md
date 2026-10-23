@@ -28,6 +28,15 @@ existing-directory identity mismatches and prepared-source changes are rejected.
 Install, buildtrees and package directories remain inside that isolated source
 checkout. Reports and evidence paths still derive from the snapshot directory.
 
+The generated Windows Gradle project selects its own `source/v` vcpkg clone.
+Normal Gradle tool preparation verifies that installation before the profile
+enables repository-local Git long paths. The pinned vcpkg tool starts versioned
+port checkouts with an explicit minimal environment, so their long-path setting
+must be in that private repository. The profile verifies the actual tool path,
+pinned revision and private Git metadata before mutation. A public configuration
+receipt is rechecked against the physical clone during final reporting; shared
+tool stores and user/global Git configuration are not modified.
+
 ## Remaining acceptance
 
 - Actual Windows kernel peak working-set collection, protected private ACLs,

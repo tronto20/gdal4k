@@ -2,8 +2,10 @@
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path, PureWindowsPath
 import subprocess
+import shutil
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -48,7 +50,99 @@ POSTGIS_FIXTURE = {'dsn': 'PG:host=127.0.0.1 port=16432 dbname=gdal4k user=gdal4
                                 'safeDSN': 'PG:host=127.0.0.1 port=16432 dbname=gdal4k user=gdal4k'},
                    'env': {'PGPASSFILE': '/private/owned-fixture/passfile'}}
 
+
+def private_vcpkg(root):
+    """Two owned real Git repositories; no vcpkg binary or dependency build."""
+    snapshot, shared = root / 'snapshot', root / 'shared'
+    snapshot.mkdir(); shared.mkdir()
+    for repository in [snapshot, shared]:
+        subprocess.run(['git', 'init', '-q', repository], check=True)
+        subprocess.run(['git', '-C', repository, 'config', '--local', 'core.longpaths', 'false'], check=True)
+    (shared / 'unit.txt').write_text('unit-only Git repository\n')
+    subprocess.run(['git', '-C', shared, 'add', 'unit.txt'], check=True)
+    subprocess.run(['git', '-C', shared, '-c', 'user.name=Unit', '-c', 'user.email=unit@example.invalid',
+                    'commit', '-qm', 'unit source'], check=True)
+    revision = subprocess.check_output(['git', '-C', shared, 'rev-parse', 'HEAD'], text=True).strip()
+    subprocess.run(['git', 'clone', '--no-local', '--quiet', shared, snapshot / 'v'], check=True)
+    subprocess.run(['git', '-C', snapshot / 'v', 'config', '--local', 'core.longpaths', 'false'], check=True)
+    files = {
+        'build/build-tools/native.json': json.dumps({'VCPKG_ROOT':str(snapshot / 'v')}),
+        'build-logic/src/main/resources/dev/tronto/buildtools/versions.properties': 'vcpkg.revision='+revision+'\n',
+        'gdal4k-engine/tools/driver-profile.py': '// unit manager source binding\n',
+    }
+    for relative, text in files.items():
+        path = snapshot / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text)
+    return snapshot, shared, revision
+
+
 class ProfileIsolationTest(unittest.TestCase):
+    def test_private_windows_git_config_survives_vcpkg_minimal_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot, shared, revision = private_vcpkg(Path(temporary))
+            original = {path:path.read_bytes() for path in [shared / '.git/config', snapshot / '.git/config']}
+            identity = module.configure_windows_vcpkg_git(snapshot)
+            self.assertEqual(revision, identity['revision'])
+            self.assertEqual('v', identity['repositoryRelativePath'])
+            self.assertTrue(identity['localLongpaths'])
+            # Pinned vcpkg-tool uses precisely this environment for indexed Git.
+            git = shutil.which('git')
+            effective = subprocess.check_output([git, '--git-dir='+str(snapshot / 'v/.git'),
+                                                'config', '--type=bool', '--get', 'core.longpaths'],
+                                               env={'GIT_INDEX_FILE':str(snapshot / 'unit.index')}, text=True).strip()
+            self.assertEqual('true', effective)
+            self.assertEqual(identity, module.windows_vcpkg_git_identity(snapshot))
+            self.assertEqual(identity, json.loads((snapshot / 'verification/results/windows-vcpkg-git.json').read_text()))
+            for path, before in original.items():
+                self.assertEqual(before, path.read_bytes())
+
+    def test_private_windows_git_rejects_wrong_revision_or_external_selection_before_mutation(self):
+        for failure in ['revision', 'outside', 'shared-metadata', 'hardlink']:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                snapshot, shared, _ = private_vcpkg(Path(temporary))
+                config = snapshot / 'v/.git/config'
+                if failure == 'revision':
+                    (snapshot / 'build-logic/src/main/resources/dev/tronto/buildtools/versions.properties').write_text(
+                        'vcpkg.revision='+'0'*40+'\n')
+                elif failure == 'outside':
+                    (snapshot / 'build/build-tools/native.json').write_text(json.dumps({'VCPKG_ROOT':str(shared)}))
+                elif failure == 'shared-metadata':
+                    (snapshot / 'v/.git/commondir').write_text(str(shared / '.git'))
+                else:
+                    config.unlink()
+                    os.link(shared / '.git/config', config)
+                before = config.read_bytes()
+                with self.assertRaises(ValueError):
+                    module.configure_windows_vcpkg_git(snapshot)
+                self.assertEqual(before, config.read_bytes())
+                self.assertFalse((snapshot / 'verification/results/windows-vcpkg-git.json').exists())
+
+    def test_report_binds_private_windows_git_receipt_to_current_physical_clone(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot, _, _ = private_vcpkg(Path(temporary))
+            identity = module.configure_windows_vcpkg_git(snapshot)
+            binding = report.windows_vcpkg_git_bindings(snapshot)
+            self.assertEqual(identity, binding['identity'])
+            receipt = snapshot / binding['receiptPath']
+            self.assertEqual(hashlib.sha256(receipt.read_bytes()).hexdigest(), binding['receiptSha256'])
+            receipt.write_text(json.dumps(dict(identity, revision='0' * 40)))
+            with self.assertRaisesRegex(AssertionError, 'differs from its receipt'):
+                report.windows_vcpkg_git_bindings(snapshot)
+            receipt.write_text(json.dumps(identity))
+            subprocess.run(['git', '-C', snapshot / 'v', 'config', '--local', 'core.longpaths', 'false'], check=True)
+            with self.assertRaisesRegex(ValueError, 'long paths are not enabled'):
+                report.windows_vcpkg_git_bindings(snapshot)
+
+    @unittest.skipIf(os.name == 'nt', 'Creating directory symlinks needs Windows privileges')
+    def test_private_windows_git_rejects_symlinked_clone_before_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot, shared, _ = private_vcpkg(Path(temporary))
+            before = (shared / '.git/config').read_bytes()
+            shutil.rmtree(snapshot / 'v')
+            (snapshot / 'v').symlink_to(shared, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'symlink or reparse'):
+                module.configure_windows_vcpkg_git(snapshot)
+            self.assertEqual(before, (shared / '.git/config').read_bytes())
+
     def test_windows_partial_archive_overrides_fail_before_acquisition(self):
         options = ['--postgis-postgres-archive', '--postgis-extension-archive', '--postgis-runtime-archive']
         for option in options:
@@ -139,6 +233,11 @@ class ProfileIsolationTest(unittest.TestCase):
             self.assertNotIn('password=', generated.read_text(encoding='utf-8'))
             self.assertEqual('windows-amd64', identity['postgresqlFixture']['target'])
             self.assertNotIn('PGPASSFILE', json.dumps(identity))
+            generated_build = snapshot / 'build.gradle.kts'
+            self.assertIn('vcpkgTool.installationDirectory.set(layout.projectDirectory.dir("v"))',
+                          generated_build.read_text(encoding='utf-8'))
+            prepared = json.loads((snapshot.parent / 'prepared.json').read_text(encoding='utf-8'))
+            self.assertEqual(hashlib.sha256(generated_build.read_bytes()).hexdigest(), prepared['build.gradle.kts'])
             manifest = json.loads((snapshot / 'gdal4k-engine/engine/vcpkg.json').read_text(encoding='utf-8'))
             self.assertEqual(['curl', 'geos', 'hdf5', 'netcdf', 'parquet', 'postgresql'], manifest['dependencies'][0]['features'])
             self.assertEqual(before['gdal4k-engine/engine/vcpkg.json'], (root / 'gdal4k-engine/engine/vcpkg.json').read_bytes())
