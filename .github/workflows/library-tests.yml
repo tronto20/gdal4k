@@ -28,6 +28,7 @@ jobs:
           python -m unittest discover -s verification -p test_embed_data.py
           python -m unittest discover -s verification -p test_arrow_ipc_toolchain.py
           python -m unittest discover -s verification -p test_libpq_hwcap_compat.py
+          python -m unittest discover -s verification -p test_libpq_windows_paths.py
           python -m unittest discover -s verification -p test_xsimd_hwcap_compat.py
           python -m unittest discover -s verification -p test_arrow_ipc_staged.py
           python -m unittest discover -s verification -p test_staged_engine.py
@@ -39,6 +40,8 @@ jobs:
           python -m unittest discover -s verification -p test_postgis_arm64_fixture.py
           python -m unittest discover -s verification -p test_driver_profiles.py
           python -m unittest discover -s verification -p test_driver_profile_publications.py
+          python -m unittest discover -s verification -p test_audit_parts.py
+          node --test .github/actions/upload-audit-parts/index.test.cjs
           python -m unittest discover -s verification -p test_combined_driver_memory_report.py
           python -m unittest discover -s verification -p test_postgis_fixture.py
           python -m unittest discover -s verification -p test_postgis_profile_report.py
@@ -107,12 +110,12 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-${{ matrix.target }}
           path: verification/build/staged/*.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-${{ matrix.target }}
@@ -200,12 +203,12 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.web-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-web
           path: verification/build/staged/*.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-web
@@ -275,12 +278,12 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.android-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-android-${{ matrix.abi }}
           path: verification/build/staged/*.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-android-${{ matrix.abi }}
@@ -306,18 +309,18 @@ jobs:
         run: python -c 'import tarfile; from pathlib import Path; [tarfile.open(p).extractall(filter="data") for p in Path("verification/build/downloads").glob("*.tar.gz")]'
       - name: Assemble complete Maven repository and verify explicit JVM payloads and Android AAR
         run: python verification/ci.py aggregate
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: gdal4k-maven
           path: verification/build/staged/complete-maven.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: gdal4k-jvm-maven
           path: verification/build/staged/jvm-maven.tar.gz
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-jvm-payload-selection
@@ -350,7 +353,7 @@ jobs:
           python -c 'import tarfile; tarfile.open("verification/build/downloads/jvm-maven.tar.gz").extractall(filter="data")'
           python verification/consumer.py --target jvm --no-publish --jvm-binary ${{ matrix.binary }}
           python verification/consumer.py --target jvm --no-publish --expect-missing-jvm-binary
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-published-jvm-${{ matrix.os }}
@@ -373,7 +376,7 @@ jobs:
         with: { name: gdal4k-maven, path: verification/build/downloads }
       - run: python -c 'import tarfile; from pathlib import Path; [tarfile.open(p).extractall(filter="data") for p in Path("verification/build/downloads").glob("*.tar.gz")]'
       - run: python verification/ci.py linuxArm64-run
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-linux-arm64-runtime

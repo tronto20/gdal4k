@@ -1,0 +1,18 @@
+diff --git a/src/include/storage/meson.build b/src/include/storage/meson.build
+--- a/src/include/storage/meson.build
++++ b/src/include/storage/meson.build
+@@ -2,11 +2,11 @@
+ 
+ lwlocknames_h = custom_target('lwlocknames_h',
+   input: files(
+-    '../../include/storage/lwlocklist.h',
+-    '../../backend/utils/activity/wait_event_names.txt'),
++    meson.project_source_root() / 'src/include/storage/lwlocklist.h',
++    meson.project_source_root() / 'src/backend/utils/activity/wait_event_names.txt'),
+   output: ['lwlocknames.h'],
+   command: [
+-    perl, files('../../backend/storage/lmgr/generate-lwlocknames.pl'),
++    perl, files(meson.project_source_root() / 'src/backend/storage/lmgr/generate-lwlocknames.pl'),
+     '-o', '@OUTDIR@',
+     '@INPUT@'
+   ],

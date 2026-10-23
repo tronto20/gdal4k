@@ -42,6 +42,11 @@ from the Native engine module `gdal4k-engine-native-mingw-x64`. The reporter use
 the shared publication coordinate policy and checks the actual JAR/KLIB members
 against the current producer classes, DLL and static archive.
 
+For clients with small download limits, the primary and profile upload wrappers
+also retain bounded audit parts and a final run/source/hash index. Follow
+[bounded audit downloads](artifact-downloads.md) to reconstruct and verify all
+selected bytes. The original artifacts remain available to normal CI consumers.
+
 ## Remaining acceptance
 
 - Actual Windows kernel peak working-set collection, protected private ACLs,

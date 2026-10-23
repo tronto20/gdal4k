@@ -1,0 +1,39 @@
+name: Upload bounded audit parts
+description: Export a second, bounded public audit transport while preserving the original artifact.
+inputs:
+  name:
+    description: Original artifact name.
+    required: true
+  path:
+    description: Original upload path patterns.
+    required: true
+  artifact-id:
+    description: ID returned by the original upload.
+    required: true
+  artifact-digest:
+    description: SHA256 returned by the original artifact upload.
+    required: true
+  expected-head:
+    description: Expected PR head or push commit; checkout may be its direct merge commit.
+    required: true
+  retention-days:
+    description: Match the original artifact retention; zero uses the repository default.
+    default: '0'
+  include-hidden-files:
+    description: Match the original public file selection.
+    default: 'false'
+  python:
+    description: Python executable for the versioned collector.
+    default: python
+outputs:
+  exported:
+    description: Whether this source required a bounded transport.
+  index-artifact-id:
+    description: Uploaded transport index artifact ID.
+  index-artifact-digest:
+    description: SHA256 of the uploaded index artifact ZIP.
+  part-count:
+    description: Number of separately uploaded raw parts.
+runs:
+  using: node24
+  main: index.cjs
