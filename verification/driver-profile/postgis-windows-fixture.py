@@ -27,6 +27,11 @@ ROOT = Path(__file__).resolve().parents[2]
 LOCK = Path(__file__).with_name('postgis-windows-fixture-lock.json')
 TARGET = 'windows-amd64'
 BINARY_NAMES = ('postgres', 'initdb', 'pg_ctl', 'psql')
+RUNTIME_MODULES = {
+    'lib/plpgsql.dll': ('postgres', 'pgsql/lib/plpgsql.dll'),
+    'lib/dict_snowball.dll': ('postgres', 'pgsql/lib/dict_snowball.dll'),
+    'lib/postgis-3.dll': ('postgis', 'lib/postgis-3.dll'),
+}
 RESERVED = re.compile(r'(?i)(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z')
 
 
@@ -240,10 +245,18 @@ def validate_lock(lock):
             raise ValueError('Provider file has no exact original archive member identity')
         if relative.lower().endswith(('.exe', '.dll')) and item.get('pe', {}).get('machine') != 'AMD64':
             raise ValueError('Every selected provider executable image must be AMD64')
-    for name in BINARY_NAMES:
-        path = lock['binaryRelativePath']+'/'+name+'.exe'
-        if path not in files or files[path]['archive'] != 'postgres':
-            raise ValueError('Original PostgreSQL provider binary must be retained')
+    required_images = {
+        lock['binaryRelativePath']+'/'+name+'.exe': ('postgres', 'pgsql/bin/'+name+'.exe')
+        for name in BINARY_NAMES
+    }
+    # PostgreSQL loads these modules dynamically. They are not discoverable from
+    # the CLI import tables, so an internally consistent PE closure can omit them.
+    required_images.update(RUNTIME_MODULES)
+    for path, (archive, member) in required_images.items():
+        if path not in files or (files[path]['archive'], files[path]['member']) != (archive, member):
+            raise ValueError('Original portable provider runtime image must be retained: '+path)
+    if not set(required_images).issubset(lock['dependencyRoots']):
+        raise ValueError('Required portable provider runtime image is not a dependency root')
     if dependency_closure(files, lock['dependencyRoots'], lock['windowsSystemImports']) != lock['dependencyClosure']:
         raise ValueError('Provider dependency closure differs from the locked selected images')
     tool = lock.get('extractor')

@@ -35,7 +35,8 @@ class Inputs:
         self.root=root;self.archives={};self.lock={'schemaVersion':1,'target':'windows-amd64',
             'serverVersionNum':170011,'postgisVersion':'3.6.2','binaryRelativePath':'bin',
             'archives':{},'providerFiles':{}}
-        for name,files in [('postgres',{f'pgsql/bin/{v}.exe':pe() for v in API.BINARY_NAMES}),
+        for name,files in [('postgres',{**{f'pgsql/bin/{v}.exe':pe() for v in API.BINARY_NAMES},
+                                       'pgsql/lib/plpgsql.dll':pe(),'pgsql/lib/dict_snowball.dll':pe()}),
                            ('postgis',{'lib/postgis-3.dll':pe(),'share/extension/postgis.control':b"default_version='3.6.2'\n"}),
                            ('microsoft',{'unit-notice.txt':b'synthetic unit-only runtime notice'})]:
             archive=root/(name+'.zip')
@@ -50,7 +51,8 @@ class Inputs:
                 relative=member.removeprefix('pgsql/')
                 self.lock['providerFiles'][relative]={'archive':name,'member':member,
                     'bytes':item['bytes'],'sha256':item['sha256'],**({'pe':item['pe']} if 'pe' in item else {})}
-        self.lock['dependencyRoots']=['bin/'+n+'.exe' for n in API.BINARY_NAMES]+['lib/postgis-3.dll']
+        self.lock['dependencyRoots']=['bin/'+n+'.exe' for n in API.BINARY_NAMES]+[
+            'lib/plpgsql.dll','lib/dict_snowball.dll','lib/postgis-3.dll']
         self.lock['windowsSystemImports']=[]
         self.lock['dependencyClosure']=API.dependency_closure(self.lock['providerFiles'],self.lock['dependencyRoots'],[])
 
@@ -133,6 +135,48 @@ class FixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             lock=Inputs(Path(temp)).lock;lock['providerFiles']['bin/postgres.exe']['archive']='postgis'
             with self.assertRaises((KeyError,ValueError)):API.validate_lock(lock)
+
+    def test_dynamic_runtime_module_cannot_be_omitted_from_an_internally_closed_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original=Inputs(Path(temp)).lock
+            for path in ['lib/plpgsql.dll','lib/dict_snowball.dll','lib/postgis-3.dll']:
+                with self.subTest(module=path):
+                    lock=copy.deepcopy(original)
+                    del lock['providerFiles'][path]
+                    lock['dependencyRoots'].remove(path)
+                    lock['dependencyClosure']=API.dependency_closure(
+                        lock['providerFiles'],lock['dependencyRoots'],lock['windowsSystemImports'])
+                    with self.assertRaisesRegex(ValueError,'runtime image must be retained'):
+                        API.validate_lock(lock)
+
+    def test_runtime_module_requires_original_archive_and_member(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original=Inputs(Path(temp)).lock
+            for path in ['lib/plpgsql.dll','lib/dict_snowball.dll','lib/postgis-3.dll']:
+                for field,value in [('archive','microsoft'),('member','lib/other.dll')]:
+                    with self.subTest(module=path,field=field):
+                        lock=copy.deepcopy(original)
+                        lock['providerFiles'][path][field]=value
+                        with self.assertRaisesRegex(ValueError,'runtime image must be retained'):
+                            API.validate_lock(lock)
+
+    def test_each_runtime_image_requires_a_root_even_when_its_bytes_remain_selected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original=Inputs(Path(temp)).lock
+            for path in original['dependencyRoots']:
+                with self.subTest(module=path):
+                    lock=copy.deepcopy(original)
+                    lock['dependencyRoots'].remove(path)
+                    lock['dependencyClosure']=API.dependency_closure(
+                        lock['providerFiles'],lock['dependencyRoots'],lock['windowsSystemImports'])
+                    with self.assertRaisesRegex(ValueError,'not a dependency root'):
+                        API.validate_lock(lock)
+            extra=copy.deepcopy(original)
+            extra['providerFiles']['lib/extra.dll']=copy.deepcopy(extra['providerFiles']['lib/plpgsql.dll'])
+            extra['dependencyRoots'].append('lib/extra.dll')
+            extra['dependencyClosure']=API.dependency_closure(
+                extra['providerFiles'],extra['dependencyRoots'],extra['windowsSystemImports'])
+            API.validate_lock(extra)
 
     def test_pe_architecture_validation_distinguishes_payload_from_32bit_bootstrap(self):
         self.assertEqual(API.pe_info(pe())['machine'],'AMD64')

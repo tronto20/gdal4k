@@ -33,9 +33,12 @@ metadata and license hash. Parser payloads, license, actual command output and
 PID identities are retained in public evidence. `7zr` alone is not assumed to
 support NSIS. The parser is fixture infrastructure and is not shipped with GDAL.
 
-The selected layout contains 2,937 files (282,510,235 bytes), including 38 AMD64
-PE images reachable from the four PostgreSQL CLIs, PL/pgSQL and the PostGIS
-geometry library. Normal and delay-load import names are inspected. Every
+The selected layout contains 2,938 files (283,158,939 bytes), including 39 AMD64
+PE images reachable from the four PostgreSQL CLIs, PL/pgSQL, Snowball and the
+PostGIS geometry library. PostgreSQL dynamically loads the Snowball library
+during `initdb`; it is an explicit required root even though no PE import points
+to it. The PostgreSQL CLIs and both PostgreSQL modules must retain their original
+EDB archive members. Normal and delay-load import names are inspected. Every
 non-OS dependency is an exact private selected image. Seven differing shared
 DLL paths intentionally select the matching-major PostGIS bundle's bytes over
 the EDB bytes; both hashes and the winner are recorded in the lock. Actual

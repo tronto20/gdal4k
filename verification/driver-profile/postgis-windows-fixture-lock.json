@@ -377,6 +377,13 @@
         "kernel32.dll": "Windows OS",
         "msvcrt.dll": "Windows OS"
       },
+      "lib/dict_snowball.dll": {
+        "api-ms-win-crt-runtime-l1-1-0.dll": "Windows OS",
+        "api-ms-win-crt-string-l1-1-0.dll": "Windows OS",
+        "kernel32.dll": "Windows OS",
+        "postgres.exe": "bin/postgres.exe",
+        "vcruntime140.dll": "bin/vcruntime140.dll"
+      },
       "lib/plpgsql.dll": {
         "api-ms-win-crt-runtime-l1-1-0.dll": "Windows OS",
         "api-ms-win-crt-stdio-l1-1-0.dll": "Windows OS",
@@ -436,6 +443,7 @@
       "bin/vcruntime140.dll",
       "bin/vcruntime140_1.dll",
       "bin/zlib1.dll",
+      "lib/dict_snowball.dll",
       "lib/plpgsql.dll",
       "lib/postgis-3.dll"
     ],
@@ -445,6 +453,7 @@
       "bin/pg_ctl.exe",
       "bin/psql.exe",
       "lib/plpgsql.dll",
+      "lib/dict_snowball.dll",
       "lib/postgis-3.dll"
     ]
   },
@@ -454,6 +463,7 @@
     "bin/pg_ctl.exe",
     "bin/psql.exe",
     "lib/plpgsql.dll",
+    "lib/dict_snowball.dll",
     "lib/postgis-3.dll"
   ],
   "extractor": {
@@ -2347,6 +2357,25 @@
       "bytes": 143,
       "member": "h3-pg_version.txt",
       "sha256": "9873b3eb33d22e03ea4b18f1226c73f9ad5ab4011f9f870123c4efc2c72cd915"
+    },
+    "lib/dict_snowball.dll": {
+      "archive": "postgres",
+      "bytes": 648704,
+      "crc32": "7bdd4eab",
+      "member": "pgsql/lib/dict_snowball.dll",
+      "pe": {
+        "eMachine": 34404,
+        "format": "PE32+",
+        "imports": [
+          "api-ms-win-crt-runtime-l1-1-0.dll",
+          "api-ms-win-crt-string-l1-1-0.dll",
+          "kernel32.dll",
+          "postgres.exe",
+          "vcruntime140.dll"
+        ],
+        "machine": "AMD64"
+      },
+      "sha256": "7dd3a703722b2bf8c7f04a2568d8cfc6fe17fbf51e42278c1689bda505cac93d"
     },
     "lib/iconv.lib": {
       "archive": "postgres",
