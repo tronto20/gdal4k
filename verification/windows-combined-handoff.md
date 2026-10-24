@@ -51,6 +51,10 @@ The private compiler header overlay avoids three legacy MinGW declarations that
 conflict with Clang's constexpr intrinsic definitions. Compiler/SDK versions,
 global CPU flags and the default engine dependency policy remain unchanged.
 
+Abseil's MinGW FIReference workaround uses a project-local compile definition
+instead of replacing `CMAKE_CXX_FLAGS`, preserving the selected toolchain's
+emulated TLS and private header overlay.
+
 Windows publication verification keeps the JVM classifier `windows-x64` separate
 from the Native engine module `gdal4k-engine-native-mingw-x64`. The reporter uses
 the shared publication coordinate policy and checks the actual JAR/KLIB members
