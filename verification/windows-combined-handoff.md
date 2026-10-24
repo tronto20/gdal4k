@@ -72,6 +72,12 @@ The pinned Windows x64 chainload toolchain explicitly identifies its CPU as
 not infer a target processor when this toolchain sets `CMAKE_SYSTEM_NAME`;
 Arrow 21 rejects the resulting empty processor before compiling its sources.
 
+Native archive collection reads Ninja's expanded compilation database and selects
+the exact shared-library output in its build directory. Long link commands can
+use response files that Ninja removes after linking; reading unexpanded command
+text loses the static dependency closure. The existing installed-prefix filter,
+mandatory GDAL/PROJ/JXL archive checks and system-linker policy still apply.
+
 Independent JVM consumers retain periodic full worker thread snapshots, including
 lock ownership, alongside the agent source/JAR hashes and build receipt. The
 vector-column roundtrip prints driver and operation boundaries so an unfinished

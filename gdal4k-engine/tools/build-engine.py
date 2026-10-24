@@ -25,6 +25,20 @@ def link_arguments(command):
  wrapper=re.match(r'^.*?\bcmd\.exe\s+/C\s+"(.*)"$',command,re.I)
  if wrapper:command=wrapper.group(1)
  return shlex.split(command.replace('\\','/'))
+
+def ninja_link_arguments(ninja,build,output):
+ # Long link commands use response files that Ninja removes after linking.
+ # compdb -x expands their graph content even when those files no longer exist.
+ database=json.loads(subprocess.check_output([str(ninja),'-C',str(build),'-t','compdb','-x'],text=True))
+ directory=build.resolve();expected=directory/output
+ matches=[entry for entry in database
+          if Path(entry['directory']).resolve()==directory
+          and (directory/entry['output']).resolve()==expected]
+ if len(matches)!=1:raise RuntimeError(f'Expected one expanded Ninja link command for {expected}, found {len(matches)}')
+ arguments=link_arguments(matches[0]['command'])
+ if any(token.startswith('@') and not token.startswith(('@rpath/','@loader_path/','@executable_path/')) for token in arguments):
+  raise RuntimeError('Unexpanded Ninja response file in link command for '+str(expected))
+ return arguments
 def fingerprint():
  digest=hashlib.sha256()
  digest.update(configured_binary_version().encode())
@@ -151,9 +165,8 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
   run(os.sys.executable,BINARY/'tools/package-web.py',out/'gdal4k.mjs')
  else:
   # Merge the bridge and its actual static dependency closure into one relocatable archive.
-  commands=subprocess.check_output([ninja,'-C',str(build),'-t','commands','gdal4k'],text=True)
-  line=next(line for line in reversed(commands.splitlines()) if (' -o ' in line or '/out:' in line.lower()) and ('gdal4k.dylib' in line or 'gdal4k.so' in line or 'gdal4k.dll' in line))
-  arguments=link_arguments(line)
+  output='gdal4k.dll' if target.startswith('windows') else 'libgdal4k.dylib' if target.startswith(('macos','ios')) else 'libgdal4k.so'
+  arguments=ninja_link_arguments(ninja,build,output)
   archives=[build/'libgdal4k-bridge.a']
   for token in arguments:
    if token.endswith('.a'):

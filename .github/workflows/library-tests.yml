@@ -34,6 +34,7 @@ jobs:
           python -m unittest discover -s verification -p test_boost_atomic_windows.py
           python -m unittest discover -s verification -p test_abseil_windows_flags.py
           python -m unittest discover -s verification -p test_native_toolchain_processor.py
+          python -m unittest discover -s verification -p test_native_link_response_files.py
           python -m unittest discover -s verification -p test_jvm_hang_diagnostics.py
           python -m unittest discover -s verification -p test_xsimd_hwcap_compat.py
           python -m unittest discover -s verification -p test_arrow_ipc_staged.py
