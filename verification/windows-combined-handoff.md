@@ -45,6 +45,12 @@ dependency tracking. Offline fixtures check all four Meson files and execute the
 lock-name and wait-event generators; actual Windows build/runtime acceptance
 still requires the current CI evidence.
 
+The pinned Boost.Atomic overlay also carries its existing PUBLIC Windows API
+definition through Clang-MinGW builds so Boost.Thread can see WaitOnAddress.
+The private compiler header overlay avoids three legacy MinGW declarations that
+conflict with Clang's constexpr intrinsic definitions. Compiler/SDK versions,
+global CPU flags and the default engine dependency policy remain unchanged.
+
 Windows publication verification keeps the JVM classifier `windows-x64` separate
 from the Native engine module `gdal4k-engine-native-mingw-x64`. The reporter uses
 the shared publication coordinate policy and checks the actual JAR/KLIB members

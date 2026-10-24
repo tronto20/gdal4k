@@ -29,6 +29,7 @@ jobs:
           python -m unittest discover -s verification -p test_arrow_ipc_toolchain.py
           python -m unittest discover -s verification -p test_libpq_hwcap_compat.py
           python -m unittest discover -s verification -p test_libpq_windows_paths.py
+          python -m unittest discover -s verification -p test_boost_atomic_windows.py
           python -m unittest discover -s verification -p test_xsimd_hwcap_compat.py
           python -m unittest discover -s verification -p test_arrow_ipc_staged.py
           python -m unittest discover -s verification -p test_staged_engine.py
