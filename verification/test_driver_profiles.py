@@ -669,7 +669,7 @@ class ProfileReportBindingsTest(unittest.TestCase):
                     path.write_bytes(original)
 
     def test_windows_early_tls_controls_bind_pe_source_owned_commands_and_actual_logs(self):
-        """Real PE parsing/crypto, modeled commands only; never executes Windows TLS."""
+        """Real PE/crypto; Windows lexical paths and process receipts are models only."""
         import datetime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); evidence, identity, fixture = self.windows_tls_evidence(root)
@@ -712,9 +712,39 @@ class ProfileReportBindingsTest(unittest.TestCase):
                                                **({'nativeResult': native} if code == 0 else {'schannelReason': 'revoked'}))
             result_path = directory / 'result.json'; result_path.write_text(json.dumps(value))
             validate = lambda: report.windows_native_tls_control_bindings(root, evidence, fixture, 'current-optional-engine')
-            with patch.object(report, 'windows_tls_tool_identity', return_value=identity):
+            actual_validator = report.profile_api.validate_windows_tls_control_record
+            # A POSIX-rooted path is not Windows-absolute in Python3.13+. Keep the
+            # real retained files/PE/hash checks, and project only the two known
+            # local paths at this modeled Windows command-validation boundary.
+            lexical_paths = {str(root): r'C:\modeled\fixture',
+                             str(probe): r'C:\modeled\fixture\gdal4k-engine\build\engine\windows-amd64\cmake\gdal4k_http_probe.exe'}
+            self.assertEqual(len(lexical_paths), len(set(lexical_paths.values())))
+            def lexical_path(path):
+                if path in lexical_paths:
+                    return lexical_paths[path]
+                if isinstance(path, str) and path.casefold().startswith('c:\\modeled\\'):
+                    raise ValueError('Reserved model path is not a retained local path')
+                return path
+            def validate_windows_lexical_model(record, *, command, cwd, log_bytes, expected_code):
+                projected = copy.deepcopy(record)
+                projected['command'][0] = lexical_path(projected['command'][0])
+                projected['cwd'] = lexical_path(projected['cwd'])
+                projected['windowsProcess']['imagePath'] = lexical_path(projected['windowsProcess']['imagePath'])
+                expected = [lexical_path(command[0]), *command[1:]]
+                return actual_validator(projected, command=expected, cwd=lexical_path(str(cwd)),
+                                        log_bytes=log_bytes, expected_code=expected_code)
+            with patch.object(report, 'windows_tls_tool_identity', return_value=identity), \
+                    patch.object(report.profile_api, 'validate_windows_tls_control_record', side_effect=validate_windows_lexical_model):
                 report.windows_tls_fixture_bindings(root, evidence)
                 self.assertEqual('native-tls-trusted', validate()['trustedRequestKey'])
+                # Matching argv/image receipts still fail the real unmodified
+                # validator when the executable is Windows-relative.
+                for relative in ['probe.exe', 'C:relative.exe']:
+                    record = json.loads((directory / 'trusted.json').read_text())
+                    record['command'][0] = record['windowsProcess']['imagePath'] = relative
+                    with self.subTest(relativeWindowsExecutable=relative), self.assertRaises(ValueError):
+                        actual_validator(record, command=record['command'], cwd=root,
+                                         log_bytes=(directory / 'trusted.log').read_bytes(), expected_code=0)
                 original_files = {path: path.read_bytes() for path in [*directory.iterdir(), archive, probe, root / sources[0], evidence / 'https-requests.json']}
                 for mode in ['source', 'engine', 'probe', 'different-command', 'different-image', 'unowned', 'forced-cleanup', 'incomplete-output',
                              'wrong-status', 'wrong-curl', 'wrong-reason', 'endpoint-leak', 'forged-native-json', 'different-log',
