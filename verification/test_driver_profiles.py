@@ -722,8 +722,10 @@ class ProfileReportBindingsTest(unittest.TestCase):
             def lexical_path(path):
                 if path in lexical_paths:
                     return lexical_paths[path]
-                if isinstance(path, str) and path.casefold().startswith('c:\\modeled\\'):
-                    raise ValueError('Reserved model path is not a retained local path')
+                if isinstance(path, str):
+                    normalized = module.ntpath.normcase(module.ntpath.normpath(path))
+                    if normalized == 'c:\\modeled' or normalized.startswith('c:\\modeled\\'):
+                        raise ValueError('Reserved model path is not a retained local path')
                 return path
             def validate_windows_lexical_model(record, *, command, cwd, log_bytes, expected_code):
                 projected = copy.deepcopy(record)
@@ -746,17 +748,19 @@ class ProfileReportBindingsTest(unittest.TestCase):
                         actual_validator(record, command=record['command'], cwd=root,
                                          log_bytes=(directory / 'trusted.log').read_bytes(), expected_code=0)
                 original_files = {path: path.read_bytes() for path in [*directory.iterdir(), archive, probe, root / sources[0], evidence / 'https-requests.json']}
-                for mode in ['source', 'engine', 'probe', 'different-command', 'different-image', 'unowned', 'forced-cleanup', 'incomplete-output',
+                for mode in ['source', 'engine', 'probe', 'different-command', 'different-image', 'reserved-image-slashes', 'reserved-image-dot-segments', 'unowned', 'forced-cleanup', 'incomplete-output',
                              'wrong-status', 'wrong-curl', 'wrong-reason', 'endpoint-leak', 'forged-native-json', 'different-log',
                              'wall-time', 'missing-trusted-request', 'wrong-trusted-range', 'unknown-control']:
                     for path, raw in original_files.items(): path.write_bytes(raw)
                     changed = copy.deepcopy(value)
                     if mode in ['source', 'engine', 'probe']:
                         path = {'source': root / sources[0], 'engine': archive, 'probe': probe}[mode]; path.write_bytes(b'changed retained bytes')
-                    elif mode in ['different-command', 'different-image', 'unowned', 'forced-cleanup', 'incomplete-output', 'wrong-status', 'different-log', 'wall-time']:
+                    elif mode in ['different-command', 'different-image', 'reserved-image-slashes', 'reserved-image-dot-segments', 'unowned', 'forced-cleanup', 'incomplete-output', 'wrong-status', 'different-log', 'wall-time']:
                         path = directory / 'revoked.json'; record = json.loads(path.read_text())
                         if mode == 'different-command': record['command'][-1] = '--not-the-control'
                         if mode == 'different-image': record['windowsProcess']['imagePath'] = r'C:\other\gdal4k_http_probe.exe'
+                        if mode == 'reserved-image-slashes': record['windowsProcess']['imagePath'] = lexical_paths[str(probe)].replace('\\', '/')
+                        if mode == 'reserved-image-dot-segments': record['windowsProcess']['imagePath'] = r'C:\other\..' + lexical_paths[str(probe)][2:]
                         if mode == 'unowned': record['ownership']['assignedBeforeResume'] = False
                         if mode == 'forced-cleanup': record['cleanup']['forcedTreeTermination'] = True
                         if mode == 'incomplete-output': record['outputComplete'] = False
