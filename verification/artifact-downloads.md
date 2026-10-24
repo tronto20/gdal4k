@@ -24,9 +24,12 @@ the combined ARM64 transfer remain gzip in this rollout.
 
 `verification/ci.py` keeps gzip as its command-line default; the primary workflow
 selects `--archive-format xz`. Each producer and reader checks its Python XZ
-support before long builds. Staging records the actual compressed and decoded
-TAR SHA256 and byte lengths in the job output. The writer serializes the TAR
-once through a streaming compressor, without an intermediate raw TAR file.
+support before long builds. The tool-provisioning matrix checks both codecs on
+all supported hosts, including Windows ARM64 and Intel macOS; transport-helper
+and primary-workflow changes also trigger those checks. Staging records the
+actual compressed and decoded TAR SHA256 and byte lengths in the job output.
+The writer serializes the TAR once through a streaming compressor, without an
+intermediate raw TAR file.
 Historical artifacts and their recorded hashes are preserved.
 
 Use the shared reader for either format. Give it the exact expected logical
