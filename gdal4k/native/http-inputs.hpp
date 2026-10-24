@@ -43,6 +43,23 @@ inline bool available() {
 }
 
 #ifdef GDAL4K_ENABLE_HTTP
+// Only exact pinned static failures become public enum labels. Compare the whole
+// freshly zeroed buffer, including the terminator/tail; never expose its contents.
+inline const char* schannelTrustReason(CURLcode code, const char (&error)[CURL_ERROR_SIZE]) {
+    if (code != CURLE_PEER_FAILED_VERIFICATION) return "unavailable";
+    static constexpr char known0[CURL_ERROR_SIZE] = "schannel: trust for this certificate or one of the certificates in the certificate chain has been revoked";
+    static constexpr char known1[CURL_ERROR_SIZE] = "schannel: the certificate chain is incomplete";
+    static constexpr char known2[CURL_ERROR_SIZE] = "schannel: the certificate or certificate chain is based on an untrusted root";
+    static constexpr char known3[CURL_ERROR_SIZE] = "schannel: this certificate or one of the certificates in the certificate chain is not time valid";
+    static constexpr char known4[CURL_ERROR_SIZE] = "schannel: the revocation status is unknown";
+    if (std::memcmp(error, known0, CURL_ERROR_SIZE) == 0) return "revoked";
+    if (std::memcmp(error, known1, CURL_ERROR_SIZE) == 0) return "incomplete-chain";
+    if (std::memcmp(error, known2, CURL_ERROR_SIZE) == 0) return "untrusted-root";
+    if (std::memcmp(error, known3, CURL_ERROR_SIZE) == 0) return "not-time-valid";
+    if (std::memcmp(error, known4, CURL_ERROR_SIZE) == 0) return "revocation-status-unknown";
+    return "unavailable";
+}
+
 constexpr uint64_t maxOffset = 9007199254740991ULL;
 constexpr size_t chunkSize = 64 * 1024, cacheLimit = 8 * 1024 * 1024;
 using Clock = std::chrono::steady_clock;
@@ -253,10 +270,12 @@ struct Mount {
         for (uint64_t attempt = 0;; ++attempt) {
             checkCancelled();
             Response response(first, last, source, policy);
+            char errorBuffer[CURL_ERROR_SIZE] = {}; // Outlives easy/multi cleanup.
             std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> easy(curl_easy_init(), curl_easy_cleanup);
             std::unique_ptr<CURLM, decltype(&curl_multi_cleanup)> multi(curl_multi_init(), curl_multi_cleanup);
             require(easy && multi, "Unable to allocate HTTP request");
             auto set = [&](CURLoption option, auto value) { require(curl_easy_setopt(easy.get(), option, value) == CURLE_OK, "Unable to configure HTTP request"); };
+            set(CURLOPT_ERRORBUFFER, errorBuffer); // Raw contents stay in memory only.
             set(CURLOPT_URL, source.url.c_str()); set(CURLOPT_PROTOCOLS_STR, "http,https");
             set(CURLOPT_FOLLOWLOCATION, 0L); set(CURLOPT_NETRC, static_cast<long>(CURL_NETRC_IGNORED));
             set(CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
@@ -321,7 +340,17 @@ struct Mount {
             }
             const bool retry = transientStatus(response.status) || (response.status == 0 && transientCurl(code)) ||
                 (response.status == 206 && transientCurl(code));
-            require(retry && attempt < static_cast<uint64_t>(policy.retries), "HTTP range request failed (status/transport/timeout); no full-file fallback");
+            if (!(retry && attempt < static_cast<uint64_t>(policy.retries))) {
+                long tlsVerify = 0;
+                // Schannel does not populate this field; zero is not verification evidence.
+                const CURLcode tlsQuery = curl_easy_getinfo(easy.get(), CURLINFO_SSL_VERIFYRESULT, &tlsVerify);
+                const std::string tls = tlsQuery == CURLE_OK ? std::to_string(tlsVerify) :
+                    "unavailable(getinfo=" + std::to_string(static_cast<int>(tlsQuery)) + ")";
+                throw std::runtime_error("HTTP range request failed (status/transport/timeout); no full-file fallback [curl=" +
+                    std::to_string(static_cast<int>(code)) + ", http=" + std::to_string(response.status) +
+                    ", tlsVerify=" + tls + ", error=" + curl_easy_strerror(code) +
+                    ", schannelReason=" + schannelTrustReason(code, errorBuffer) + "]");
+            }
             uint64_t wait = delay;
             const auto retryAfter = response.headers["retry-after"];
             if (!retryAfter.empty()) {

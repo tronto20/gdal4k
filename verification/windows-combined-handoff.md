@@ -115,6 +115,15 @@ receipts under `verification/results/ci-commands-mingwX64/winpthread-handoff`.
 The probe isolates the SDK mechanism. Acceptance still requires fresh actual
 GDAL source and published consumers on all applicable platforms.
 
+HTTP range failures retain numeric curl/status and raw verification-query values
+with a static curl error description. Schannel does not populate the raw verify
+field, so zero is not verification evidence. A fresh per-request error buffer
+stays private: only complete, zero-padded matches for five pinned static
+Schannel certificate failures become public reason labels. Unknown text, URLs,
+queries, paths and partial matches are never returned. TLS, revocation, retry
+and cancellation policy remain unchanged; these diagnostics identify failures
+without establishing their cause before actual execution.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including

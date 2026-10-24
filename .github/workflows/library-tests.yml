@@ -58,6 +58,7 @@ jobs:
           python -m unittest discover -s verification -p test_windows_native_stall.py
           python -m unittest discover -s verification -p test_windows_pe.py
           python -m unittest discover -s verification -p test_http_fixture_windows.py
+          python -m unittest discover -s verification -p test_http_error_diagnostics.py
           python -m unittest discover -s verification -p test_postgis_windows_fixture.py
           python -m unittest discover -s verification -p test_postgis_windows_report.py
   native:
