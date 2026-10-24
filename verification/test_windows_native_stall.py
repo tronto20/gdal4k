@@ -105,7 +105,9 @@ class PhaseAndParserTest(unittest.TestCase):
 
     def test_short_name_alias_is_canonicalized_but_symlink_ancestor_is_refused(self):
         with tempfile.TemporaryDirectory() as t, patch.object(native, 'private_file'):
-            root = Path(t).resolve(); long = root / 'long directory'; short = root / 'LONGDI~1'
+            # Keep the modeled alias distinct from the real LONGDI~1 alias
+            # that Windows may already create for this long directory.
+            root = Path(t).resolve(); long = root / 'long directory'; short = root / 'SYNTH~1'
             long.mkdir(); short.mkdir()
             source = long / 'gdal4k.dll'; alias = short / 'gdal4k.dll'
             data = bytearray(152); data[:2] = b'MZ'; struct.pack_into('<I', data, 60, 64)
