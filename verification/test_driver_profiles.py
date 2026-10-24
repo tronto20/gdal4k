@@ -516,50 +516,245 @@ class ProfileReportBindingsTest(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'source/probe changed'):
                 report.diagnostic_bindings(root, data, measured, publication)
 
+    def windows_tls_evidence(self, root):
+        """Real production crypto; simulated ACL/tool/kernel inputs are never Windows proof."""
+        names = ['verification/driver-profile/http-fixture.py', 'verification/windows_process.py',
+                 'verification/fixtures/windows-tls-generator-lock.json', 'verification/driver-profile/windows-tls-requirements.txt']
+        for name in names:
+            path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((report.ROOT / name).read_bytes())
+        evidence = root / 'verification/results/native-http-profile'; evidence.mkdir(parents=True)
+        private = root / 'private-fixture'; private.mkdir()
+        lock = json.loads((root / names[2]).read_text(encoding='utf-8'))
+        identity = dict(versions={name: value['version'] for name, value in lock['packages'].items()},
+                        python=dict(version='synthetic tool identity; real crypto below', executable='python.exe', sha256='a' * 64),
+                        actualInstalledModules={name: dict(filename=filename, bytes=10, sha256='b' * 64)
+                        for name, filename in [('cryptography.hazmat.bindings._rust', '_rust.pyd'),
+                                               ('_cffi_backend', '_cffi_backend.pyd'), ('pycparser', '__init__.py')]})
+        tool = dict(schemaVersion=1, tool='pyca/cryptography', lockSha256=report.sha(root / names[2]), **identity)
+        (evidence / 'certificate-tool.json').write_text(json.dumps(tool), encoding='utf-8')
+        acl = dict(currentUserSid='S-1-5-21-unit', ownerSid='S-1-5-21-unit', daclProtected=True,
+                   entries=[dict(sid=sid, type=0, mask=0x1f01ff, flags=0) for sid in ['S-1-5-21-unit', 'S-1-5-18']])
+        fixture_spec = importlib.util.spec_from_file_location('report_test_http_fixture', report.ROOT / names[0])
+        fixture_api = importlib.util.module_from_spec(fixture_spec); fixture_spec.loader.exec_module(fixture_api)
+        process = Mock(); process.private_file.return_value = acl
+        url = 'http://127.0.0.1:10005/crl/' + 'a' * 32 + '/fixture-ca.crl'
+        with patch.object(fixture_api, 'windows_process_api', return_value=process), patch.object(fixture_api, 'windows_certificate_tool'):
+            ca = fixture_api.windows_certificate(private, 'ca', None, 'gdal4k-fixture-ca', url)
+            fixture_api.windows_certificate(private, 'trusted', ca, 'localhost', url)
+            fixture_api.windows_certificate(private, 'untrusted', None, 'localhost')
+            fixture_api.windows_certificate(private, 'wrong-name', ca, 'wrong.invalid', url)
+            revoked = fixture_api.windows_certificate(private, 'revoked', ca, 'localhost', url)
+            crl = fixture_api.windows_crl(private, ca, revoked, url)
+        for path in private.iterdir():
+            if path.suffix != '.key': shutil.copyfile(path, evidence / path.name)
+        manifest = dict(schemaVersion=1, crl=crl,
+                        certificates={name: json.loads((evidence / (name + '-generator.json')).read_text())
+                                      for name in ['ca', 'trusted', 'untrusted', 'wrong-name', 'revoked']},
+                        server=dict(host='127.0.0.1', port=10005, owner=dict(pid=777, creationTime100ns=7777, imagePath=r'C:\Python\python.exe'),
+                                    maxBodyBytes=16384, maxConnections=4, connectionDeadlineSeconds=2, maxRecordedRequests=128),
+                        serverSourceSha256=report.sha(root / names[0]))
+        (evidence / 'revocation-fixture.json').write_text(json.dumps(manifest))
+        (evidence / 'revocation-cleanup.json').write_text(json.dumps(dict(crlListenerClosed=True, crlServerThreadStopped=True,
+                                                                       tlsListenersClosed=True, tlsServerThreadsStopped=True)))
+        (evidence / 'crl-requests.json').write_text(json.dumps([dict(method='GET', pathKind='public-crl', status=200, bodyBytes=crl['bytes'])]))
+        (evidence / 'revoked-requests.json').write_text('[]')
+        fixture = dict(urls=copy.deepcopy(HTTP_FIXTURE['urls']), imageBytes=4200000,
+                       windowsRevocation=dict(crlUrl=url, revokedBase='https://127.0.0.1:10006'))
+        (evidence / 'https-requests.json').write_text(json.dumps([dict(case='cache', key='native-tls-trusted', name='fixture.tif',
+                       status=206, range='bytes=0-16383', requestedBytes=16384, bodyBytes=16384, ifRange=None)]))
+        return evidence, identity, fixture
+
     def test_windows_tls_public_evidence_requires_tool_certificates_and_private_acl(self):
-        """Synthetic public receipts test binding only, never actual TLS acceptance."""
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); evidence = root / 'verification/results/native-http-profile'
-            evidence.mkdir(parents=True)
-            names = ['verification/driver-profile/http-fixture.py', 'verification/windows_process.py',
-                     'verification/fixtures/windows-tls-generator-lock.json',
-                     'verification/driver-profile/windows-tls-requirements.txt']
-            for name in names:
-                path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes((report.ROOT / name).read_bytes())
-            lock = json.loads((root / names[2]).read_text(encoding='utf-8'))
-            identity = dict(versions={name: value['version'] for name, value in lock['packages'].items()},
-                            python=dict(version='3.12 synthetic verifier input', executable='python.exe', sha256='a' * 64),
-                            actualInstalledModules={name: dict(filename=filename, bytes=10, sha256='b' * 64)
-                            for name, filename in [('cryptography.hazmat.bindings._rust', '_rust.pyd'),
-                                                   ('_cffi_backend', '_cffi_backend.pyd'), ('pycparser', '__init__.py')]})
-            tool = dict(schemaVersion=1, tool='pyca/cryptography', lockSha256=report.sha(root / names[2]), **identity)
-            tool_file = evidence / 'certificate-tool.json'; tool_file.write_text(json.dumps(tool), encoding='utf-8')
-            acl = dict(currentUserSid='S-1-5-21-unit', ownerSid='S-1-5-21-unit', daclProtected=True,
-                       entries=[dict(sid=sid, type=0, mask=0x1f01ff, flags=0) for sid in ['S-1-5-21-unit', 'S-1-5-18']])
-            for name, hostname, ca, trusted in [('ca', 'gdal4k-fixture-ca', True, False), ('trusted', 'localhost', False, True),
-                                               ('untrusted', 'localhost', False, False), ('wrong-name', 'wrong.invalid', False, True)]:
-                cert = evidence / (name + '.crt'); cert.write_bytes(('synthetic certificate ' + name).encode())
-                record = dict(name=name, subject='CN=' + hostname, issuer='CN=' + ('gdal4k-fixture-ca' if trusted else hostname),
-                              certificateSha256=report.sha(cert), privateKeyAcl=copy.deepcopy(acl), ca=ca,
-                              trustedIssuerProvided=trusted, san=[hostname] + (['127.0.0.1'] if hostname == 'localhost' else []))
-                (evidence / (name + '-generator.json')).write_text(json.dumps(record), encoding='utf-8')
+            root = Path(temporary); evidence, identity, _ = self.windows_tls_evidence(root)
             with patch.object(report, 'windows_tls_tool_identity', return_value=identity):
                 bound = report.windows_tls_fixture_bindings(root, evidence)
-                self.assertEqual({'ca', 'trusted', 'untrusted', 'wrong-name'}, set(bound['certificates']))
-                tool_raw = tool_file.read_bytes(); tool_file.unlink()
+                self.assertEqual({'ca', 'trusted', 'untrusted', 'wrong-name', 'revoked'}, set(bound['certificates']))
+                tool_file = evidence / 'certificate-tool.json'; raw = tool_file.read_bytes(); tool_file.unlink()
                 with self.assertRaisesRegex(AssertionError, 'Missing current evidence'):
                     report.windows_tls_fixture_bindings(root, evidence)
-                tool_file.write_bytes(tool_raw)
+                tool_file.write_bytes(raw)
                 cert = evidence / 'trusted.crt'; original = cert.read_bytes(); cert.write_bytes(b'changed public certificate')
                 with self.assertRaisesRegex(AssertionError, 'public certificate changed'):
                     report.windows_tls_fixture_bindings(root, evidence)
                 cert.write_bytes(original)
                 record_file = evidence / 'trusted-generator.json'
-                record = json.loads(record_file.read_text(encoding='utf-8')); record['privateKeyAcl']['daclProtected'] = False
-                record_file.write_text(json.dumps(record), encoding='utf-8')
+                record = json.loads(record_file.read_text()); record['privateKeyAcl']['daclProtected'] = False
+                record_file.write_text(json.dumps(record))
                 with self.assertRaisesRegex(ValueError, 'Fixture DACL'):
                     report.windows_tls_fixture_bindings(root, evidence)
+
+    def test_windows_revocation_rejects_actual_der_or_certificate_changes_after_hash_repair(self):
+        import datetime
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+        from cryptography.exceptions import InvalidSignature
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); evidence, identity, _ = self.windows_tls_evidence(root)
+            originals = {p.name: p.read_bytes() for p in evidence.iterdir()}
+            ca_key = serialization.load_pem_private_key((root / 'private-fixture/ca.key').read_bytes(), None)
+            cert = x509.load_pem_x509_certificate(originals['trusted.crt'])
+            crl = x509.load_der_x509_crl(originals['fixture-ca.crl'])
+            def save_manifest(manifest):
+                (evidence / 'revocation-fixture.json').write_text(json.dumps(manifest))
+            def changed_certificate(mode):
+                now = datetime.datetime.now(datetime.timezone.utc)
+                public_key = ec.generate_private_key(ec.SECP256R1()).public_key() if mode == 'actual-leaf-key' else cert.public_key()
+                builder = (x509.CertificateBuilder().subject_name(cert.subject).issuer_name(cert.issuer)
+                           .public_key(public_key).serial_number(cert.serial_number)
+                           .not_valid_before(now - datetime.timedelta(days=3) if mode == 'expired-certificate' else cert.not_valid_before_utc)
+                           .not_valid_after(now - datetime.timedelta(days=1) if mode == 'expired-certificate' else cert.not_valid_after_utc))
+                for ext in cert.extensions:
+                    value = x509.SubjectAlternativeName([x509.DNSName('wrong.invalid')]) if mode == 'actual-san' and isinstance(ext.value, x509.SubjectAlternativeName) else ext.value
+                    if mode == 'actual-leaf-key' and isinstance(ext.value, x509.SubjectKeyIdentifier):
+                        value = x509.SubjectKeyIdentifier.from_public_key(public_key)
+                    builder = builder.add_extension(value, ext.critical)
+                data = builder.sign(ca_key, hashes.SHA256()).public_bytes(serialization.Encoding.PEM)
+                if mode == 'certificate-signature':
+                    parsed = x509.load_pem_x509_certificate(data)
+                    der = bytearray(parsed.public_bytes(serialization.Encoding.DER)); der[-1] ^= 1
+                    data = x509.load_der_x509_certificate(bytes(der)).public_bytes(serialization.Encoding.PEM)
+                (evidence / 'trusted.crt').write_bytes(data)
+                record = json.loads(originals['trusted-generator.json']); record['certificateSha256'] = report.sha(evidence / 'trusted.crt')
+                (evidence / 'trusted-generator.json').write_text(json.dumps(record))
+                manifest = json.loads(originals['revocation-fixture.json']); manifest['certificates']['trusted'] = record; save_manifest(manifest)
+            def changed_crl(mode):
+                if mode == 'crl-signature':
+                    raw = bytearray(originals['fixture-ca.crl']); raw[-1] ^= 1; changed = x509.load_der_x509_crl(bytes(raw))
+                else:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    builder = (x509.CertificateRevocationListBuilder()
+                               .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'other')]) if mode == 'crl-issuer' else crl.issuer)
+                               .last_update(now - datetime.timedelta(days=3) if mode == 'expired-crl' else crl.last_update_utc)
+                               .next_update(now - datetime.timedelta(days=1) if mode == 'expired-crl' else crl.next_update_utc))
+                    entry = crl[0]
+                    if mode == 'revoked-serial':
+                        entry_builder = x509.RevokedCertificateBuilder().serial_number(entry.serial_number + 1).revocation_date(entry.revocation_date_utc)
+                        for ext in entry.extensions: entry_builder = entry_builder.add_extension(ext.value, ext.critical)
+                        entry = entry_builder.build()
+                    for ext in crl.extensions: builder = builder.add_extension(ext.value, ext.critical)
+                    changed = builder.add_revoked_certificate(entry).sign(ca_key, hashes.SHA256())
+                (evidence / 'fixture-ca.crl').write_bytes(changed.public_bytes(serialization.Encoding.DER))
+                manifest = json.loads(originals['revocation-fixture.json']); info = manifest['crl']
+                info.update(bytes=(evidence / 'fixture-ca.crl').stat().st_size, sha256=report.sha(evidence / 'fixture-ca.crl'),
+                            issuer=changed.issuer.rfc4514_string(), thisUpdateUtc=changed.last_update_utc.isoformat(),
+                            nextUpdateUtc=changed.next_update_utc.isoformat(), revokedSerialHex=[format(item.serial_number, 'x') for item in changed])
+                save_manifest(manifest)
+            with patch.object(report, 'windows_tls_tool_identity', return_value=identity):
+                report.windows_tls_fixture_bindings(root, evidence)
+                for mode in ['certificate-signature', 'actual-san', 'actual-leaf-key', 'expired-certificate', 'crl-signature', 'crl-issuer', 'revoked-serial', 'expired-crl']:
+                    for name, raw in originals.items(): (evidence / name).write_bytes(raw)
+                    changed_certificate(mode) if mode in ['certificate-signature', 'actual-san', 'actual-leaf-key', 'expired-certificate'] else changed_crl(mode)
+                    with self.subTest(mode=mode), self.assertRaises((AssertionError, InvalidSignature)):
+                        report.windows_tls_fixture_bindings(root, evidence)
+
+    def test_windows_revocation_requires_final_cleanup_and_real_complete_crl_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); evidence, identity, _ = self.windows_tls_evidence(root)
+            changes = [('revocation-cleanup.json', dict(crlListenerClosed=True, crlServerThreadStopped=False, tlsListenersClosed=True, tlsServerThreadsStopped=True)),
+                       ('crl-requests.json', []), ('crl-requests.json', [dict(method='HEAD', pathKind='public-crl', status=200, bodyBytes=0)]),
+                       ('crl-requests.json', [dict(method='GET', pathKind='public-crl', status=200, bodyBytes=1)]),
+                       ('revoked-requests.json', [dict(status=206)])]
+            complete = json.loads((evidence / 'crl-requests.json').read_text())[0]
+            changes += [('crl-requests.json', [complete, dict(method='GET', pathKind='other', status=200, bodyBytes=0)]),
+                        ('crl-requests.json', [complete, dict(method='POST', pathKind='public-crl', status=200, bodyBytes=0)])]
+            with patch.object(report, 'windows_tls_tool_identity', return_value=identity):
+                for name, changed in changes:
+                    path = evidence / name; original = path.read_bytes(); path.write_text(json.dumps(changed))
+                    with self.subTest(file=name, value=changed), self.assertRaises(AssertionError):
+                        report.windows_tls_fixture_bindings(root, evidence)
+                    path.write_bytes(original)
+
+    def test_windows_early_tls_controls_bind_pe_source_owned_commands_and_actual_logs(self):
+        """Real PE parsing/crypto, modeled commands only; never executes Windows TLS."""
+        import datetime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); evidence, identity, fixture = self.windows_tls_evidence(root)
+            sources = ['gdal4k-engine/tools/driver-profile.py', 'gdal4k/native/http-cache-probe.cpp',
+                       'gdal4k/native/http-inputs.hpp', 'verification/command_evidence.py', 'verification/windows_process.py']
+            for name in sources + ['verification/windows_pe.py']:
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((report.ROOT / name).read_bytes())
+            build = root / 'gdal4k-engine/build'
+            archive = build / 'engine/windows-amd64/libgdal4k.a'; archive.parent.mkdir(parents=True); archive.write_bytes(b'modeled engine archive')
+            manifest_path = archive.parent / 'manifest.json'
+            manifest_path.write_text(json.dumps(dict(target='windows-amd64', source_fingerprint='current-optional-engine',
+                                     artifacts={'engine/windows-amd64/libgdal4k.a': report.sha(archive)})))
+            probe = archive.parent / 'cmake/gdal4k_http_probe.exe'; probe.parent.mkdir(); probe.write_bytes(pe_image())
+            pe_path = root / 'verification/results/native-http-cache-probe-pe.json'
+            module.windows_pe_api(root).audit(probe, root=root, output=pe_path)
+            reference = lambda path: dict(path=path.relative_to(root).as_posix(), sha256=report.sha(path))
+            directory = root / 'verification/results/native-http-tls-controls'; directory.mkdir()
+            value = dict(schemaVersion=1, target='windows-amd64', result='passed', sourceSha256={name: report.sha(root / name) for name in sources},
+                         engineManifest=reference(manifest_path), engineFingerprint='current-optional-engine', probe=reference(probe),
+                         windowsDependencyAudit=reference(pe_path), fixtureManifestSha256=report.sha(evidence / 'revocation-fixture.json'), controls={})
+            start = datetime.datetime.now(datetime.timezone.utc)
+            for index, (name, code) in enumerate([('trusted', 0), ('revoked', 1)]):
+                url = (fixture['urls']['https'] if name == 'trusted' else fixture['windowsRevocation']['revokedBase']) + '/cache/native-tls-' + name + '/fixture.tif'
+                native = dict(result='passed', mode='tls-control', fileBytes=fixture['imageBytes'], headerBytes=16,
+                              tiffHeaderVerified=True, vsiDispatchVerified=True, registryReleaseVerified=True)
+                log = json.dumps(native).encode() if code == 0 else b'HTTP range request failed [curl=60, schannelReason=revoked]\n'
+                log_path = directory / (name + '.log'); log_path.write_bytes(log)
+                command_path = directory / (name + '.json')
+                record = dict(command=[str(probe), url, '--tls-only'], cwd=str(root), timeoutSeconds=30,
+                              status='passed' if code == 0 else 'failed', returncode=code, outputComplete=True,
+                              log=name + '.log', logSha256=report.sha(log_path), pidRole='owned child process', pid=1000 + index,
+                              windowsProcess=dict(pid=1000 + index, creationTime100ns=12345678 + index, imagePath=str(probe)),
+                              ownership=dict(kind='Windows Job Object', assignedBeforeResume=True, killOnClose=True),
+                              cleanup=dict(activeProcessesAfter=0, jobClosed=True, forcedTreeTermination=False), elapsedSeconds=1,
+                              startedAtUtc=(start + datetime.timedelta(seconds=index * 2)).isoformat(),
+                              completedAtUtc=(start + datetime.timedelta(seconds=index * 2 + 1)).isoformat())
+                command_path.write_text(json.dumps(record))
+                value['controls'][name] = dict(url=url, requestKey='native-tls-' + name, commandRecord=reference(command_path),
+                                               log=reference(log_path), expectedReturncode=code,
+                                               **({'nativeResult': native} if code == 0 else {'schannelReason': 'revoked'}))
+            result_path = directory / 'result.json'; result_path.write_text(json.dumps(value))
+            validate = lambda: report.windows_native_tls_control_bindings(root, evidence, fixture, 'current-optional-engine')
+            with patch.object(report, 'windows_tls_tool_identity', return_value=identity):
+                report.windows_tls_fixture_bindings(root, evidence)
+                self.assertEqual('native-tls-trusted', validate()['trustedRequestKey'])
+                original_files = {path: path.read_bytes() for path in [*directory.iterdir(), archive, probe, root / sources[0], evidence / 'https-requests.json']}
+                for mode in ['source', 'engine', 'probe', 'different-command', 'different-image', 'unowned', 'forced-cleanup', 'incomplete-output',
+                             'wrong-status', 'wrong-curl', 'wrong-reason', 'endpoint-leak', 'forged-native-json', 'different-log',
+                             'wall-time', 'missing-trusted-request', 'wrong-trusted-range', 'unknown-control']:
+                    for path, raw in original_files.items(): path.write_bytes(raw)
+                    changed = copy.deepcopy(value)
+                    if mode in ['source', 'engine', 'probe']:
+                        path = {'source': root / sources[0], 'engine': archive, 'probe': probe}[mode]; path.write_bytes(b'changed retained bytes')
+                    elif mode in ['different-command', 'different-image', 'unowned', 'forced-cleanup', 'incomplete-output', 'wrong-status', 'different-log', 'wall-time']:
+                        path = directory / 'revoked.json'; record = json.loads(path.read_text())
+                        if mode == 'different-command': record['command'][-1] = '--not-the-control'
+                        if mode == 'different-image': record['windowsProcess']['imagePath'] = r'C:\other\gdal4k_http_probe.exe'
+                        if mode == 'unowned': record['ownership']['assignedBeforeResume'] = False
+                        if mode == 'forced-cleanup': record['cleanup']['forcedTreeTermination'] = True
+                        if mode == 'incomplete-output': record['outputComplete'] = False
+                        if mode == 'wrong-status': record['status'] = 'passed'
+                        if mode == 'different-log': record['log'] = 'other.log'
+                        if mode == 'wall-time': record['completedAtUtc'] = (start + datetime.timedelta(seconds=25)).isoformat()
+                        path.write_text(json.dumps(record)); changed['controls']['revoked']['commandRecord'] = reference(path)
+                    elif mode in ['wrong-curl', 'wrong-reason', 'endpoint-leak', 'forged-native-json']:
+                        name = 'trusted' if mode == 'forged-native-json' else 'revoked'
+                        path = directory / (name + '.log'); raw = path.read_bytes()
+                        if mode == 'wrong-curl': raw = raw.replace(b'curl=60', b'curl=35')
+                        if mode == 'wrong-reason': raw = raw.replace(b'revoked', b'unknown-ca')
+                        if mode == 'endpoint-leak': raw += b'https://127.0.0.1:10006/private-token'
+                        if mode == 'forged-native-json':
+                            native = json.loads(raw); native['registryReleaseVerified'] = False; raw = json.dumps(native).encode()
+                            changed['controls'][name]['nativeResult'] = native
+                        path.write_bytes(raw); changed['controls'][name]['log'] = reference(path)
+                        command_path = directory / (name + '.json'); record = json.loads(command_path.read_text()); record['logSha256'] = report.sha(path)
+                        command_path.write_text(json.dumps(record)); changed['controls'][name]['commandRecord'] = reference(command_path)
+                    elif mode in ['missing-trusted-request', 'wrong-trusted-range']:
+                        path = evidence / 'https-requests.json'; requests = json.loads(path.read_text())
+                        if mode == 'missing-trusted-request': requests = []
+                        else: requests[0]['range'] = 'bytes=0-99999999'
+                        path.write_text(json.dumps(requests))
+                    else: changed['controls']['unexpected'] = copy.deepcopy(changed['controls']['trusted'])
+                    result_path.write_text(json.dumps(changed))
+                    with self.subTest(mode=mode), self.assertRaises((AssertionError, ValueError)):
+                        validate()
 
     def test_combined_request_keys_require_all_fixture_and_fresh_process_rounds(self):
         policy = {'source-jvm', 'source-native', 'consumer-jvm', 'consumer-native'}
@@ -607,5 +802,38 @@ class ProfileReportBindingsTest(unittest.TestCase):
             (root / 'stdout.log').write_bytes(b'changed')
             with self.assertRaisesRegex(AssertionError, 'raw log changed'):
                 report.diagnostic_bindings(root, data, measured, publication)
+
+class WindowsNativeTlsControlRecordTest(unittest.TestCase):
+    """Synthetic receipt mutations test evidence rejection, not Windows TLS."""
+    def test_expected_revocation_failure_keeps_failed_command_status_and_owned_identity(self):
+        command = [r'C:\owned\gdal4k_http_probe.exe', 'https://127.0.0.1:12345/cache/native-tls-revoked/fixture.tif', '--tls-only']
+        log = b'HTTP range request failed [curl=60, schannelReason=revoked]\n'
+        record = dict(command=command, cwd=r'C:\owned', timeoutSeconds=30, status='failed', returncode=1,
+                      outputComplete=True, logSha256=hashlib.sha256(log).hexdigest(), pidRole='owned child process', pid=1234,
+                      windowsProcess=dict(pid=1234, creationTime100ns=12345678, imagePath=command[0]),
+                      ownership=dict(kind='Windows Job Object', assignedBeforeResume=True, killOnClose=True),
+                      cleanup=dict(activeProcessesAfter=0, jobClosed=True, forcedTreeTermination=False),
+                      startedAtUtc='2026-10-24T00:00:00+00:00', completedAtUtc='2026-10-24T00:00:01+00:00', elapsedSeconds=1)
+        def validate(value, output=log, expected=1):
+            module.validate_windows_tls_control_record(value, command=command, cwd=r'C:\owned',
+                                                       log_bytes=output, expected_code=expected)
+        validate(record)
+        positive = dict(record, status='passed', returncode=0)
+        validate(positive, expected=0)
+        mutations = [dict(status='passed'), dict(returncode=0), dict(returncode=True), dict(elapsedSeconds=True), dict(outputComplete=False),
+                     dict(logSha256='0' * 64), dict(timeoutSeconds=600), dict(pid=5678),
+                     dict(windowsProcess=dict(record['windowsProcess'], creationTime100ns=0)),
+                     dict(windowsProcess=dict(record['windowsProcess'], imagePath=r'C:\elsewhere\gdal4k_http_probe.exe')),
+                     dict(ownership=dict(record['ownership'], assignedBeforeResume=False)),
+                     dict(cleanup=dict(record['cleanup'], activeProcessesAfter=1)),
+                     dict(cleanup=dict(record['cleanup'], forcedTreeTermination=True)),
+                     dict(cleanup=dict(record['cleanup'], jobClosed=False)),
+                     dict(completedAtUtc=record['startedAtUtc']), dict(elapsedSeconds=0)]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate(dict(record, **mutation))
+        with self.assertRaises(ValueError):
+            validate(record, output=log + b'unretained bytes')
+
 
 if __name__ == '__main__': unittest.main()

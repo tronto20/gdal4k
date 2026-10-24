@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import socket
 import ssl
 import struct
 import subprocess
@@ -56,7 +58,7 @@ def windows_certificate_tool(output):
     return receipt
 
 
-def windows_certificate(output, name, ca, hostname):
+def windows_certificate(output, name, ca, hostname, crl_url=None):
     import datetime
     import ipaddress
     from cryptography import x509
@@ -86,6 +88,10 @@ def windows_certificate(output, name, ca, hostname):
                                            encipher_only=None, decipher_only=None), critical=True))
     if not is_ca:
         builder = builder.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+    if crl_url:
+        point = x509.DistributionPoint(full_name=[x509.UniformResourceIdentifier(crl_url)],
+                                       relative_name=None, reasons=None, crl_issuer=None)
+        builder = builder.add_extension(x509.CRLDistributionPoints([point]), critical=False)
     cert = builder.sign(issuer_key, hashes.SHA256())
     key_path, cert_path = output / f'{name}.key', output / f'{name}.crt'
     with key_path.open('xb') as stream:
@@ -98,9 +104,131 @@ def windows_certificate(output, name, ca, hostname):
     public = dict(name=name, subject=subject.rfc4514_string(), issuer=issuer.rfc4514_string(),
                   certificateSha256=hashlib.sha256(cert_bytes).hexdigest(), privateKeyAcl=acl,
                   san=[hostname] + (['127.0.0.1'] if hostname == 'localhost' else []),
-                  ca=is_ca, trustedIssuerProvided=ca is not None)
+                  ca=is_ca, trustedIssuerProvided=ca is not None,
+                  serialHex=format(cert.serial_number, 'x'), crlDistributionPoint=crl_url)
     (output / f'{name}-generator.json').write_text(json.dumps(public, indent=2) + '\n', encoding='utf-8', newline='\n')
     return key_path, cert_path
+
+
+def windows_crl(output, ca, revoked, crl_url):
+    """One immutable public CRL; neither CA import nor revocation bypass."""
+    import datetime
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    windows_process_api().verify_private_path(output, directory=True)
+    windows_certificate_tool(output)
+    key = serialization.load_pem_private_key(ca[0].read_bytes(), password=None)
+    issuer = x509.load_pem_x509_certificate(ca[1].read_bytes())
+    leaf = x509.load_pem_x509_certificate(revoked[1].read_bytes())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    entry = (x509.RevokedCertificateBuilder().serial_number(leaf.serial_number)
+             .revocation_date(now - datetime.timedelta(minutes=1))
+             .add_extension(x509.CRLReason(x509.ReasonFlags.key_compromise), critical=False).build())
+    crl = (x509.CertificateRevocationListBuilder().issuer_name(issuer.subject)
+           .last_update(now - datetime.timedelta(minutes=1)).next_update(now + datetime.timedelta(days=1))
+           .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()), critical=False)
+           .add_extension(x509.CRLNumber(1), critical=False).add_revoked_certificate(entry)
+           .sign(key, hashes.SHA256()))
+    issuer.public_key().verify(crl.signature, crl.tbs_certlist_bytes, padding.PKCS1v15(), crl.signature_hash_algorithm)
+    data = crl.public_bytes(serialization.Encoding.DER)
+    path = output / 'fixture-ca.crl'
+    with path.open('xb') as stream:
+        stream.write(data)
+    return dict(file=path.name, url=crl_url, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                issuer=crl.issuer.rfc4514_string(), thisUpdateUtc=crl.last_update_utc.isoformat(),
+                nextUpdateUtc=crl.next_update_utc.isoformat(), number=1,
+                authorityKeyIdentifierHex=crl.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value.key_identifier.hex(),
+                revokedSerialHex=[format(item.serial_number, 'x') for item in crl],
+                signatureAlgorithm=crl.signature_algorithm_oid.dotted_string, signatureVerified=True)
+
+
+class CrlServer(http.server.ThreadingHTTPServer):
+    """Separate loopback endpoint exposing only one bounded public DER object."""
+    daemon_threads = False
+    block_on_close = True
+    allow_reuse_address = False
+
+    def __init__(self, token):
+        self.path = '/crl/' + token + '/fixture-ca.crl'
+        self.body = None
+        self.records = []
+        self.lock = threading.Lock()
+        self.slots = threading.BoundedSemaphore(4)
+        super().__init__(('127.0.0.1', 0), CrlHandler)
+
+    def publish(self, data):
+        if self.body is not None or not 0 < len(data) <= 16384:
+            raise ValueError('Exactly one immutable CRL of at most16KiB is required')
+        self.body = bytes(data)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        def expire():
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            request.close()
+        # A held socket object and absolute deadline also bound partial headers.
+        timer = threading.Timer(2, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            timer.cancel()
+            timer.join(timeout=2)
+            self.slots.release()
+
+
+class CrlHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.0'
+
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        self.respond(True)
+
+    def do_HEAD(self):
+        self.respond(False)
+
+    def do_POST(self):
+        self.respond(False, method_allowed=False)
+
+    def respond(self, send_body, method_allowed=True):
+        self.close_connection = True
+        matched = self.path == self.server.path
+        with self.server.lock:
+            number = len(self.server.records) + 1
+            status = 503 if number > 128 or self.server.body is None else 405 if not method_allowed else 404 if not matched else 200
+            record = dict(method=self.command, pathKind='public-crl' if matched else 'other', status=status, bodyBytes=0)
+            if number <= 128:
+                self.server.records.append(record)
+        data = self.server.body if status == 200 else b''
+        try:
+            self.send_response(status)
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Content-Type', 'application/pkix-crl')
+            self.send_header('Cache-Control', 'no-store, max-age=0')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            if send_body and data:
+                self.wfile.write(data)
+                record['bodyBytes'] = len(data)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            record['writeIncomplete'] = True
+
 
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = False
@@ -193,8 +321,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ssl.SSLError): pass
 
 
-def certificate(output, name, ca=None, hostname='localhost'):
+def certificate(output, name, ca=None, hostname='localhost', crl_url=None):
     if os.name == 'nt':
+        if crl_url:
+            return windows_certificate(output, name, ca, hostname, crl_url=crl_url)
         return windows_certificate(output, name, ca, hostname)
     config = output / f'{name}.cnf'
     config.write_text('[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=' + hostname +
@@ -238,25 +368,92 @@ def fixture(output):
         assert file.tell() == data
         block = bytes((x * 31 + y * 17 + (x ^ y)) & 255 for y in range(256) for x in range(256))
         for _ in range(tiles): file.write(block)
-    ca = certificate(output, 'ca', hostname='gdal4k-fixture-ca')
-    trusted = certificate(output, 'trusted', ca)
-    untrusted = certificate(output, 'untrusted')
-    wrong_name = certificate(output, 'wrong-name', ca, hostname='wrong.invalid')
     servers, threads = [], []
+    started_servers = set()
+    crl_server, crl_thread, crl_started = None, None, False
     urls = {}
     try:
-        for name, cert in [('http', None), ('https', trusted), ('untrusted', untrusted), ('wrong-name', wrong_name)]:
+        revoked, revocation, crl_info = None, None, None
+        if os.name == 'nt':
+            # Bind first to put the exact fresh URI in both issuer and leaf CDPs.
+            # Generation failures below are covered by this same finally block.
+            crl_server = CrlServer(secrets.token_hex(16))
+            crl_url = f'http://127.0.0.1:{crl_server.server_port}{crl_server.path}'
+            ca = certificate(output, 'ca', hostname='gdal4k-fixture-ca', crl_url=crl_url)
+            trusted = certificate(output, 'trusted', ca, crl_url=crl_url)
+            untrusted = certificate(output, 'untrusted')
+            wrong_name = certificate(output, 'wrong-name', ca, hostname='wrong.invalid', crl_url=crl_url)
+            revoked = certificate(output, 'revoked', ca, crl_url=crl_url)
+            crl_info = windows_crl(output, ca, revoked, crl_url)
+            crl_server.publish((output / crl_info['file']).read_bytes())
+            crl_thread = threading.Thread(target=lambda: crl_server.serve_forever(poll_interval=0.05), name='owned-public-crl')
+            crl_thread.start()
+            crl_started = True
+        else:
+            ca = certificate(output, 'ca', hostname='gdal4k-fixture-ca')
+            trusted = certificate(output, 'trusted', ca)
+            untrusted = certificate(output, 'untrusted')
+            wrong_name = certificate(output, 'wrong-name', ca, hostname='wrong.invalid')
+        cases = [('http', None), ('https', trusted), ('untrusted', untrusted), ('wrong-name', wrong_name)]
+        if revoked:
+            cases.append(('revoked', revoked))
+        revoked_base = None
+        for name, cert in cases:
             server = Server(image)
+            servers.append((name, server))  # Track the bound socket before TLS setup can fail.
             if cert:
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain(str(cert[1]), str(cert[0]))
                 server.socket = context.wrap_socket(server.socket, server_side=True)
-            servers.append((name, server))
-            thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start(); threads.append(thread)
-            urls[name] = ('http' if cert is None else 'https') + f'://127.0.0.1:{server.server_port}'
-        yield dict(urls=urls, ca=str(ca[1]), output=str(output))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start(); threads.append(thread); started_servers.add(name)
+            base = ('http' if cert is None else 'https') + f'://127.0.0.1:{server.server_port}'
+            if name == 'revoked':
+                revoked_base = base
+            else:
+                urls[name] = base
+        settings = dict(urls=urls, ca=str(ca[1]), output=str(output))
+        if crl_info:
+            manifest = dict(schemaVersion=1, crl=crl_info,
+                            certificates={name: json.loads((output / (name + '-generator.json')).read_text(encoding='utf-8'))
+                                          for name in ['ca', 'trusted', 'untrusted', 'wrong-name', 'revoked']},
+                            server=dict(host='127.0.0.1', port=crl_server.server_port,
+                                        owner=windows_process_api().process_identity(os.getpid()),
+                                        maxBodyBytes=16384, maxConnections=4, connectionDeadlineSeconds=2,
+                                        maxRecordedRequests=128),
+                            serverSourceSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+            path = output / 'revocation-fixture.json'
+            with path.open('x', encoding='utf-8', newline='\n') as stream:
+                stream.write(json.dumps(manifest, indent=2) + '\n')
+            settings['windowsRevocation'] = dict(crlUrl=crl_info['url'], revokedBase=revoked_base,
+                                                 crlFile=str(output / crl_info['file']), manifest=str(path),
+                                                 cleanupFile=str(output / 'revocation-cleanup.json'))
+        yield settings
     finally:
-        for _, server in servers: server.shutdown()
-        for thread in threads: thread.join()
-        for name, server in servers:
-            server.server_close() # Join owned request threads before recording complete response evidence.
-            (output / f'{name}-requests.json').write_text(json.dumps(server.records, indent=2) + '\n')
+        # Keep the CRL endpoint alive while any TLS request is finishing.
+        try:
+            for name, server in servers:
+                if name in started_servers:
+                    server.shutdown()
+            for thread in threads: thread.join()
+            for _, server in servers:
+                server.server_close() # Close every listener before evidence writes can fail.
+            for name, server in servers:
+                (output / f'{name}-requests.json').write_text(json.dumps(server.records, indent=2) + '\n')
+        finally:
+            if crl_server is not None:
+                try:
+                    if crl_started:
+                        crl_server.shutdown()
+                        crl_thread.join(timeout=5)
+                        if crl_thread.is_alive():
+                            raise RuntimeError('Owned CRL server did not stop')
+                finally:
+                    crl_server.server_close()
+                    (output / 'crl-requests.json').write_text(json.dumps(crl_server.records, indent=2) + '\n',
+                                                               encoding='utf-8', newline='\n')
+                    cleanup = dict(crlListenerClosed=crl_server.socket.fileno() == -1,
+                                   crlServerThreadStopped=not crl_started or not crl_thread.is_alive(),
+                                   tlsListenersClosed=all(server.socket.fileno() == -1 for _, server in servers),
+                                   tlsServerThreadsStopped=all(not thread.is_alive() for thread in threads))
+                    (output / 'revocation-cleanup.json').write_text(json.dumps(cleanup, indent=2) + '\n',
+                                                                    encoding='utf-8', newline='\n')

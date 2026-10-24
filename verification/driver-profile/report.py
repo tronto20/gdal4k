@@ -1,5 +1,6 @@
 """Archive only isolated local publications and measured evidence, never build dependencies."""
 import gzip
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -13,6 +14,7 @@ import sys
 import tarfile
 import xml.etree.ElementTree as ET
 import zipfile
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 profile_spec = importlib.util.spec_from_file_location('driver_profile', ROOT / 'gdal4k-engine/tools/driver-profile.py')
@@ -238,12 +240,13 @@ def windows_tls_fixture_bindings(snapshot, evidence):
         assert Path(item['filename']).name == item['filename'] and type(item['bytes']) is int and item['bytes'] > 0
         assert re.fullmatch(r'[0-9a-f]{64}', item['sha256'])
     names = {'ca': ('gdal4k-fixture-ca', True, False), 'trusted': ('localhost', False, True),
-             'untrusted': ('localhost', False, False), 'wrong-name': ('wrong.invalid', False, True)}
+             'untrusted': ('localhost', False, False), 'wrong-name': ('wrong.invalid', False, True),
+             'revoked': ('localhost', False, True)}
     assert {p.name for p in evidence.glob('*-generator.json')} == {name + '-generator.json' for name in names}
     assert {p.name for p in evidence.glob('*.crt')} == {name + '.crt' for name in names}
     assert not list(evidence.glob('*.key')), 'Private TLS keys must stay outside public profile evidence'
     windows = profile_api.windows_process_api()
-    records = {}
+    records, public = {}, {}
     for name, (hostname, ca, trusted) in names.items():
         path = owned_file(evidence, name + '-generator.json')
         record = json.loads(path.read_text(encoding='utf-8'))
@@ -254,12 +257,219 @@ def windows_tls_fixture_bindings(snapshot, evidence):
         assert record['san'] == [hostname] + (['127.0.0.1'] if hostname == 'localhost' else [])
         assert record['ca'] is ca and record['trustedIssuerProvided'] is trusted
         windows.validate_private_acl(record['privateKeyAcl'], False)
+        public[name] = record
         records[name] = dict(generatorSha256=sha(path), certificateSha256=sha(cert), privateKeyAcl=record['privateKeyAcl'])
+    revocation = windows_revocation_bindings(evidence, public, tool, source_hashes[source_names[0]])
     return dict(sourceSha256=source_hashes, toolReceiptSha256=sha(tool_path), generatorIdentity=current,
-                certificates=records,
+                certificates=records, revocation=revocation,
                 scope='Current pinned Windows CI certificate generator versions/installed-module identities and actual public certificate hashes; '
                       'protected private-key DACL receipts only, no private keys uploaded. Original installed generator module bytes are not uploaded; '
                       'TLS trust/hostname/negative behavior requires the separate actual JVM/Native fixtures.')
+
+
+def windows_revocation_bindings(evidence, generators, tool, server_source_sha):
+    """Parse retained public bytes; generator/signatureVerified assertions are not proof."""
+    import ipaddress
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID, SignatureAlgorithmOID
+    path = owned_file(evidence, 'revocation-fixture.json')
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    assert set(manifest) == {'schemaVersion', 'crl', 'certificates', 'server', 'serverSourceSha256'}
+    assert manifest['schemaVersion'] == 1 and manifest['certificates'] == generators
+    assert manifest['serverSourceSha256'] == server_source_sha, 'CRL server source changed'
+    server, info = manifest['server'], manifest['crl']
+    assert set(server) == {'host', 'port', 'owner', 'maxBodyBytes', 'maxConnections', 'connectionDeadlineSeconds', 'maxRecordedRequests'}
+    assert server['host'] == '127.0.0.1' and type(server['port']) is int and 0 < server['port'] < 65536
+    assert [server[k] for k in ['maxBodyBytes', 'maxConnections', 'connectionDeadlineSeconds', 'maxRecordedRequests']] == [16384, 4, 2, 128]
+    owner = server['owner']
+    assert set(owner) == {'pid', 'creationTime100ns', 'imagePath'}
+    assert type(owner['pid']) is int and owner['pid'] > 0 and type(owner['creationTime100ns']) is int and owner['creationTime100ns'] > 0
+    assert ntpath.isabs(owner['imagePath']) and ntpath.basename(owner['imagePath']) == tool['python']['executable']
+    endpoint = urlsplit(info['url'])
+    assert (endpoint.scheme, endpoint.hostname, endpoint.port) == ('http', server['host'], server['port'])
+    assert endpoint.netloc == f"127.0.0.1:{server['port']}" and not endpoint.query and not endpoint.fragment
+    assert re.fullmatch(r'/crl/[0-9a-f]{32}/fixture-ca\.crl', endpoint.path), 'CRL endpoint is not the bounded owned route'
+    assert info['file'] == 'fixture-ca.crl'
+    crl_path = owned_file(evidence, info['file'])
+    raw = crl_path.read_bytes()
+    assert 0 < len(raw) <= 16384 and info['bytes'] == len(raw) and info['sha256'] == sha(crl_path), 'Actual CRL bytes changed'
+    crl = x509.load_der_x509_crl(raw)
+    assert crl.public_bytes(serialization.Encoding.DER) == raw, 'CRL must be one complete DER object'
+    certs = {name: x509.load_pem_x509_certificate(owned_file(evidence, name + '.crt').read_bytes()) for name in generators}
+    ca = certs['ca']
+    now = datetime.datetime.now(datetime.timezone.utc)
+    assert len({cert.serial_number for cert in certs.values()}) == 5, 'Certificate serials must be distinct'
+    assert len({cert.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+                for cert in certs.values()}) == 5, 'Fixture certificate keys must be distinct'
+    for name, cert in certs.items():
+        record = generators[name]
+        assert set(record) == {'name', 'subject', 'issuer', 'certificateSha256', 'privateKeyAcl', 'san', 'ca',
+                               'trustedIssuerProvided', 'serialHex', 'crlDistributionPoint'}
+        assert cert.public_bytes(serialization.Encoding.PEM) == owned_file(evidence, name + '.crt').read_bytes()
+        leaf_key = cert.public_key()
+        assert isinstance(leaf_key, rsa.RSAPublicKey) and leaf_key.key_size == 2048 and leaf_key.public_numbers().e == 65537
+        issuer = cert if name == 'untrusted' else ca
+        key = issuer.public_key()
+        assert isinstance(key, rsa.RSAPublicKey) and key.key_size == 2048 and key.public_numbers().e == 65537
+        assert cert.signature_algorithm_oid == SignatureAlgorithmOID.RSA_WITH_SHA256
+        key.verify(cert.signature, cert.tbs_certificate_bytes, padding.PKCS1v15(), cert.signature_hash_algorithm)
+        assert cert.subject.rfc4514_string() == record['subject'] and cert.issuer == issuer.subject
+        assert cert.issuer.rfc4514_string() == record['issuer'] and record['serialHex'] == format(cert.serial_number, 'x')
+        assert cert.not_valid_before_utc <= now < cert.not_valid_after_utc
+        assert datetime.timedelta(0) < cert.not_valid_after_utc - cert.not_valid_before_utc <= datetime.timedelta(days=3)
+        expected_san = [x509.DNSName(record['subject'][3:])]
+        if name in ['trusted', 'untrusted', 'revoked']:
+            expected_san.append(x509.IPAddress(ipaddress.ip_address('127.0.0.1')))
+        assert list(cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value) == expected_san, 'Actual certificate SAN differs'
+        is_ca = name == 'ca'
+        constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+        assert constraints.critical and constraints.value == x509.BasicConstraints(is_ca, None)
+        usage = cert.extensions.get_extension_for_class(x509.KeyUsage)
+        assert usage.critical and usage.value.public_bytes() == x509.KeyUsage(not is_ca, False, not is_ca, False, False, is_ca, is_ca, None, None).public_bytes()
+        assert cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value == x509.SubjectKeyIdentifier.from_public_key(cert.public_key())
+        assert cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value == x509.AuthorityKeyIdentifier.from_issuer_public_key(key)
+        expected_oids = {ExtensionOID.SUBJECT_ALTERNATIVE_NAME, ExtensionOID.BASIC_CONSTRAINTS,
+                         ExtensionOID.KEY_USAGE, ExtensionOID.SUBJECT_KEY_IDENTIFIER, ExtensionOID.AUTHORITY_KEY_IDENTIFIER}
+        if not is_ca:
+            assert list(cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value) == [ExtendedKeyUsageOID.SERVER_AUTH]
+            expected_oids.add(ExtensionOID.EXTENDED_KEY_USAGE)
+        if name == 'untrusted':
+            assert record['crlDistributionPoint'] is None
+        else:
+            points = cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value
+            assert len(points) == 1 and list(points[0].full_name) == [x509.UniformResourceIdentifier(info['url'])]
+            assert points[0].relative_name is None and points[0].reasons is None and points[0].crl_issuer is None
+            assert record['crlDistributionPoint'] == info['url'], 'Actual certificate CRL distribution point differs'
+            expected_oids.add(ExtensionOID.CRL_DISTRIBUTION_POINTS)
+        assert {ext.oid for ext in cert.extensions} == expected_oids
+    assert set(info) == {'file', 'url', 'bytes', 'sha256', 'issuer', 'thisUpdateUtc', 'nextUpdateUtc', 'number',
+                         'authorityKeyIdentifierHex', 'revokedSerialHex', 'signatureAlgorithm', 'signatureVerified'}
+    assert crl.issuer == ca.subject and info['issuer'] == crl.issuer.rfc4514_string()
+    assert crl.signature_algorithm_oid == SignatureAlgorithmOID.RSA_WITH_SHA256
+    assert info['signatureAlgorithm'] == crl.signature_algorithm_oid.dotted_string
+    assert crl.is_signature_valid(ca.public_key()), 'Actual CRL signature differs'
+    assert info['signatureVerified'] is True
+    assert info['thisUpdateUtc'] == crl.last_update_utc.isoformat() and info['nextUpdateUtc'] == crl.next_update_utc.isoformat()
+    assert crl.last_update_utc <= now < crl.next_update_utc and crl.next_update_utc - crl.last_update_utc <= datetime.timedelta(days=2), 'Actual CRL validity differs'
+    assert crl.last_update_utc >= ca.not_valid_before_utc and crl.next_update_utc <= ca.not_valid_after_utc
+    assert type(info['number']) is int and info['number'] == crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number == 1
+    aki = crl.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value
+    assert aki == x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.public_key()) and info['authorityKeyIdentifierHex'] == aki.key_identifier.hex()
+    assert {ext.oid for ext in crl.extensions} == {ExtensionOID.AUTHORITY_KEY_IDENTIFIER, ExtensionOID.CRL_NUMBER}
+    assert len(crl) == 1 and crl[0].serial_number == certs['revoked'].serial_number
+    assert info['revokedSerialHex'] == [format(crl[0].serial_number, 'x')], 'Actual revoked serial differs'
+    assert certs['revoked'].not_valid_before_utc <= crl[0].revocation_date_utc <= crl.last_update_utc
+    assert len(crl[0].extensions) == 1 and crl[0].extensions.get_extension_for_class(x509.CRLReason).value.reason == x509.ReasonFlags.key_compromise
+    cleanup_path = owned_file(evidence, 'revocation-cleanup.json')
+    cleanup = json.loads(cleanup_path.read_text(encoding='utf-8'))
+    assert set(cleanup) == {'crlListenerClosed', 'crlServerThreadStopped', 'tlsListenersClosed', 'tlsServerThreadsStopped'} and all(v is True for v in cleanup.values()), 'Owned TLS/CRL servers did not finalize cleanup'
+    requests_path = owned_file(evidence, 'crl-requests.json')
+    requests = json.loads(requests_path.read_text(encoding='utf-8'))
+    assert 0 < len(requests) <= 128 and all(set(r) <= {'method', 'pathKind', 'status', 'bodyBytes', 'writeIncomplete'} for r in requests)
+    for request in requests:
+        assert request['method'] in ['GET', 'HEAD', 'POST'] and request['pathKind'] in ['public-crl', 'other']
+        assert type(request['status']) is int and request['status'] in [200, 404, 405, 503]
+        assert type(request['bodyBytes']) is int and 0 <= request['bodyBytes'] <= len(raw)
+        assert 'writeIncomplete' not in request or request['writeIncomplete'] is True
+        if request['status'] == 200:
+            assert request['pathKind'] == 'public-crl' and request['method'] in ['GET', 'HEAD']
+        elif request['status'] == 404:
+            assert request['pathKind'] == 'other' and request['method'] in ['GET', 'HEAD']
+        elif request['status'] == 405:
+            assert request['method'] == 'POST'
+        if request['status'] != 200 or request['method'] != 'GET':
+            assert request['bodyBytes'] == 0
+    assert any(r == dict(method='GET', pathKind='public-crl', status=200, bodyBytes=len(raw)) for r in requests), 'No complete actual CRL GET'
+    revoked_requests = owned_file(evidence, 'revoked-requests.json')
+    assert json.loads(revoked_requests.read_text(encoding='utf-8')) == [], 'Revoked TLS reached HTTP'
+    return dict(manifestSha256=sha(path), crlSha256=sha(crl_path), certificatesCryptographicallyVerified=sorted(certs),
+                revokedSerialHex=info['revokedSerialHex'], crlRequestsSha256=sha(requests_path),
+                revokedRequestsSha256=sha(revoked_requests), finalizedCleanupSha256=sha(cleanup_path),
+                serverOwner=owner, originalCrlUrl=info['url'])
+
+
+def windows_native_tls_control_bindings(snapshot, evidence, fixture, engine_fingerprint):
+    """Bind both real early commands to retained source, PE, raw output and requests."""
+    directory = 'verification/results/native-http-tls-controls/'
+    result_path = owned_file(snapshot, directory + 'result.json')
+    value = json.loads(result_path.read_text(encoding='utf-8'))
+    assert set(value) == {'schemaVersion', 'target', 'result', 'sourceSha256', 'engineManifest', 'engineFingerprint',
+                          'probe', 'windowsDependencyAudit', 'fixtureManifestSha256', 'controls'}
+    assert (value['schemaVersion'], value['target'], value['result']) == (1, 'windows-amd64', 'passed')
+    source_names = ['gdal4k-engine/tools/driver-profile.py', 'gdal4k/native/http-cache-probe.cpp',
+                    'gdal4k/native/http-inputs.hpp', 'verification/command_evidence.py', 'verification/windows_process.py']
+    assert set(value['sourceSha256']) == set(source_names)
+    assert all(value['sourceSha256'][name] == sha(owned_file(snapshot, name)) == sha(ROOT / name) for name in source_names), 'Early TLS control source changed'
+    def reference(item, expected):
+        assert set(item) == {'path', 'sha256'} and item['path'] == expected
+        path = owned_file(snapshot, expected)
+        assert item['sha256'] == sha(path), 'Early TLS control retained bytes changed'
+        return path
+    manifest = reference(value['engineManifest'], 'gdal4k-engine/build/engine/windows-amd64/manifest.json')
+    engine = json.loads(manifest.read_text(encoding='utf-8'))
+    assert engine['target'] == 'windows-amd64' and engine['source_fingerprint'] == value['engineFingerprint'] == engine_fingerprint
+    assert engine['artifacts'] and all(sha(owned_file(snapshot / 'gdal4k-engine/build', name)) == digest for name, digest in engine['artifacts'].items()), 'Early TLS engine artifact changed'
+    probe = reference(value['probe'], 'gdal4k-engine/build/engine/windows-amd64/cmake/gdal4k_http_probe.exe')
+    reference(value['windowsDependencyAudit'], 'verification/results/native-http-cache-probe-pe.json')
+    pe = windows_probe_bindings(snapshot, value['windowsDependencyAudit'], probe)
+    assert value['fixtureManifestSha256'] == sha(owned_file(evidence, 'revocation-fixture.json'))
+    revocation = json.loads((evidence / 'revocation-fixture.json').read_text(encoding='utf-8'))
+    assert fixture['windowsRevocation']['crlUrl'] == revocation['crl']['url']
+    assert set(value['controls']) == {'trusted', 'revoked'}
+    controls = {}
+    for name, base, code in [('trusted', fixture['urls']['https'], 0), ('revoked', fixture['windowsRevocation']['revokedBase'], 1)]:
+        endpoint = urlsplit(base)
+        assert endpoint.scheme == 'https' and endpoint.netloc == f'127.0.0.1:{endpoint.port}' and not endpoint.path and not endpoint.query and not endpoint.fragment
+        key = 'native-tls-' + name
+        url = base + '/cache/' + key + '/fixture.tif'
+        control = value['controls'][name]
+        assert set(control) == {'url', 'requestKey', 'commandRecord', 'log', 'expectedReturncode', 'nativeResult' if code == 0 else 'schannelReason'}
+        assert type(control['expectedReturncode']) is int and (control['url'], control['requestKey'], control['expectedReturncode']) == (url, key, code)
+        command_path = reference(control['commandRecord'], directory + name + '.json')
+        log_path = reference(control['log'], directory + name + '.log')
+        record, raw = json.loads(command_path.read_text(encoding='utf-8')), log_path.read_bytes()
+        assert record['log'] == log_path.name, 'TLS command record names a different retained log'
+        profile_api.validate_windows_tls_control_record(record, command=[str(probe), url, '--tls-only'], cwd=snapshot, log_bytes=raw, expected_code=code)
+        assert record['ownership']['assignedBeforeResume'] is True and record['ownership']['killOnClose'] is True
+        assert type(record['cleanup']['activeProcessesAfter']) is int and record['cleanup']['activeProcessesAfter'] == 0
+        assert record['cleanup']['jobClosed'] is True and record['cleanup']['forcedTreeTermination'] is False
+        assert record['windowsProcess']['pid'] != revocation['server']['owner']['pid']
+        start = datetime.datetime.fromisoformat(record['startedAtUtc'])
+        end = datetime.datetime.fromisoformat(record['completedAtUtc'])
+        duration = (end - start).total_seconds()
+        assert type(record['elapsedSeconds']) in (int, float) and 0 < duration <= 32
+        assert abs(duration - record['elapsedSeconds']) <= 1, 'TLS command wall and monotonic elapsed times differ'
+        assert (datetime.datetime.fromisoformat(revocation['crl']['thisUpdateUtc']) <= start <= end <
+                datetime.datetime.fromisoformat(revocation['crl']['nextUpdateUtc'])), 'TLS controls outside CRL validity'
+        if code == 0:
+            native = json.loads(raw)
+            expected = dict(result='passed', mode='tls-control', fileBytes=fixture['imageBytes'], headerBytes=16,
+                            tiffHeaderVerified=True, vsiDispatchVerified=True, registryReleaseVerified=True)
+            assert native == control['nativeResult'] == expected, 'Trusted control did not retain actual TIFF/registry output'
+            assert type(native['fileBytes']) is int and type(native['headerBytes']) is int
+            assert all(native[field] is True for field in ['tiffHeaderVerified', 'vsiDispatchVerified', 'registryReleaseVerified'])
+        else:
+            text = raw.decode('utf-8')
+            assert '[curl=60,' in text and 'schannelReason=revoked]' in text and control['schannelReason'] == 'revoked'
+            assert not any(token in text for token in ['https://', 'http://', 'schannel:']), 'Revoked TLS diagnostic leaked endpoint or native text'
+        controls[name] = dict(commandSha256=sha(command_path), logSha256=sha(log_path), windowsProcess=record['windowsProcess'],
+                              cleanup=record['cleanup'], startedAtUtc=record['startedAtUtc'], completedAtUtc=record['completedAtUtc'])
+    assert controls['trusted']['windowsProcess'] != controls['revoked']['windowsProcess']
+    assert (datetime.datetime.fromisoformat(controls['trusted']['completedAtUtc']) <=
+            datetime.datetime.fromisoformat(controls['revoked']['startedAtUtc']))
+    requests = json.loads(owned_file(evidence, 'https-requests.json').read_text(encoding='utf-8'))
+    early = [r for r in requests if r['key'] == 'native-tls-trusted']
+    assert early and all(r['case'] == 'cache' and r['name'] == 'fixture.tif' and r['status'] == 206 for r in early)
+    for request in early:
+        match = re.fullmatch(r'bytes=(\d+)-(\d+)', request['range'])
+        assert match and 0 <= int(match[1]) <= int(match[2]) < fixture['imageBytes']
+        assert 0 < request['requestedBytes'] == request['bodyBytes'] == int(match[2]) - int(match[1]) + 1 <= 65536
+    assert not any(r['key'] == 'native-tls-revoked' for r in requests)
+    return dict(resultSha256=sha(result_path), currentSourceSha256=value['sourceSha256'], controls=controls,
+                probeBindings=pe, trustedRequestKey='native-tls-trusted', trustedRequests=early,
+                scope='Actual retained early native command output and owned Job cleanup, public certificate/CRL bytes and finalized server requests; Windows execution requires fresh CI evidence')
 
 
 def windows_probe_bindings(snapshot, reference, program):
@@ -860,6 +1070,8 @@ def main():
         fixture = json.loads((evidence / 'fixture.json').read_text(encoding='utf-8'))
         assert fixture['serverSourceSha256'] == sha(ROOT / 'verification/driver-profile/http-fixture.py')
         tls_generator = windows_tls_fixture_bindings(snapshot, evidence) if target == 'windows-amd64' else None
+        tls_controls = (windows_native_tls_control_bindings(snapshot, evidence, fixture, measurements['profile']['fingerprint'])
+                        if target == 'windows-amd64' else None)
         assert fixture['testSourceSha256'] == sha(snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt')
         records = json.loads((evidence / 'http-requests.json').read_text(encoding='utf-8'))
         cache = json.loads((snapshot / 'verification/results/native-http-cache-check.json').read_text(encoding='utf-8'))
@@ -890,7 +1102,8 @@ def main():
             assert all(r['ifRange'] == 'Mon, 19 Oct 2026 00:00:00 GMT' for r in case('weak')[1:])
             assert any(r['case'] == 'sidecar' and r['key'] == key and r['name'] == 'fixture.tif.aux.xml' and r['bodyBytes'] > 0 for r in records)
         tls = json.loads((evidence / 'https-requests.json').read_text(encoding='utf-8'))
-        assert {r['key'] for r in tls if r['name'] == 'fixture.tif' and r['case'] != 'combined'} == keys
+        normal_tls = [r for r in tls if tls_controls is None or r['key'] != tls_controls['trustedRequestKey']]
+        assert {r['key'] for r in normal_tls if r['name'] == 'fixture.tif' and r['case'] != 'combined'} == keys
         if combined is not None:
             combined['httpAndTlsInvocations'] = combined_request_bindings(records, tls, keys, combined_diagnostics)
             if arm_runtime:
@@ -914,7 +1127,7 @@ def main():
                 assert 0 < record['transferredBodyBytes'] < measured_http['fixture']['bytes'] // 4
         assert len({r['checksum'] for r in measured_http['records']}) == 1
         http = dict(fixture=fixture, publicCases=http_test_contexts, cacheRegression=cache,
-                    windowsTlsGenerator=tls_generator,
+                    windowsTlsGenerator=tls_generator, windowsNativeTlsControls=tls_controls,
                     evidenceHashes={p.name: sha(p) for p in evidence.iterdir() if p.is_file()},
                     diagnosticsSha256=sha(diagnostics), diagnosticsMedian=measured_http['median'],
                     currentBindings=http_bindings, scope=measured_http['scope'], contexts=sorted(keys))

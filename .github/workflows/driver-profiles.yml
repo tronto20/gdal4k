@@ -377,6 +377,9 @@ jobs:
             verification/results/native-http-fixture-*/*.crt
             verification/results/native-http-fixture-*/certificate-tool.json
             verification/results/native-http-fixture-*/*-generator.json
+            verification/results/native-http-fixture-*/*.crl
+            verification/results/native-http-fixture-*/revocation-fixture.json
+            verification/results/native-http-fixture-*/revocation-cleanup.json
             gdal4k-engine/build/engine/windows-amd64/manifest.json
             build/driver-profiles/**/inputs.json
             build/driver-profiles/**/prepared.json

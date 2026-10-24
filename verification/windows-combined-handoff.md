@@ -124,6 +124,25 @@ queries, paths and partial matches are never returned. TLS, revocation, retry
 and cancellation policy remain unchanged; these diagnostics identify failures
 without establishing their cause before actual execution.
 
+The subsequent actual Windows combined run at `ecdab47a` reported
+`curl=60` with `schannelReason=revocation-status-unknown` in both trusted-TLS
+failures. Its generated issuer and leaves had no CRL distribution point.
+The Windows fixture now gives its fresh issuer and signed leaves one unique
+loopback CRL URI, serves an immutable issuer-signed DER CRL, and includes a
+separate otherwise-valid leaf whose serial is revoked in that CRL. Root store,
+peer/hostname checks and Schannel revocation policy stay unchanged.
+
+Before the long Windows source tests, the normal combined producer builds the
+same fingerprinted standalone HTTP probe. Two bounded owned-process controls
+require a real trusted TIFF read and a redacted native `curl=60` / `revoked`
+failure. The expected negative command retains its actual failed status.
+The final report rechecks certificate/CRL signatures, exact current source and
+probe/engine identities, complete Job Object cleanup and final request logs.
+Public CRL/certificate/manifest/cleanup evidence is retained on failure; private
+keys are excluded. Host crypto and transport tests do not establish Windows
+Schannel acceptance: the fresh actual Windows controls and full consumers must
+still pass.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including

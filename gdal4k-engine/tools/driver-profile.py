@@ -6,6 +6,7 @@ Never edits the producer checkout's default manifest/build or publishes remotely
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import platform
@@ -111,6 +112,99 @@ def windows_pe_api(root):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def validate_windows_tls_control_record(record, *, command, cwd, log_bytes, expected_code):
+    """Validate an owned native command, including an expected failing control."""
+    identity = record.get('windowsProcess', {})
+    if (type(expected_code) is not int or expected_code not in (0, 1) or record.get('command') != list(command)
+            or record.get('cwd') != str(cwd) or type(record.get('timeoutSeconds')) is not int or record['timeoutSeconds'] != 30
+            or record.get('status') != ('passed' if expected_code == 0 else 'failed')
+            or type(record.get('returncode')) is not int or record['returncode'] != expected_code or record.get('outputComplete') is not True
+            or record.get('logSha256') != hashlib.sha256(log_bytes).hexdigest()
+            or record.get('pidRole') != 'owned child process'
+            or type(record.get('pid')) is not int or record['pid'] <= 0
+            or identity.get('pid') != record['pid']
+            or type(identity.get('creationTime100ns')) is not int or identity['creationTime100ns'] <= 0
+            or not command or not ntpath.isabs(command[0]) or not identity.get('imagePath')
+            or ntpath.normcase(ntpath.normpath(identity['imagePath'])) != ntpath.normcase(ntpath.normpath(command[0]))
+            or record.get('ownership') != dict(kind='Windows Job Object', assignedBeforeResume=True, killOnClose=True)
+            or record.get('cleanup') != dict(activeProcessesAfter=0, jobClosed=True, forcedTreeTermination=False)):
+        raise ValueError('Windows native TLS control command or owned cleanup differs')
+    started = datetime.datetime.fromisoformat(record['startedAtUtc'])
+    completed = datetime.datetime.fromisoformat(record['completedAtUtc'])
+    if (started.tzinfo is None or completed.tzinfo is None or completed <= started
+            or type(record.get('elapsedSeconds')) not in (int, float)
+            or not 0 < record.get('elapsedSeconds', 0) <= 31):
+        raise ValueError('Windows native TLS control timestamps differ')
+
+
+def windows_native_tls_controls(snapshot, fixture, env):
+    """Use the real optional engine before long source/published consumer suites."""
+    directory = snapshot / 'verification/results/native-http-tls-controls'
+    directory.mkdir(parents=True, exist_ok=False)
+    probe = snapshot / 'gdal4k-engine/build/engine/windows-amd64/cmake/gdal4k_http_probe.exe'
+    pe_path = snapshot / 'verification/results/native-http-cache-probe-pe.json'
+    windows_pe_api(snapshot).audit(probe, root=snapshot, output=pe_path)
+    digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+    reference = lambda path: dict(path=path.relative_to(snapshot).as_posix(), sha256=digest(path))
+    manifest = snapshot / 'gdal4k-engine/build/engine/windows-amd64/manifest.json'
+    engine = json.loads(manifest.read_text(encoding='utf-8'))
+    if engine['target'] != 'windows-amd64':
+        raise ValueError('Early native TLS control requires the actual Windows engine')
+    source_names = ['gdal4k-engine/tools/driver-profile.py', 'gdal4k/native/http-cache-probe.cpp',
+                    'gdal4k/native/http-inputs.hpp', 'verification/command_evidence.py', 'verification/windows_process.py']
+    result = dict(schemaVersion=1, target='windows-amd64', result='running',
+                  sourceSha256={name: digest(snapshot / name) for name in source_names},
+                  engineManifest=reference(manifest), engineFingerprint=engine['source_fingerprint'],
+                  probe=reference(probe), windowsDependencyAudit=reference(pe_path),
+                  fixtureManifestSha256=digest(Path(fixture['windowsRevocation']['manifest'])), controls={})
+    result_path = directory / 'result.json'
+    def save():
+        result_path.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8', newline='\n')
+    save()
+    spec = importlib.util.spec_from_file_location('profile_command_evidence', snapshot / 'verification/command_evidence.py')
+    commands = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(commands)
+    sys.path.insert(0, str(snapshot / 'verification'))
+    try:
+        for name, base, expected_code in [('trusted', fixture['urls']['https'], 0),
+                                          ('revoked', fixture['windowsRevocation']['revokedBase'], 1)]:
+            key = 'native-tls-' + name
+            url = base + '/cache/' + key + '/fixture.tif'
+            command = [str(probe), url, '--tls-only']
+            record_path, log_path = directory / (name + '.json'), directory / (name + '.log')
+            try:
+                commands.run_with_evidence(command, cwd=snapshot, directory=directory, timeout=30, env=env,
+                                           record_path=record_path, log_path=log_path)
+            except subprocess.CalledProcessError as error:
+                if expected_code != 1 or error.returncode != 1:
+                    raise
+            record, log = json.loads(record_path.read_text(encoding='utf-8')), log_path.read_bytes()
+            validate_windows_tls_control_record(record, command=command, cwd=snapshot,
+                                                log_bytes=log, expected_code=expected_code)
+            control = dict(url=url, requestKey=key, commandRecord=reference(record_path),
+                           log=reference(log_path), expectedReturncode=expected_code)
+            if name == 'trusted':
+                native = json.loads(log)
+                if (native.get('result') != 'passed' or native.get('mode') != 'tls-control'
+                        or native.get('headerBytes') != 16 or native.get('fileBytes') != Path(fixture['output'], 'fixture.tif').stat().st_size
+                        or any(native.get(field) is not True for field in ['tiffHeaderVerified', 'vsiDispatchVerified', 'registryReleaseVerified'])):
+                    raise ValueError('Trusted native TLS control did not read the actual TIFF')
+                control['nativeResult'] = native
+            else:
+                text = log.decode('utf-8')
+                if ('[curl=60,' not in text or 'schannelReason=revoked]' not in text
+                        or any(value in text for value in ['https://', 'http://', url, base, 'schannel:'])):
+                    raise ValueError('Revoked native TLS control did not report a redacted actual Schannel revocation')
+                control['schannelReason'] = 'revoked'
+            result['controls'][name] = control
+            save()
+    finally:
+        sys.path.pop(0)
+    result['result'] = 'passed'
+    save()
+    return result
 
 
 def postgresql_child_environment(environment, fixture, target=None):
@@ -374,7 +468,9 @@ def main():
         public_files = [*fixture_root.glob('*-requests.json'), *fixture_root.glob('*.crt')]
         if args.target == 'windows-amd64':
             public_files += [fixture_root / 'certificate-tool.json',
-                             *(fixture_root / (name + '-generator.json') for name in ['ca', 'trusted', 'untrusted', 'wrong-name'])]
+                             *(fixture_root / (name + '-generator.json') for name in ['ca', 'trusted', 'untrusted', 'wrong-name', 'revoked']),
+                             fixture_root / 'fixture-ca.crl', fixture_root / 'revocation-fixture.json',
+                             fixture_root / 'revocation-cleanup.json']
         for file in public_files:
             shutil.copy2(file, evidence / file.name)
         checksum = 1125899906842597
@@ -383,6 +479,8 @@ def main():
             'urls': http_fixture['urls'], 'imageSha256': hashlib.sha256((fixture_root / 'fixture.tif').read_bytes()).hexdigest(),
             'imageChecksum': str(checksum),
             'imageBytes': (fixture_root / 'fixture.tif').stat().st_size,
+            **({'windowsRevocation': {name: http_fixture['windowsRevocation'][name] for name in ['crlUrl', 'revokedBase']}}
+               if args.target == 'windows-amd64' else {}),
             'serverSourceSha256': hashlib.sha256((ROOT / 'verification/driver-profile/http-fixture.py').read_bytes()).hexdigest(),
             'testSourceSha256': hashlib.sha256((snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt').read_bytes()).hexdigest()
         }, indent=2) + '\n', encoding='utf-8', newline='\n')
@@ -415,6 +513,9 @@ def run_profile(args, http_fixture, postgresql_fixture=None):
         configure_windows_vcpkg_git(snapshot)
     if has_capability(args.profile, 'scientific'):
         run(sys.executable, '-c', "import h5py,numpy as np; from pathlib import Path; p=Path('verification/build/driver-profile.h5'); p.parent.mkdir(parents=True,exist_ok=True); f=h5py.File(p,'w'); f.create_dataset('values',data=np.array([[1,2],[3,4]],dtype='int16')); f.close()")
+    if args.target == 'windows-amd64' and has_capability(args.profile, 'http'):
+        run(gradle, '--console=plain', ':gdal4k-engine:buildEngineWindowsAmd64')
+        windows_native_tls_controls(snapshot, http_fixture, env)
     run(gradle, '--console=plain', ':gdal4k:compileKotlin' + native,
         ':gdal4k-runtime:jvmTest', ':gdal4k-runtime:' + native[0].lower() + native[1:] + 'Test')
     run(sys.executable, snapshot / 'verification/audit-engine.py', args.target)
@@ -423,7 +524,6 @@ def run_profile(args, http_fixture, postgresql_fixture=None):
         dependency_audit = None
         if args.target == 'windows-amd64':
             path = snapshot / 'verification/results/native-http-cache-probe-pe.json'
-            windows_pe_api(snapshot).audit(probe, root=snapshot, output=path)
             dependency_audit = dict(path=path.relative_to(snapshot).as_posix(), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
         result = subprocess.run([str(probe), http_fixture['urls']['http'] + '/cache/internal/fixture.tif'],
                                 cwd=snapshot, env=env, text=True, capture_output=True)
