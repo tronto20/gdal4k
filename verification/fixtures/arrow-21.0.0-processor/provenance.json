@@ -1,0 +1,36 @@
+{
+  "version": "21.0.0",
+  "archive": {
+    "url": "https://archive.apache.org/dist/arrow/arrow-21.0.0/apache-arrow-21.0.0.tar.gz",
+    "bytes": 17320680,
+    "sha256": "5d3f8db7e72fb9f65f4785b7a1634522e8d8e9657a445af53d4a34a3849857b5",
+    "sha512": "89da6de7eb2513c797d6671e1addf40b8b156215b481cf2511fa69faa16547c52d8220727626eeda499e4384d276e03880cd920aaab41c3d15106743d51a90a6"
+  },
+  "members": [
+    {
+      "path": "SetupCxxFlags.cmake",
+      "archiveMember": "apache-arrow-21.0.0/cpp/cmake_modules/SetupCxxFlags.cmake",
+      "bytes": 34301,
+      "sha256": "944aa4f6de45782a71e5488f71f1a0e36cd2aab9773a4d5e6b0dce9599560f52"
+    },
+    {
+      "path": "LICENSE.txt",
+      "archiveMember": "apache-arrow-21.0.0/LICENSE.txt",
+      "bytes": 113409,
+      "sha256": "82f5f9b0e6592da7f79022fc930add132a76c56727d29813f94058157a2b2d11"
+    },
+    {
+      "path": "NOTICE.txt",
+      "archiveMember": "apache-arrow-21.0.0/NOTICE.txt",
+      "bytes": 2916,
+      "sha256": "c946470d6b024c77feebdfb686bf92a828402c0ffc27c769bca7d8bef08e1db7"
+    }
+  ],
+  "processorPrefix": {
+    "stopBefore": "# Check architecture specific compiler flags",
+    "bytes": 1889,
+    "sha256": "b03fe25779de40aca2c3e5b2ec448e7e2e51d69302c171bed1e93208a83f8d06",
+    "scope": "Exact leading upstream source including complete balanced CPU selector and original line44 fatal; compiler feature/SIMD body excluded from configuration-only regression."
+  },
+  "scope": "Exact official Arrow21 archive inputs selected by repository arrow overlay SHA512, not vcpkg baseline GitHub archive. SDK/network-free tests mock tool bootstrap/SDK paths only, generate actual toolchain, run real CMake LANGUAGES NONE and unchanged balanced upstream prefix. No Arrow build, Windows-host or runtime acceptance."
+}

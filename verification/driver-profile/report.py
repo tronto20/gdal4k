@@ -1,8 +1,10 @@
 """Archive only isolated local publications and measured evidence, never build dependencies."""
 import gzip
+import datetime
 import hashlib
 import importlib.util
 import json
+import ntpath
 from pathlib import Path
 import re
 import shlex
@@ -12,12 +14,16 @@ import sys
 import tarfile
 import xml.etree.ElementTree as ET
 import zipfile
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 profile_spec = importlib.util.spec_from_file_location('driver_profile', ROOT / 'gdal4k-engine/tools/driver-profile.py')
 profile_api = importlib.util.module_from_spec(profile_spec)
 profile_spec.loader.exec_module(profile_api)
 has_capability = profile_api.has_capability
+publication_spec = importlib.util.spec_from_file_location('driver_profile_publication_versions', ROOT / 'verification/publication_versions.py')
+publication_policy = importlib.util.module_from_spec(publication_spec)
+publication_spec.loader.exec_module(publication_policy)
 
 def sha(path):
     with path.open('rb') as file:
@@ -51,13 +57,13 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
             if dependency.findtext(ns + 'groupId') == 'dev.tronto.gdal4k':
                 assert dependency.findtext(ns + 'version') == version, 'Mixed profile dependency version'
     native = profile_api.TARGETS[target][2].lower()
-    engine = {'linux-amd64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu', 'macos-arm64': 'macos-arm64'}[target]
+    engine = publication_policy.ENGINE_COORDINATES[native]
     expected = {m + suffix for m in ['gdal4k', 'gdal4k-runtime'] for suffix in ['', '-jvm', '-' + native]}
-    assert coordinates == expected | {'gdal4k-engine', 'gdal4k-engine-native-' + engine}, coordinates
+    assert coordinates == expected | {'gdal4k-engine', engine}, coordinates
     base = repo / 'dev/tronto/gdal4k'
     production = {}
     for module in ['gdal4k', 'gdal4k-runtime']:
-        current = {str(p.relative_to(snapshot)): sha(p)
+        current = {p.relative_to(snapshot).as_posix(): sha(p)
                    for p in (snapshot / module / 'build/classes/kotlin/jvm/main').rglob('*.class')}
         assert current, 'Missing compiled production classes: ' + module
         jar = base / (module + '-jvm') / version / f'{module}-jvm-{version}.jar'
@@ -67,7 +73,7 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
         assert packaged == current, 'Published classes differ from the current producer: ' + module
         production.update(packaged)
     classifier = profile_api.TARGETS[target][3]
-    library = 'libgdal4k.dylib' if target.startswith('macos') else 'libgdal4k.so'
+    library = profile_api.jni_library(target)
     resource = f'gdal4k/{target}/{library}'
     jar = base / 'gdal4k-engine' / version / f'gdal4k-engine-{version}-{classifier}.jar'
     with zipfile.ZipFile(jar) as archive:
@@ -75,7 +81,7 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
         with archive.open(resource) as file:
             jni_hash = hashlib.file_digest(file, 'sha256').hexdigest()
     assert jni_hash == artifacts['jvm-resources/' + resource]
-    module = 'gdal4k-engine-native-' + engine
+    module = engine
     klib = base / module / version / f'{module}-{version}-cinterop-engine.klib'
     with zipfile.ZipFile(klib) as archive:
         members = [n for n in archive.namelist() if n.endswith('/included/libgdal4k.a')]
@@ -90,6 +96,8 @@ def publication_bindings(snapshot, repo, version, target, artifacts):
 
 def combined_execution_bindings(snapshot, data):
     """Bind command/PID/exit receipts omitted by Darwin's raw time output."""
+    if data['target'] == 'windows-amd64':
+        return windows_execution_bindings(snapshot, data)
     snapshot = snapshot.resolve()
     hosts = {'macos-arm64': ('Darwin', 'arm64', '-l', 'Darwin time -l', 'bytes', 1, 'libgdal4k.dylib'),
              'linux-amd64': ('Linux', 'x86_64', '-v', 'GNU time -v', 'KiB', 1024, 'libgdal4k.so'),
@@ -133,6 +141,356 @@ def combined_execution_bindings(snapshot, data):
         assert execution['command'] == expected, 'Combined time/Java/probe/library command mismatch'
         logs[relative.as_posix()] = record['executionLogSha256']
     return logs
+
+
+def windows_execution_bindings(snapshot, data):
+    """Bind final kernel memory evidence to each exact, directly owned JVM."""
+    windows = profile_api.windows_process_api()
+    assert data['target'] == 'windows-amd64'
+    assert (data['system'], data['machine'].lower()) == ('Windows', 'amd64')
+    assert data['gradleTarget'] == 'MingwX64' and data['classifier'] == 'windows-x64'
+    assert data['osRss'] == windows.OS_RSS, 'Windows kernel RSS collector/unit mismatch'
+    combined = data.get('profile') == 'combined'
+    family = 'combined-driver' if combined else 'http'
+    cp = json.loads((snapshot / f'gdal4k-runtime/build/{family}-memory-classpath.json').read_text(encoding='utf-8'))
+    assert ntpath.isabs(cp['java']) and ntpath.basename(cp['java']).lower() == 'java.exe'
+    settings = ['-Xms32m', '-Xmx1536m', '-XX:+UseG1GC']
+    assert data['settings']['jvm'] == settings
+    library = snapshot / 'gdal4k-engine/build/jvm-resources/gdal4k/windows-amd64/gdal4k.dll'
+    logs, processes = {}, set()
+    for record in data['records']:
+        relative = record['executionLog']
+        command_file = owned_file(snapshot, relative)
+        path = Path(relative)
+        assert path.parts[:3] == ('verification', 'results', family + '-memory')
+        assert path.parent == Path(record['log']).parent == Path(record['rssLog']).parent
+        assert type(record['trial']) is int and relative not in logs
+        stem = str(record['trial']) if combined else f"{record['trial']}-{record['mode']}"
+        assert path.name == stem + '.command.json'
+        assert sha(command_file) == record['executionLogSha256'], 'Windows command receipt changed'
+        execution = json.loads(command_file.read_text(encoding='utf-8'))
+        assert execution == record['execution'], 'Windows embedded command receipt differs'
+        expected = [cp['java'], *settings, '-cp', cp['classpath']]
+        if combined:
+            expected += ['dev.gdal4k.CombinedDriverMemoryProbe', str(library.resolve())]
+        else:
+            assert record['mode'] in ['download-local', 'range']
+            arguments = execution['command'][len(expected):]
+            assert len(arguments) == 6 and re.fullmatch(r'http://127\.0\.0\.1:([1-9][0-9]{0,4})/fixture\.tif', arguments[2])
+            assert 0 < int(arguments[2].split(':')[2].split('/')[0]) < 65536
+            expected += ['dev.gdal4k.HttpMemoryProbe', record['mode'], arguments[2],
+                         str(snapshot / data['fixture']['path']), str(data['settings']['side']), str(library.resolve())]
+        stdout = owned_file(snapshot, record['log'])
+        raw_peak = owned_file(snapshot, record['rssLog'])
+        assert sha(stdout) == record['logSha256'] and sha(raw_peak) == record['rssLogSha256']
+        normalized = windows.validate_execution_record(execution, command=expected, cwd=snapshot,
+            log_sha256=record['logSha256'], peak_record=json.loads(raw_peak.read_text(encoding='utf-8')))
+        assert execution['environmentOverrides'] == {'LC_ALL': 'C'}
+        assert execution['timeoutSeconds'] == (600 if combined else 300)
+        assert normalized['peakWorkingSetSizeBytes'] == record['peakRssBytes'], 'Windows reported peak differs from kernel receipt'
+        identity = normalized['windowsProcess']
+        process = (identity['pid'], identity['creationTime100ns'])
+        assert process not in processes, 'Diagnostic reused a JVM process identity'
+        processes.add(process)
+        logs[relative] = record['executionLogSha256']
+    return logs
+
+
+def windows_vcpkg_git_bindings(snapshot):
+    """Match the configuration receipt to the actual owned, pinned Git clone."""
+    path = owned_file(snapshot, 'verification/results/windows-vcpkg-git.json')
+    recorded = json.loads(path.read_text(encoding='utf-8'))
+    actual = profile_api.windows_vcpkg_git_identity(snapshot)
+    assert recorded == actual, 'Windows private vcpkg Git configuration differs from its receipt'
+    return dict(receiptPath=path.relative_to(snapshot).as_posix(), receiptSha256=sha(path), identity=actual)
+
+
+def windows_tls_tool_identity():
+    """Read the current CI generator identity, without running certificate generation."""
+    import importlib.metadata
+    modules = {}
+    for name in ['cryptography.hazmat.bindings._rust', '_cffi_backend', 'pycparser']:
+        path = Path(importlib.util.find_spec(name).origin)
+        modules[name] = dict(filename=path.name, bytes=path.stat().st_size, sha256=sha(path))
+    return dict(versions={name: importlib.metadata.version(name) for name in ['cryptography', 'cffi', 'pycparser']},
+                python=dict(version=sys.version, executable=Path(sys.executable).name, sha256=sha(Path(sys.executable))),
+                actualInstalledModules=modules)
+
+
+def windows_tls_fixture_bindings(snapshot, evidence):
+    """Require the actual pinned generator and protected-key public receipts."""
+    source_names = ['verification/driver-profile/http-fixture.py', 'verification/windows_process.py',
+                    'verification/fixtures/windows-tls-generator-lock.json',
+                    'verification/driver-profile/windows-tls-requirements.txt']
+    source_hashes = {name: sha(owned_file(snapshot, name)) for name in source_names}
+    assert all(source_hashes[name] == sha(ROOT / name) for name in source_names), 'Windows TLS source/lock changed'
+    lock_name = 'verification/fixtures/windows-tls-generator-lock.json'
+    lock = json.loads((snapshot / lock_name).read_text(encoding='utf-8'))
+    assert lock['schemaVersion'] == 1 and set(lock['packages']) == {'cryptography', 'cffi', 'pycparser'}
+    tool_path = owned_file(evidence, 'certificate-tool.json')
+    tool = json.loads(tool_path.read_text(encoding='utf-8'))
+    assert tool['schemaVersion'] == 1 and tool['tool'] == 'pyca/cryptography'
+    assert tool['lockSha256'] == source_hashes[lock_name], 'Windows TLS generator lock differs'
+    assert tool['versions'] == {name: value['version'] for name, value in lock['packages'].items()}
+    current = windows_tls_tool_identity()
+    assert all(tool[name] == current[name] for name in ['versions', 'python', 'actualInstalledModules']), \
+        'Windows TLS generator differs from actual current CI tools'
+    assert set(tool['actualInstalledModules']) == {'cryptography.hazmat.bindings._rust', '_cffi_backend', 'pycparser'}
+    for item in tool['actualInstalledModules'].values():
+        assert Path(item['filename']).name == item['filename'] and type(item['bytes']) is int and item['bytes'] > 0
+        assert re.fullmatch(r'[0-9a-f]{64}', item['sha256'])
+    names = {'ca': ('gdal4k-fixture-ca', True, False), 'trusted': ('localhost', False, True),
+             'untrusted': ('localhost', False, False), 'wrong-name': ('wrong.invalid', False, True),
+             'revoked': ('localhost', False, True)}
+    assert {p.name for p in evidence.glob('*-generator.json')} == {name + '-generator.json' for name in names}
+    assert {p.name for p in evidence.glob('*.crt')} == {name + '.crt' for name in names}
+    assert not list(evidence.glob('*.key')), 'Private TLS keys must stay outside public profile evidence'
+    windows = profile_api.windows_process_api()
+    records, public = {}, {}
+    for name, (hostname, ca, trusted) in names.items():
+        path = owned_file(evidence, name + '-generator.json')
+        record = json.loads(path.read_text(encoding='utf-8'))
+        cert = owned_file(evidence, name + '.crt')
+        assert record['name'] == name and record['certificateSha256'] == sha(cert), 'Windows TLS public certificate changed'
+        assert record['subject'] == 'CN=' + hostname
+        assert record['issuer'] == 'CN=' + ('gdal4k-fixture-ca' if trusted else hostname)
+        assert record['san'] == [hostname] + (['127.0.0.1'] if hostname == 'localhost' else [])
+        assert record['ca'] is ca and record['trustedIssuerProvided'] is trusted
+        windows.validate_private_acl(record['privateKeyAcl'], False)
+        public[name] = record
+        records[name] = dict(generatorSha256=sha(path), certificateSha256=sha(cert), privateKeyAcl=record['privateKeyAcl'])
+    revocation = windows_revocation_bindings(evidence, public, tool, source_hashes[source_names[0]])
+    return dict(sourceSha256=source_hashes, toolReceiptSha256=sha(tool_path), generatorIdentity=current,
+                certificates=records, revocation=revocation,
+                scope='Current pinned Windows CI certificate generator versions/installed-module identities and actual public certificate hashes; '
+                      'protected private-key DACL receipts only, no private keys uploaded. Original installed generator module bytes are not uploaded; '
+                      'TLS trust/hostname/negative behavior requires the separate actual JVM/Native fixtures.')
+
+
+def windows_revocation_bindings(evidence, generators, tool, server_source_sha):
+    """Parse retained public bytes; generator/signatureVerified assertions are not proof."""
+    import ipaddress
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID, SignatureAlgorithmOID
+    path = owned_file(evidence, 'revocation-fixture.json')
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    assert set(manifest) == {'schemaVersion', 'crl', 'certificates', 'server', 'serverSourceSha256'}
+    assert manifest['schemaVersion'] == 1 and manifest['certificates'] == generators
+    assert manifest['serverSourceSha256'] == server_source_sha, 'CRL server source changed'
+    server, info = manifest['server'], manifest['crl']
+    assert set(server) == {'host', 'port', 'owner', 'maxBodyBytes', 'maxConnections', 'connectionDeadlineSeconds', 'maxRecordedRequests'}
+    assert server['host'] == '127.0.0.1' and type(server['port']) is int and 0 < server['port'] < 65536
+    assert [server[k] for k in ['maxBodyBytes', 'maxConnections', 'connectionDeadlineSeconds', 'maxRecordedRequests']] == [16384, 4, 2, 128]
+    owner = server['owner']
+    assert set(owner) == {'pid', 'creationTime100ns', 'imagePath'}
+    assert type(owner['pid']) is int and owner['pid'] > 0 and type(owner['creationTime100ns']) is int and owner['creationTime100ns'] > 0
+    assert ntpath.isabs(owner['imagePath']) and ntpath.basename(owner['imagePath']) == tool['python']['executable']
+    endpoint = urlsplit(info['url'])
+    assert (endpoint.scheme, endpoint.hostname, endpoint.port) == ('http', server['host'], server['port'])
+    assert endpoint.netloc == f"127.0.0.1:{server['port']}" and not endpoint.query and not endpoint.fragment
+    assert re.fullmatch(r'/crl/[0-9a-f]{32}/fixture-ca\.crl', endpoint.path), 'CRL endpoint is not the bounded owned route'
+    assert info['file'] == 'fixture-ca.crl'
+    crl_path = owned_file(evidence, info['file'])
+    raw = crl_path.read_bytes()
+    assert 0 < len(raw) <= 16384 and info['bytes'] == len(raw) and info['sha256'] == sha(crl_path), 'Actual CRL bytes changed'
+    crl = x509.load_der_x509_crl(raw)
+    assert crl.public_bytes(serialization.Encoding.DER) == raw, 'CRL must be one complete DER object'
+    certs = {name: x509.load_pem_x509_certificate(owned_file(evidence, name + '.crt').read_bytes()) for name in generators}
+    ca = certs['ca']
+    now = datetime.datetime.now(datetime.timezone.utc)
+    assert len({cert.serial_number for cert in certs.values()}) == 5, 'Certificate serials must be distinct'
+    assert len({cert.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+                for cert in certs.values()}) == 5, 'Fixture certificate keys must be distinct'
+    for name, cert in certs.items():
+        record = generators[name]
+        assert set(record) == {'name', 'subject', 'issuer', 'certificateSha256', 'privateKeyAcl', 'san', 'ca',
+                               'trustedIssuerProvided', 'serialHex', 'crlDistributionPoint'}
+        assert cert.public_bytes(serialization.Encoding.PEM) == owned_file(evidence, name + '.crt').read_bytes()
+        leaf_key = cert.public_key()
+        assert isinstance(leaf_key, rsa.RSAPublicKey) and leaf_key.key_size == 2048 and leaf_key.public_numbers().e == 65537
+        issuer = cert if name == 'untrusted' else ca
+        key = issuer.public_key()
+        assert isinstance(key, rsa.RSAPublicKey) and key.key_size == 2048 and key.public_numbers().e == 65537
+        assert cert.signature_algorithm_oid == SignatureAlgorithmOID.RSA_WITH_SHA256
+        key.verify(cert.signature, cert.tbs_certificate_bytes, padding.PKCS1v15(), cert.signature_hash_algorithm)
+        assert cert.subject.rfc4514_string() == record['subject'] and cert.issuer == issuer.subject
+        assert cert.issuer.rfc4514_string() == record['issuer'] and record['serialHex'] == format(cert.serial_number, 'x')
+        assert cert.not_valid_before_utc <= now < cert.not_valid_after_utc
+        assert datetime.timedelta(0) < cert.not_valid_after_utc - cert.not_valid_before_utc <= datetime.timedelta(days=3)
+        expected_san = [x509.DNSName(record['subject'][3:])]
+        if name in ['trusted', 'untrusted', 'revoked']:
+            expected_san.append(x509.IPAddress(ipaddress.ip_address('127.0.0.1')))
+        assert list(cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value) == expected_san, 'Actual certificate SAN differs'
+        is_ca = name == 'ca'
+        constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+        assert constraints.critical and constraints.value == x509.BasicConstraints(is_ca, None)
+        usage = cert.extensions.get_extension_for_class(x509.KeyUsage)
+        assert usage.critical and usage.value.public_bytes() == x509.KeyUsage(not is_ca, False, not is_ca, False, False, is_ca, is_ca, None, None).public_bytes()
+        assert cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value == x509.SubjectKeyIdentifier.from_public_key(cert.public_key())
+        assert cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value == x509.AuthorityKeyIdentifier.from_issuer_public_key(key)
+        expected_oids = {ExtensionOID.SUBJECT_ALTERNATIVE_NAME, ExtensionOID.BASIC_CONSTRAINTS,
+                         ExtensionOID.KEY_USAGE, ExtensionOID.SUBJECT_KEY_IDENTIFIER, ExtensionOID.AUTHORITY_KEY_IDENTIFIER}
+        if not is_ca:
+            assert list(cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value) == [ExtendedKeyUsageOID.SERVER_AUTH]
+            expected_oids.add(ExtensionOID.EXTENDED_KEY_USAGE)
+        if name == 'untrusted':
+            assert record['crlDistributionPoint'] is None
+        else:
+            points = cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value
+            assert len(points) == 1 and list(points[0].full_name) == [x509.UniformResourceIdentifier(info['url'])]
+            assert points[0].relative_name is None and points[0].reasons is None and points[0].crl_issuer is None
+            assert record['crlDistributionPoint'] == info['url'], 'Actual certificate CRL distribution point differs'
+            expected_oids.add(ExtensionOID.CRL_DISTRIBUTION_POINTS)
+        assert {ext.oid for ext in cert.extensions} == expected_oids
+    assert set(info) == {'file', 'url', 'bytes', 'sha256', 'issuer', 'thisUpdateUtc', 'nextUpdateUtc', 'number',
+                         'authorityKeyIdentifierHex', 'revokedSerialHex', 'signatureAlgorithm', 'signatureVerified'}
+    assert crl.issuer == ca.subject and info['issuer'] == crl.issuer.rfc4514_string()
+    assert crl.signature_algorithm_oid == SignatureAlgorithmOID.RSA_WITH_SHA256
+    assert info['signatureAlgorithm'] == crl.signature_algorithm_oid.dotted_string
+    assert crl.is_signature_valid(ca.public_key()), 'Actual CRL signature differs'
+    assert info['signatureVerified'] is True
+    assert info['thisUpdateUtc'] == crl.last_update_utc.isoformat() and info['nextUpdateUtc'] == crl.next_update_utc.isoformat()
+    assert crl.last_update_utc <= now < crl.next_update_utc and crl.next_update_utc - crl.last_update_utc <= datetime.timedelta(days=2), 'Actual CRL validity differs'
+    assert crl.last_update_utc >= ca.not_valid_before_utc and crl.next_update_utc <= ca.not_valid_after_utc
+    assert type(info['number']) is int and info['number'] == crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number == 1
+    aki = crl.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value
+    assert aki == x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.public_key()) and info['authorityKeyIdentifierHex'] == aki.key_identifier.hex()
+    assert {ext.oid for ext in crl.extensions} == {ExtensionOID.AUTHORITY_KEY_IDENTIFIER, ExtensionOID.CRL_NUMBER}
+    assert len(crl) == 1 and crl[0].serial_number == certs['revoked'].serial_number
+    assert info['revokedSerialHex'] == [format(crl[0].serial_number, 'x')], 'Actual revoked serial differs'
+    assert certs['revoked'].not_valid_before_utc <= crl[0].revocation_date_utc <= crl.last_update_utc
+    assert len(crl[0].extensions) == 1 and crl[0].extensions.get_extension_for_class(x509.CRLReason).value.reason == x509.ReasonFlags.key_compromise
+    cleanup_path = owned_file(evidence, 'revocation-cleanup.json')
+    cleanup = json.loads(cleanup_path.read_text(encoding='utf-8'))
+    assert set(cleanup) == {'crlListenerClosed', 'crlServerThreadStopped', 'tlsListenersClosed', 'tlsServerThreadsStopped'} and all(v is True for v in cleanup.values()), 'Owned TLS/CRL servers did not finalize cleanup'
+    requests_path = owned_file(evidence, 'crl-requests.json')
+    requests = json.loads(requests_path.read_text(encoding='utf-8'))
+    assert 0 < len(requests) <= 128 and all(set(r) <= {'method', 'pathKind', 'status', 'bodyBytes', 'writeIncomplete'} for r in requests)
+    for request in requests:
+        assert request['method'] in ['GET', 'HEAD', 'POST'] and request['pathKind'] in ['public-crl', 'other']
+        assert type(request['status']) is int and request['status'] in [200, 404, 405, 503]
+        assert type(request['bodyBytes']) is int and 0 <= request['bodyBytes'] <= len(raw)
+        assert 'writeIncomplete' not in request or request['writeIncomplete'] is True
+        if request['status'] == 200:
+            assert request['pathKind'] == 'public-crl' and request['method'] in ['GET', 'HEAD']
+        elif request['status'] == 404:
+            assert request['pathKind'] == 'other' and request['method'] in ['GET', 'HEAD']
+        elif request['status'] == 405:
+            assert request['method'] == 'POST'
+        if request['status'] != 200 or request['method'] != 'GET':
+            assert request['bodyBytes'] == 0
+    assert any(r == dict(method='GET', pathKind='public-crl', status=200, bodyBytes=len(raw)) for r in requests), 'No complete actual CRL GET'
+    revoked_requests = owned_file(evidence, 'revoked-requests.json')
+    assert json.loads(revoked_requests.read_text(encoding='utf-8')) == [], 'Revoked TLS reached HTTP'
+    return dict(manifestSha256=sha(path), crlSha256=sha(crl_path), certificatesCryptographicallyVerified=sorted(certs),
+                revokedSerialHex=info['revokedSerialHex'], crlRequestsSha256=sha(requests_path),
+                revokedRequestsSha256=sha(revoked_requests), finalizedCleanupSha256=sha(cleanup_path),
+                serverOwner=owner, originalCrlUrl=info['url'])
+
+
+def windows_native_tls_control_bindings(snapshot, evidence, fixture, engine_fingerprint):
+    """Bind both real early commands to retained source, PE, raw output and requests."""
+    directory = 'verification/results/native-http-tls-controls/'
+    result_path = owned_file(snapshot, directory + 'result.json')
+    value = json.loads(result_path.read_text(encoding='utf-8'))
+    assert set(value) == {'schemaVersion', 'target', 'result', 'sourceSha256', 'engineManifest', 'engineFingerprint',
+                          'probe', 'windowsDependencyAudit', 'fixtureManifestSha256', 'controls'}
+    assert (value['schemaVersion'], value['target'], value['result']) == (1, 'windows-amd64', 'passed')
+    source_names = ['gdal4k-engine/tools/driver-profile.py', 'gdal4k/native/http-cache-probe.cpp',
+                    'gdal4k/native/http-inputs.hpp', 'verification/command_evidence.py', 'verification/windows_process.py']
+    assert set(value['sourceSha256']) == set(source_names)
+    assert all(value['sourceSha256'][name] == sha(owned_file(snapshot, name)) == sha(ROOT / name) for name in source_names), 'Early TLS control source changed'
+    def reference(item, expected):
+        assert set(item) == {'path', 'sha256'} and item['path'] == expected
+        path = owned_file(snapshot, expected)
+        assert item['sha256'] == sha(path), 'Early TLS control retained bytes changed'
+        return path
+    manifest = reference(value['engineManifest'], 'gdal4k-engine/build/engine/windows-amd64/manifest.json')
+    engine = json.loads(manifest.read_text(encoding='utf-8'))
+    assert engine['target'] == 'windows-amd64' and engine['source_fingerprint'] == value['engineFingerprint'] == engine_fingerprint
+    assert engine['artifacts'] and all(sha(owned_file(snapshot / 'gdal4k-engine/build', name)) == digest for name, digest in engine['artifacts'].items()), 'Early TLS engine artifact changed'
+    probe = reference(value['probe'], 'gdal4k-engine/build/engine/windows-amd64/cmake/gdal4k_http_probe.exe')
+    reference(value['windowsDependencyAudit'], 'verification/results/native-http-cache-probe-pe.json')
+    pe = windows_probe_bindings(snapshot, value['windowsDependencyAudit'], probe)
+    assert value['fixtureManifestSha256'] == sha(owned_file(evidence, 'revocation-fixture.json'))
+    revocation = json.loads((evidence / 'revocation-fixture.json').read_text(encoding='utf-8'))
+    assert fixture['windowsRevocation']['crlUrl'] == revocation['crl']['url']
+    assert set(value['controls']) == {'trusted', 'revoked'}
+    controls = {}
+    for name, base, code in [('trusted', fixture['urls']['https'], 0), ('revoked', fixture['windowsRevocation']['revokedBase'], 1)]:
+        endpoint = urlsplit(base)
+        assert endpoint.scheme == 'https' and endpoint.netloc == f'127.0.0.1:{endpoint.port}' and not endpoint.path and not endpoint.query and not endpoint.fragment
+        key = 'native-tls-' + name
+        url = base + '/cache/' + key + '/fixture.tif'
+        control = value['controls'][name]
+        assert set(control) == {'url', 'requestKey', 'commandRecord', 'log', 'expectedReturncode', 'nativeResult' if code == 0 else 'schannelReason'}
+        assert type(control['expectedReturncode']) is int and (control['url'], control['requestKey'], control['expectedReturncode']) == (url, key, code)
+        command_path = reference(control['commandRecord'], directory + name + '.json')
+        log_path = reference(control['log'], directory + name + '.log')
+        record, raw = json.loads(command_path.read_text(encoding='utf-8')), log_path.read_bytes()
+        assert record['log'] == log_path.name, 'TLS command record names a different retained log'
+        profile_api.validate_windows_tls_control_record(record, command=[str(probe), url, '--tls-only'], cwd=snapshot, log_bytes=raw, expected_code=code)
+        assert record['ownership']['assignedBeforeResume'] is True and record['ownership']['killOnClose'] is True
+        assert type(record['cleanup']['activeProcessesAfter']) is int and record['cleanup']['activeProcessesAfter'] == 0
+        assert record['cleanup']['jobClosed'] is True and record['cleanup']['forcedTreeTermination'] is False
+        assert record['windowsProcess']['pid'] != revocation['server']['owner']['pid']
+        start = datetime.datetime.fromisoformat(record['startedAtUtc'])
+        end = datetime.datetime.fromisoformat(record['completedAtUtc'])
+        duration = (end - start).total_seconds()
+        assert type(record['elapsedSeconds']) in (int, float) and 0 < duration <= 32
+        assert abs(duration - record['elapsedSeconds']) <= 1, 'TLS command wall and monotonic elapsed times differ'
+        assert (datetime.datetime.fromisoformat(revocation['crl']['thisUpdateUtc']) <= start <= end <
+                datetime.datetime.fromisoformat(revocation['crl']['nextUpdateUtc'])), 'TLS controls outside CRL validity'
+        if code == 0:
+            native = json.loads(raw)
+            expected = dict(result='passed', mode='tls-control', fileBytes=fixture['imageBytes'], headerBytes=16,
+                            tiffHeaderVerified=True, vsiDispatchVerified=True, registryReleaseVerified=True)
+            assert native == control['nativeResult'] == expected, 'Trusted control did not retain actual TIFF/registry output'
+            assert type(native['fileBytes']) is int and type(native['headerBytes']) is int
+            assert all(native[field] is True for field in ['tiffHeaderVerified', 'vsiDispatchVerified', 'registryReleaseVerified'])
+        else:
+            text = raw.decode('utf-8')
+            assert '[curl=60,' in text and 'schannelReason=revoked]' in text and control['schannelReason'] == 'revoked'
+            assert not any(token in text for token in ['https://', 'http://', 'schannel:']), 'Revoked TLS diagnostic leaked endpoint or native text'
+        controls[name] = dict(commandSha256=sha(command_path), logSha256=sha(log_path), windowsProcess=record['windowsProcess'],
+                              cleanup=record['cleanup'], startedAtUtc=record['startedAtUtc'], completedAtUtc=record['completedAtUtc'])
+    assert controls['trusted']['windowsProcess'] != controls['revoked']['windowsProcess']
+    assert (datetime.datetime.fromisoformat(controls['trusted']['completedAtUtc']) <=
+            datetime.datetime.fromisoformat(controls['revoked']['startedAtUtc']))
+    requests = json.loads(owned_file(evidence, 'https-requests.json').read_text(encoding='utf-8'))
+    early = [r for r in requests if r['key'] == 'native-tls-trusted']
+    assert early and all(r['case'] == 'cache' and r['name'] == 'fixture.tif' and r['status'] == 206 for r in early)
+    for request in early:
+        match = re.fullmatch(r'bytes=(\d+)-(\d+)', request['range'])
+        assert match and 0 <= int(match[1]) <= int(match[2]) < fixture['imageBytes']
+        assert 0 < request['requestedBytes'] == request['bodyBytes'] == int(match[2]) - int(match[1]) + 1 <= 65536
+    assert not any(r['key'] == 'native-tls-revoked' for r in requests)
+    return dict(resultSha256=sha(result_path), currentSourceSha256=value['sourceSha256'], controls=controls,
+                probeBindings=pe, trustedRequestKey='native-tls-trusted', trustedRequests=early,
+                scope='Actual retained early native command output and owned Job cleanup, public certificate/CRL bytes and finalized server requests; Windows execution requires fresh CI evidence')
+
+
+def windows_probe_bindings(snapshot, reference, program):
+    """Recheck retained actual probe bytes and the unchanged shared DLL policy."""
+    path = owned_file(snapshot, reference['path'])
+    assert sha(path) == reference['sha256'], 'Windows probe dependency receipt changed'
+    value = json.loads(path.read_text(encoding='utf-8'))
+    assert (value['schemaVersion'], value['target'], value['result']) == (1, 'windows-amd64', 'passed')
+    assert value['executablePath'] == program.relative_to(snapshot).as_posix()
+    assert value['executableBytes'] == program.stat().st_size and value['executableSha256'] == sha(program)
+    assert value['inspectorSourcePath'] == 'verification/windows_pe.py'
+    assert value['inspectorSourceSha256'] == sha(owned_file(snapshot, value['inspectorSourcePath'])) == sha(ROOT / value['inspectorSourcePath'])
+    inspector = profile_api.windows_pe_api(snapshot)
+    inspector._owned(snapshot, program)
+    inspector._owned(snapshot, path)
+    assert value['systemDLLs'] == sorted(inspector.SYSTEM_DLLS) and value['systemPrefixes'] == list(inspector.SYSTEM_PREFIXES)
+    assert value['pe'] == inspector.inspect(program.read_bytes()), 'Windows probe PE import bytes changed'
+    inspector.validate_system_dependencies(value['pe']['imports']['all'])
+    return dict(receiptPath=reference['path'], receiptSha256=reference['sha256'], executableSha256=value['executableSha256'],
+                inspectorSourceSha256=value['inspectorSourceSha256'], pe=value['pe'],
+                scope='Actual standalone PE32+ AMD64 bytes; regular and delay imports satisfy the unchanged JNI system-DLL policy')
 
 
 def arm64_api():
@@ -337,6 +695,14 @@ def postgis_arm64_fixture_bindings(snapshot, target):
     return api.bindings(snapshot, target)
 
 
+def postgis_windows_fixture_bindings(snapshot, target):
+    assert target == 'windows-amd64'
+    spec = importlib.util.spec_from_file_location('windows_postgis_report', ROOT / 'verification/driver-profile/postgis-windows-report.py')
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+    return api.bindings(snapshot, target)
+
+
 def arm64_ipc_bindings(snapshot, ipc):
     """Require the actual ARM execution and the unchanged cross-build receipt."""
     build_path = snapshot / 'verification/results/arrow-ipc-build-linux-arm64.json'
@@ -376,6 +742,9 @@ def diagnostic_bindings(snapshot, data, measured, publication):
     assert data['engineManifestSha256'] == sha(manifest), 'Diagnostic manifest changed'
     assert data['compiledProductionSha256'] == publication['compiledProductionSha256'], 'Diagnostic/package class mismatch'
     assert data['compiledProbeSha256'] and data['sourceSha256']
+    if data['target'] == 'windows-amd64':
+        assert {'verification/windows_process.py', 'verification/command_evidence.py'} <= set(data['sourceSha256']), \
+            'Windows kernel collector source bindings are incomplete'
     for name, digest in {**data['compiledProbeSha256'], **data['sourceSha256']}.items():
         assert sha(snapshot / name) == digest, 'Diagnostic source/probe changed: ' + name
     for record in data['records']:
@@ -385,6 +754,8 @@ def diagnostic_bindings(snapshot, data, measured, publication):
                     productionClassCount=len(data['compiledProductionSha256']))
     if data.get('profile') == 'combined':
         bindings['executionLogSha256'] = combined_execution_bindings(snapshot, data)
+    elif data['target'] == 'windows-amd64':
+        bindings['executionLogSha256'] = windows_execution_bindings(snapshot, data)
     return bindings
 
 
@@ -557,7 +928,7 @@ def combined_request_bindings(records, tls, policy_keys, diagnostics):
 def main():
     snapshot, profile, target = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
     output = snapshot.parent
-    identity = json.loads((output / 'inputs.json').read_text())
+    identity = json.loads((output / 'inputs.json').read_text(encoding='utf-8'))
     assert identity['profile'] == profile and identity['target'] == target
     arm_runtime = target == 'linux-arm64'
     restored = None
@@ -568,14 +939,15 @@ def main():
         configuration = json.loads((snapshot / 'verification/results/arm64-runtime-configuration.json').read_text(encoding='utf-8'))
         for label in ['source', 'consumer']:
             native_runtime[label] = arm64_native_bindings(snapshot, label, configuration, restored)
-    for name, digest in json.loads((output / 'prepared.json').read_text()).items():
+    for name, digest in json.loads((output / 'prepared.json').read_text(encoding='utf-8')).items():
         assert sha(snapshot / name) == digest, 'Prepared source changed during profile verification: ' + name
     version = identity['version']
-    binary_name = 'libgdal4k.dylib' if target.startswith('macos') else 'libgdal4k.so'
+    windows_vcpkg = windows_vcpkg_git_bindings(snapshot) if target == 'windows-amd64' else None
+    binary_name = profile_api.jni_library(target)
     measurements = {}
     for name, root in [('default', ROOT), ('profile', snapshot)]:
         build = root / 'gdal4k-engine/build'
-        manifest = json.loads((build / f'engine/{target}/manifest.json').read_text())
+        manifest = json.loads((build / f'engine/{target}/manifest.json').read_text(encoding='utf-8'))
         for path, expected in manifest['artifacts'].items():
             assert sha(build / path) == expected, path
         sizes = {}
@@ -588,6 +960,8 @@ def main():
     postgis_fixture = None
     if target == 'macos-arm64' and has_capability(profile, 'postgresql'):
         postgis_fixture = postgis_fixture_bindings(snapshot, target)
+    elif target == 'windows-amd64' and has_capability(profile, 'postgresql'):
+        postgis_fixture = postgis_windows_fixture_bindings(snapshot, target)
     elif arm_runtime and has_capability(profile, 'postgresql'):
         postgis_fixture = postgis_arm64_fixture_bindings(snapshot, target)
     repo = snapshot / 'verification/build/consumer-maven'
@@ -595,10 +969,12 @@ def main():
     proof = {}
     http_test_contexts = {}
     fixture_contexts = {}
+    native_target = profile_api.TARGETS[target][2]
+    native_target = native_target[0].lower() + native_target[1:]
     for name, path in [('sourceJvm', snapshot / 'gdal4k-runtime/build/test-results/jvmTest'),
-                       ('sourceNative', snapshot / ('gdal4k-runtime/build/test-results/' + ('macosArm64Test' if target.startswith('macos') else 'linuxX64Test'))),
+                       ('sourceNative', snapshot / ('gdal4k-runtime/build/test-results/' + native_target + 'Test')),
                        ('consumerJvm', snapshot / 'verification/results/published-consumer-jvm'),
-                       ('consumerNative', snapshot / ('verification/results/published-consumer-' + ('macosArm64' if target.startswith('macos') else 'linuxX64')))]:
+                       ('consumerNative', snapshot / ('verification/results/published-consumer-' + native_target))]:
         if arm_runtime and name.endswith('Native'):
             actual = native_runtime['source' if name == 'sourceNative' else 'consumer']['counts']
             proof[name] = {key: actual[key] for key in ['tests', 'failures', 'errors', 'skipped']}
@@ -618,12 +994,12 @@ def main():
             cases = [c.get('name') for p in xml for c in ET.parse(p).getroot().iter('testcase') if 'NativeHttpProfileTest' in c.get('classname', '')]
             assert len(cases) == 10 and len(set(cases)) == 10, (name, cases)
             http_test_contexts[name] = cases
-    for name in ['jvm'] + ([] if arm_runtime else ['macosArm64' if target.startswith('macos') else 'linuxX64']):
-        result = json.loads((snapshot / f'verification/results/published-consumer-{name}/result.json').read_text())
+    for name in ['jvm'] + ([] if arm_runtime else [native_target]):
+        result = json.loads((snapshot / f'verification/results/published-consumer-{name}/result.json').read_text(encoding='utf-8'))
         assert result['result'] == 'passed' and not result['compiled_only'] and result['version'] == version
         if name != 'jvm':
             assert result['producer_paths_hidden']
-    audit = json.loads((snapshot / f'verification/results/engine-audit-{target}.json').read_text())
+    audit = json.loads((snapshot / f'verification/results/engine-audit-{target}.json').read_text(encoding='utf-8'))
     assert audit['result'] == 'passed'
     scientific_fixture = None
     if has_capability(profile, 'scientific'):
@@ -634,22 +1010,26 @@ def main():
             values = fixture['values']
             assert values.shape == (2, 2) and values.dtype.kind == 'i' and values.dtype.itemsize == 2
             assert values[:].tolist() == [[1, 2], [3, 4]]
-        scientific_fixture = dict(path=str(path.relative_to(snapshot)), bytes=path.stat().st_size,
+        scientific_fixture = dict(path=path.relative_to(snapshot).as_posix(), bytes=path.stat().st_size,
                                   sha256=sha(path), shape=[2, 2], type='Int16', values=[[1, 2], [3, 4]])
     ipc = None
     if has_capability(profile, 'parquet'):
-        ipc = json.loads((snapshot / 'verification/results/arrow-ipc-regression.json').read_text())
+        ipc = json.loads((snapshot / 'verification/results/arrow-ipc-regression.json').read_text(encoding='utf-8'))
         assert ipc['result'] == 'passed' and ipc['target'] == target
         assert ipc['archiveSha256'] == sha(snapshot / f'gdal4k-engine/build/engine/{target}/libgdal4k.a')
         assert ipc['sourceSha256'] == sha(snapshot / 'verification/driver-profile/arrow-ipc-check.cpp')
         assert ipc['stdout'].strip() == 'GDAL4K_ARROW_IPC_VARIADIC_PREFETCH_OK'
         if arm_runtime:
             ipc['stagedExecutionBindings'] = arm64_ipc_bindings(snapshot, ipc)
+        elif target == 'windows-amd64':
+            assert ipc['windowsDependencyAudit']['path'] == 'verification/results/arrow-ipc-probe-pe.json'
+            ipc['windowsDependencyBindings'] = windows_probe_bindings(snapshot, ipc['windowsDependencyAudit'],
+                snapshot / 'verification/build/arrow-ipc-regression/arrow-ipc-check.exe')
     combined = None
     combined_diagnostics = None
     if profile == 'combined':
         diagnostics = snapshot / f'verification/results/combined-driver-memory-{target}.json'
-        combined_diagnostics = json.loads(diagnostics.read_text())
+        combined_diagnostics = json.loads(diagnostics.read_text(encoding='utf-8'))
         assert combined_diagnostics['result'] == 'passed' and combined_diagnostics['profile'] == profile
         assert combined_diagnostics['target'] == target and combined_diagnostics['version'] == version
         assert combined_diagnostics['settings']['trials'] == 3 and combined_diagnostics['settings']['rounds'] == 3
@@ -663,7 +1043,7 @@ def main():
         for record in combined_diagnostics['records']:
             assert record['rounds'] == record['completedRounds'] == 3
             assert all(record[key] > 0 for key in ['elapsedNanos', 'jvmAllocatedBytes', 'sampledPeakHeapUsedBytes', 'peakRssBytes'])
-            stdout = (snapshot / record['log']).read_text()
+            stdout = (snapshot / record['log']).read_text(encoding='utf-8')
             raw = re.findall(r'^GDAL4K_COMBINED_DRIVER_MEMORY (.+)$', stdout, re.M)
             assert len(raw) == 1 and all(record[key] == value for key, value in json.loads(raw[0]).items())
         for key, value in combined_diagnostics['median'].items():
@@ -677,24 +1057,31 @@ def main():
         for required in ['DriverProfileRuntimeFixture.class', 'DriverProfileRuntimeFixtureKt.class',
                          'DriverProfileRuntimeFixtureJvmKt.class']:
             assert any(p.name == required for p in fixture_classes), 'Missing actual test runtime configuration class: ' + required
-        assert all(bindings['compiledProbeSha256'].get(str(path.relative_to(snapshot))) == sha(path)
+        assert all(bindings['compiledProbeSha256'].get(path.relative_to(snapshot).as_posix()) == sha(path)
                    for path in fixture_classes), 'Combined diagnostic receipt omitted or changed a fixture helper class'
         combined = dict(diagnosticsSha256=sha(diagnostics), currentBindings=bindings,
                         sameProcessFixtureContexts=fixture_contexts, generatedFixtureSourceSha256=sha(generated_test),
-                        actualFixtureClassSha256={str(p.relative_to(snapshot)): sha(p) for p in fixture_classes},
+                        actualFixtureClassSha256={p.relative_to(snapshot).as_posix(): sha(p) for p in fixture_classes},
                         diagnosticRecords=combined_diagnostics['records'], median=combined_diagnostics['median'],
                         scope=combined_diagnostics['scope'])
     http = None
     if has_capability(profile, 'http'):
         evidence = snapshot / 'verification/results/native-http-profile'
-        fixture = json.loads((evidence / 'fixture.json').read_text())
+        fixture = json.loads((evidence / 'fixture.json').read_text(encoding='utf-8'))
         assert fixture['serverSourceSha256'] == sha(ROOT / 'verification/driver-profile/http-fixture.py')
+        tls_generator = windows_tls_fixture_bindings(snapshot, evidence) if target == 'windows-amd64' else None
+        tls_controls = (windows_native_tls_control_bindings(snapshot, evidence, fixture, measurements['profile']['fingerprint'])
+                        if target == 'windows-amd64' else None)
         assert fixture['testSourceSha256'] == sha(snapshot / 'gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt')
-        records = json.loads((evidence / 'http-requests.json').read_text())
-        cache = json.loads((snapshot / 'verification/results/native-http-cache-check.json').read_text())
+        records = json.loads((evidence / 'http-requests.json').read_text(encoding='utf-8'))
+        cache = json.loads((snapshot / 'verification/results/native-http-cache-check.json').read_text(encoding='utf-8'))
         assert cache['result'] == 'passed' and cache['vsiDispatchVerified'] and cache['evictionReloadAndRegistryReleaseVerified']
         assert cache['sourceSha256'] == sha(snapshot / 'gdal4k/native/http-cache-probe.cpp')
-        assert cache['probeSha256'] == sha(snapshot / f'gdal4k-engine/build/engine/{target}/cmake/gdal4k_http_probe')
+        assert cache['probeSha256'] == sha(snapshot / 'gdal4k-engine/build/engine' / target / 'cmake' / profile_api.cache_probe(target))
+        if target == 'windows-amd64':
+            assert cache['windowsDependencyAudit']['path'] == 'verification/results/native-http-cache-probe-pe.json'
+            cache['windowsDependencyBindings'] = windows_probe_bindings(snapshot, cache['windowsDependencyAudit'],
+                snapshot / 'gdal4k-engine/build/engine/windows-amd64/cmake/gdal4k_http_probe.exe')
         assert 0 < cache['peakCachedBytes'] <= cache['cacheLimitBytes'] == 8388608
         assert cache['chunkLimitBytes'] == 65536
         assert cache['checksum'] == fixture['imageChecksum'] and cache['fileBytes'] == fixture['imageBytes']
@@ -714,8 +1101,9 @@ def main():
                 assert max(r['requestedBytes'] for r in case(name)) <= 65536
             assert all(r['ifRange'] == 'Mon, 19 Oct 2026 00:00:00 GMT' for r in case('weak')[1:])
             assert any(r['case'] == 'sidecar' and r['key'] == key and r['name'] == 'fixture.tif.aux.xml' and r['bodyBytes'] > 0 for r in records)
-        tls = json.loads((evidence / 'https-requests.json').read_text())
-        assert {r['key'] for r in tls if r['name'] == 'fixture.tif' and r['case'] != 'combined'} == keys
+        tls = json.loads((evidence / 'https-requests.json').read_text(encoding='utf-8'))
+        normal_tls = [r for r in tls if tls_controls is None or r['key'] != tls_controls['trustedRequestKey']]
+        assert {r['key'] for r in normal_tls if r['name'] == 'fixture.tif' and r['case'] != 'combined'} == keys
         if combined is not None:
             combined['httpAndTlsInvocations'] = combined_request_bindings(records, tls, keys, combined_diagnostics)
             if arm_runtime:
@@ -723,9 +1111,9 @@ def main():
         else:
             assert not any(r['case'] == 'combined' for r in records + tls)
         for name in ['untrusted', 'wrong-name']:
-            assert json.loads((evidence / f'{name}-requests.json').read_text()) == [], 'TLS must fail before any HTTP request'
+            assert json.loads((evidence / f'{name}-requests.json').read_text(encoding='utf-8')) == [], 'TLS must fail before any HTTP request'
         diagnostics = snapshot / f'verification/results/http-memory-profile-controlled-{target}.json'
-        measured_http = json.loads(diagnostics.read_text())
+        measured_http = json.loads(diagnostics.read_text(encoding='utf-8'))
         assert measured_http['target'] == target and len(measured_http['records']) == 6
         assert measured_http['engineFingerprint'] == measurements['profile']['fingerprint']
         assert measured_http['engineLibrarySha256'] == measurements['profile']['artifactHashes'][f'jvm-resources/gdal4k/{target}/{binary_name}']
@@ -734,11 +1122,12 @@ def main():
             for path, digest in [('log', 'logSha256'), ('rssLog', 'rssLogSha256'), ('requestsLog', 'requestsLogSha256')]:
                 assert sha(snapshot / record[path]) == record[digest]
             if record['mode'] == 'range':
-                requests = json.loads((snapshot / record['requestsLog']).read_text())
+                requests = json.loads((snapshot / record['requestsLog']).read_text(encoding='utf-8'))
                 assert all(r['status'] in [206, 404] for r in requests)
                 assert 0 < record['transferredBodyBytes'] < measured_http['fixture']['bytes'] // 4
         assert len({r['checksum'] for r in measured_http['records']}) == 1
         http = dict(fixture=fixture, publicCases=http_test_contexts, cacheRegression=cache,
+                    windowsTlsGenerator=tls_generator, windowsNativeTlsControls=tls_controls,
                     evidenceHashes={p.name: sha(p) for p in evidence.iterdir() if p.is_file()},
                     diagnosticsSha256=sha(diagnostics), diagnosticsMedian=measured_http['median'],
                     currentBindings=http_bindings, scope=measured_http['scope'], contexts=sorted(keys))
@@ -752,10 +1141,11 @@ def main():
               'archive': archive.name, 'archiveSha256': sha(archive), 'httpRegression': http,
               'combinedRegression': combined, 'publicationBindings': publication, 'scientificFixture': scientific_fixture,
               'postgisFixture': postgis_fixture,
+              'windowsVcpkgGit': windows_vcpkg,
               'arm64RuntimeBindings': (dict(transfer={key: value for key, value in restored.items() if key != 'project'},
                                             native=native_runtime) if arm_runtime else None),
               'publication': 'isolated local Maven archive only; no remote upload or default coordinate replacement'}
-    (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+    (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8', newline='\n')
     print(json.dumps({key: report[key] for key in ['profile', 'target', 'version', 'measured', 'tests', 'publication']}), flush=True)
 
 

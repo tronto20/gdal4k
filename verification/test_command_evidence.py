@@ -1,17 +1,44 @@
 """Exercise real child output, failure, and process-tree timeout preservation."""
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
+from unittest.mock import patch
+
+import command_evidence
+import windows_native_stall
+import windows_process
 
 from command_evidence import run_with_evidence
 from consumer_evidence import preserve_consumer_evidence
 
 
 class CommandEvidenceTest(unittest.TestCase):
+    def diagnostic_patches(self, stack, watcher):
+        stack.enter_context(patch.object(windows_native_stall, 'ColumnReadWatchdog', watcher))
+        if os.name == 'nt':
+            return  # Exercise the actual Windows owned Job Object on Windows.
+        class PosixOwnedFixture:
+            def __init__(self, command, **kwargs):
+                self.process = subprocess.Popen(command, start_new_session=True, **kwargs)
+                self.identity = {'pid': self.process.pid, 'creationTime100ns': 1, 'imagePath': sys.executable}
+                self.forced = False
+            def terminate_tree(self):
+                self.forced = True
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            def close(self):
+                return {'activeProcessesAfter': 0, 'jobClosed': True, 'forcedTreeTermination': self.forced}
+        stack.enter_context(patch.object(command_evidence, '_windows_host', return_value=True))
+        stack.enter_context(patch.object(windows_process, 'OwnedProcess', PosixOwnedFixture))
+
     def run_child(self, root, source, timeout=10):
         run_with_evidence([sys.executable, '-c', source], cwd=root,
                           directory=root / 'evidence', timeout=timeout)
@@ -73,7 +100,9 @@ class CommandEvidenceTest(unittest.TestCase):
             self.assertLess(record['elapsedSeconds'], 10)
             self.assertIn(b'descendant started', (root / 'evidence/001.log').read_bytes())
             if os.name == 'nt':
-                self.assertEqual(record['cleanupReturncode'], 0)
+                self.assertEqual(record['cleanup'], {'activeProcessesAfter': 0, 'jobClosed': True,
+                                                     'forcedTreeTermination': True})
+                self.assertEqual(record['ownership']['kind'], 'Windows Job Object')
 
     def test_consumer_timeout_preserves_partial_xml_before_temporary_directory_removal(self):
         with tempfile.TemporaryDirectory() as retained:
@@ -94,6 +123,46 @@ class CommandEvidenceTest(unittest.TestCase):
             self.assertEqual(json.loads((destination/'failure.json').read_text())['exception'], 'TimeoutExpired')
             self.assertEqual(json.loads((destination/'commands/001.json').read_text())['status'], 'timed_out')
             self.assertIn(b'before stall', (destination/'commands/001.log').read_bytes())
+
+    def test_native_phase_failure_retains_output_and_terminates_real_owned_descendant(self):
+        class StalledWatchdog:
+            def __init__(self, *args, **kwargs): self.observed = False
+            def observe(self, data):
+                if b'GDAL4K_VECTOR_COLUMNS_PHASE' in data: self.observed = True
+            def poll(self):
+                return {'status': 'native-phase-stalled', 'elapsedSeconds': 180,
+                        'phase': {'driver': 'GPKG', 'readIndex': 1}} if self.observed else None
+            def close(self): return [{'capture': {'status': 'test-observer'}}]
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            self.diagnostic_patches(stack, StalledWatchdog)
+            root = Path(temporary)
+            code = ('import subprocess,sys,time; subprocess.Popen([sys.executable,"-c","import time;time.sleep(120)"]); '
+                    'print("GDAL4K_VECTOR_COLUMNS_PHASE trial=0 driver=GPKG phase=read-1-before",flush=True);time.sleep(120)')
+            with self.assertRaisesRegex(RuntimeError, 'no progress for 180s'):
+                run_with_evidence([sys.executable, '-c', code], cwd=root, directory=root/'evidence',
+                                  timeout=10, windows_column_diagnostics=True)
+            record = self.record(root)
+            self.assertEqual('timed_out', record['status'])
+            self.assertEqual(10, record['timeoutSeconds'])
+            self.assertTrue(record['outputComplete'])
+            self.assertEqual(180, record['nativeColumnStall']['elapsedSeconds'])
+            self.assertEqual({'activeProcessesAfter': 0, 'jobClosed': True, 'forcedTreeTermination': True}, record['cleanup'])
+            self.assertLess(record['elapsedSeconds'], 5)
+            self.assertIn(b'read-1-before', (root/'evidence/001.log').read_bytes())
+
+    def test_diagnostic_setup_failure_closes_the_already_started_owned_process(self):
+        class BadWatchdog:
+            def __init__(self, *args, **kwargs): raise ValueError('diagnostic setup fixture failure')
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            self.diagnostic_patches(stack, BadWatchdog)
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValueError, 'diagnostic setup fixture failure'):
+                run_with_evidence([sys.executable, '-c', 'import time;time.sleep(120)'], cwd=root,
+                                  directory=root/'evidence', timeout=10, windows_column_diagnostics=True)
+            record = self.record(root)
+            self.assertEqual('failed', record['status'])
+            self.assertFalse(record['outputComplete'])
+            self.assertEqual({'activeProcessesAfter': 0, 'jobClosed': True, 'forcedTreeTermination': True}, record['cleanup'])
 
 
 if __name__ == '__main__':

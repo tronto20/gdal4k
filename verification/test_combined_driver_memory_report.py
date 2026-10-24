@@ -42,7 +42,7 @@ class CombinedHostTest(unittest.TestCase):
 
     def test_other_architectures_and_mismatched_manifest_are_rejected(self):
         for system, machine, target in [('Linux', 'armv7l', 'linux-arm64'),
-                                       ('Windows', 'AMD64', 'windows-amd64'),
+                                       ('Windows', 'ARM64', 'windows-amd64'),
                                        ('Darwin', 'x86_64', 'macos-arm64'),
                                        ('Darwin', 'arm64', 'linux-amd64'),
                                        ('Linux', 'x86_64', 'macos-arm64')]:

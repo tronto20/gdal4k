@@ -5,21 +5,38 @@
 
 int main(int argc, char** argv) {
     try {
-        g4k_http::require(argc == 2, "Expected owned fixture URL");
+        const bool tlsOnly = argc == 3 && std::string(argv[2]) == "--tls-only";
+        g4k_http::require(argc == 2 || tlsOnly, "Expected owned fixture URL and optional --tls-only");
         auto input = g4k_http::mount(argv[1], CPLJSONObject());
+        if (tlsOnly) g4k_http::require(g4k_http::Url(argv[1]).part(CURLUPART_SCHEME) == "https",
+            "TLS control requires HTTPS");
         // Exercise actual GDAL plugin dispatch, including prefix removal, before
         // the direct cache checks below. Public consumers verify dataset use.
         const auto path = input->prefix + input->mainName;
         VSIStatBufL info{};
-        g4k_http::require(VSIStatL(path.c_str(), &info) == 0 && info.st_size > 4 * 1024 * 1024,
+        const auto statResult = VSIStatL(path.c_str(), &info);
+        input->check(); // Preserve the redacted native TLS failure from the VSI callback.
+        g4k_http::require(statResult == 0 && info.st_size > 4 * 1024 * 1024,
             "HTTP VSI stat callback failed");
         auto* vsiFile = VSIFOpenL(path.c_str(), "rb");
         g4k_http::require(vsiFile != nullptr, "HTTP VSI open callback failed");
         std::vector<unsigned char> header(16);
         const auto headerBytes = VSIFReadL(header.data(), 1, header.size(), vsiFile);
         const auto closeResult = VSIFCloseL(vsiFile);
+        input->check();
         g4k_http::require(headerBytes == header.size() && closeResult == 0, "HTTP VSI read or close callback failed");
         g4k_http::require(VSIFOpenL(path.c_str(), "r+b") == nullptr, "HTTP VSI accepted update access");
+        if (tlsOnly) {
+            g4k_http::require(header[0] == 'I' && header[1] == 'I' && header[2] == 42 && header[3] == 0,
+                "Expected actual little-endian TIFF header");
+            const auto prefix = input->prefix;
+            input.reset();
+            g4k_http::require(g4k_http::registry.count(prefix) == 0, "Closed HTTP mount retained in registry");
+            std::cout << "{\"result\":\"passed\",\"mode\":\"tls-control\",\"fileBytes\":" << info.st_size <<
+                ",\"headerBytes\":" << headerBytes <<
+                ",\"tiffHeaderVerified\":true,\"vsiDispatchVerified\":true,\"registryReleaseVerified\":true}\n";
+            return 0;
+        }
         std::vector<unsigned char> original;
         uint64_t checksum = 0;
         size_t peak = 0;

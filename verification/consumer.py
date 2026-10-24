@@ -13,6 +13,7 @@ from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ENGINE_TARGETS, library_version_from_repo
 from consumer_evidence import preserve_consumer_evidence
 from command_evidence import run_with_evidence
+from jvm_hang_diagnostics import prepare_jvm_hang_diagnostics
 
 ROOT=Path(__file__).resolve().parent.parent
 p=argparse.ArgumentParser()
@@ -147,6 +148,7 @@ kotlin {
 }
 '''
  if target=='jvm':
+  hang_diagnostics = prepare_jvm_hang_diagnostics(consumer)
   build = 'import java.time.Duration\n' + build
   build += '\nkotlin.sourceSets.named("jvmMain") { dependencies {\n' + ''.join('    runtimeOnly("dev.tronto.gdal4k:gdal4k-engine:'+VERSION+':'+b+'")\n' for b in binaries) + '} }\n'
   build += '''
@@ -166,10 +168,14 @@ val recordJvmRuntime = tasks.register("recordJvmRuntime") {
 }
 tasks.named("jvmTest") { dependsOn(recordJvmRuntime) }
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    jvmArgs(''' + json.dumps(hang_diagnostics['jvm_arg']).replace('$', '\\$') + ''')
     // A stuck test worker must fail before the outer CI job kills Python and
     // discards its temporary test results. This is a functional hang bound.
     timeout.set(Duration.ofMinutes(8))
-    testLogging { events("started", "passed", "failed", "skipped") }
+    testLogging {
+        events("started", "passed", "failed", "skipped")
+        showStandardStreams = true
+    }
 }
 '''
  (consumer/'build.gradle.kts').write_text(build)
@@ -240,6 +246,6 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
    actual_payloads = {b for b in JVM_BINARIES if any(name.endswith('-'+b+'.jar') for name in engine_files)}
    if actual_payloads != set(binaries) or len(engine_files) != len(binaries):
     raise RuntimeError(f'Unexpected JVM classifier files: {engine_files}; expected {binaries}')
-  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'profile_runtime_fixture_sources':profile_fixture_sources,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed'},indent=2)+'\n')
+  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'profile_runtime_fixture_sources':profile_fixture_sources,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed', **({'jvm_hang_diagnostics': {'interval_millis':hang_diagnostics['interval_millis'], 'retained_directory':'test-results/jvm-hang-diagnostics'}} if target=='jvm' else {})},indent=2)+'\n')
  finally:
   for original,moved in reversed(hidden):moved.rename(original)

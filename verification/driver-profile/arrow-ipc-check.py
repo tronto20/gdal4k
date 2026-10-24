@@ -1,6 +1,7 @@
 """Run IPC variadic/prebuffer regression with the packaged archive's exact C++ toolchain."""
 import datetime
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import platform
@@ -44,7 +45,7 @@ def compiler_from_cmake(cache, directory):
     compiled = None
     if candidates:
         assert len(candidates) == 1, 'Ambiguous CMake compiler metadata'
-        match = re.search(r'^set\(CMAKE_CXX_COMPILER "([^"\n]+)"\)', candidates[0].read_text(), re.M)
+        match = re.search(r'^set\(CMAKE_CXX_COMPILER "([^"\n]+)"\)', candidates[0].read_text(encoding='utf-8'), re.M)
         assert match, 'Missing compiler in CMake compiler metadata'
         compiled = match.group(1)
     assert cached or compiled, 'Missing exact engine C++ compiler'
@@ -133,7 +134,7 @@ def _write_phase(root, output, data, execution):
         record[key + 'Sha256'] = _sha(path)
         data[key] = execution[key].decode('utf-8', errors='replace')
     data['execution'] = record
-    output.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+    output.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8', newline='\n')
 
 
 def compile_staged(root, target=STAGED_TARGET, receipt_path=None):
@@ -266,7 +267,7 @@ def run_staged(root, executable, build_receipt, result_path=None):
 def main():
     snapshot, target = Path(sys.argv[1]), sys.argv[2]
     engine = snapshot / 'gdal4k-engine/build/engine' / target
-    cache = dict(re.findall(r'^([^#/\n:=]+):[^=\n]+=(.*)$', (engine / 'cmake/CMakeCache.txt').read_text(), re.M))
+    cache = dict(re.findall(r'^([^#/\n:=]+):[^=\n]+=(.*)$', (engine / 'cmake/CMakeCache.txt').read_text(encoding='utf-8'), re.M))
     compiler = compiler_from_cmake(cache, engine / 'cmake')
     work = snapshot / 'verification/build/arrow-ipc-regression'
     work.mkdir(parents=True, exist_ok=True)
@@ -274,19 +275,33 @@ def main():
     include = engine / 'installed' / ('gdal4k-' + target) / 'include'
     archive = engine / 'libgdal4k.a'
     assert source.is_file() and archive.is_file() and (include / 'arrow/ipc/api.h').is_file()
-    options = compiler_linker_options(json.loads((engine / 'native-linker-options.json').read_text()))
+    options = compiler_linker_options(json.loads((engine / 'native-linker-options.json').read_text(encoding='utf-8')))
     flags = shlex.split(cache.get('CMAKE_CXX_FLAGS', '')) + shlex.split(cache.get('CMAKE_CXX_FLAGS_RELEASE', ''))
     link = shlex.split(cache.get('CMAKE_EXE_LINKER_FLAGS', ''))
+    standalone = []
     if target.startswith('linux'):
         assert any(flag.startswith('--gcc-toolchain=') for flag in flags)
         assert any(flag.startswith('--sysroot=') for flag in flags)
+    elif target == 'windows-amd64':
+        # Reuse the normal producer's GNU-targeting clang/sysroot and link flags.
+        # Native linker metadata remains argv; do not split its paths with spaces.
+        assert '--target=x86_64-w64-windows-gnu' in flags, 'Missing exact Windows engine compiler target'
+        assert any(flag.startswith('--sysroot=') for flag in flags), 'Missing exact Windows engine sysroot'
+        standalone = ['-static-libgcc', '-static-libstdc++', '-Wl,-Bstatic', '-lwinpthread', '-Wl,-Bdynamic']
     else:
         assert target == 'macos-arm64'
         flags += ['-arch', 'arm64', '-mmacosx-version-min=11.0']
-    program = work / 'arrow-ipc-check'
+    program = work / ('arrow-ipc-check.exe' if target == 'windows-amd64' else 'arrow-ipc-check')
     command = [compiler, *flags, '-std=c++17', '-DARROW_STATIC', '-DPARQUET_STATIC',
-               '-pthread', '-I' + str(include), str(source), str(archive), *options, *link, '-o', str(program)]
+               '-pthread', '-I' + str(include), str(source), str(archive), *options, *link, *standalone, '-o', str(program)]
     subprocess.run(command, check=True, timeout=180)
+    dependency_audit = None
+    if target == 'windows-amd64':
+        spec = importlib.util.spec_from_file_location('ipc_windows_pe', snapshot / 'verification/windows_pe.py')
+        inspector = importlib.util.module_from_spec(spec); spec.loader.exec_module(inspector)
+        path = snapshot / 'verification/results/arrow-ipc-probe-pe.json'
+        inspector.audit(program, root=snapshot, output=path)
+        dependency_audit = dict(path=path.relative_to(snapshot).as_posix(), sha256=_sha(path))
     result = subprocess.run([str(program)], capture_output=True, text=True, timeout=120, check=True)
     assert 'GDAL4K_ARROW_IPC_VARIADIC_PREFETCH_OK' in result.stdout
     with archive.open('rb') as file: archive_hash = hashlib.file_digest(file, 'sha256').hexdigest()
@@ -295,9 +310,9 @@ def main():
     output.write_text(json.dumps({'utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'result': 'passed', 'target': target, 'arrow': '21.0.0+backport-CVE-2026-25087',
         'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(), 'archiveSha256': archive_hash,
-        'compiler': compiler, 'flags': flags,
+        'compiler': compiler, 'flags': flags, 'windowsDependencyAudit': dependency_audit,
         'cases': '16 repeats x coalesce/zero-copy x prebuffer/on-off x4 variadic StringView batches; async reentrant generator, reader lifetime, checked-overflow helpers',
-        'stdout': result.stdout, 'stderr': result.stderr}, indent=2) + '\n')
+        'stdout': result.stdout, 'stderr': result.stderr}, indent=2) + '\n', encoding='utf-8', newline='\n')
     print(result.stdout, end='')
 
 

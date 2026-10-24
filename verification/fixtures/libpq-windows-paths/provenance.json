@@ -1,0 +1,81 @@
+{
+  "postgresqlVersion": "18.4",
+  "archive": {
+    "url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.bz2",
+    "bytes": 22567173,
+    "sha512": "1a7606b5b2460a4fc817d491e1e03262df17ece6869fa3d2b80647baffcfb790fbcfa019c3b10fab9f9a14218651b6a358864e40a5d8c5ddc796db2d6e5b469c",
+    "sha256": "81a81ec695fb0c7901407defaa1d2f7973617154cf27ba74e3a7ab8e64436094"
+  },
+  "members": [
+    {
+      "path": "COPYRIGHT",
+      "archiveMember": "postgresql-18.4/COPYRIGHT",
+      "bytes": 1198,
+      "sha256": "3d6af92ff8a4c2cdf69afb1cf44edea727922f5cd0cf8b5f72b11cdecac8fdfd"
+    },
+    {
+      "path": "src/include/storage/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/storage/meson.build",
+      "bytes": 652,
+      "sha256": "2df41883e4b986f6b550b6a835ec8e46dfcbae389b2acf3f9a7927b7e807c91e"
+    },
+    {
+      "path": "src/backend/storage/lmgr/generate-lwlocknames.pl",
+      "archiveMember": "postgresql-18.4/src/backend/storage/lmgr/generate-lwlocknames.pl",
+      "bytes": 3049,
+      "sha256": "41e89bf92085dc78699ce3abd7f76a4b53b387c56b0432620578ea8dc0dc4161"
+    },
+    {
+      "path": "src/include/storage/lwlocklist.h",
+      "archiveMember": "postgresql-18.4/src/include/storage/lwlocklist.h",
+      "bytes": 2988,
+      "sha256": "285db180b8f2c086bd927f1234a1abba784906a5df798b06ffbba7ed055e1fa7"
+    },
+    {
+      "path": "src/backend/utils/activity/wait_event_names.txt",
+      "archiveMember": "postgresql-18.4/src/backend/utils/activity/wait_event_names.txt",
+      "bytes": 26505,
+      "sha256": "98c63a5d1b7a506dc1bc88898bb148e90bd1db61233aed1c09d168f3169e7648"
+    },
+    {
+      "path": "src/include/utils/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/utils/meson.build",
+      "bytes": 2614,
+      "sha256": "7a535b26ea040ab8998cd7eef9c0e343e8ad5e7074757e69944e51bfa69335b2"
+    },
+    {
+      "path": "src/include/catalog/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/catalog/meson.build",
+      "bytes": 4096,
+      "sha256": "2184478e28095dce38c97449007d5dff7f1c9c197031bdf82980354d9878f84b"
+    },
+    {
+      "path": "src/include/nodes/meson.build",
+      "archiveMember": "postgresql-18.4/src/include/nodes/meson.build",
+      "bytes": 1730,
+      "sha256": "803050337a41394b959c136b6f8e95e3352c79183d970e8151d808a9f1c65f16"
+    },
+    {
+      "path": "src/backend/utils/activity/generate-wait_event_types.pl",
+      "archiveMember": "postgresql-18.4/src/backend/utils/activity/generate-wait_event_types.pl",
+      "bytes": 10039,
+      "sha256": "1370f2ae2cb030968bfa5dcb0d09b3ce470de995681b6e713e0170dbaf5d4f70"
+    }
+  ],
+  "mesonFileClass": {
+    "url": "https://raw.githubusercontent.com/mesonbuild/meson/1.9.0/mesonbuild/utils/universal.py",
+    "sourceSha256": "1f265b40b986e6a3daae8a3f850c5f8b7e33da7bd7379d161e24c6c802b09855",
+    "sourceLines": [
+      383,
+      464
+    ],
+    "excerptPath": "meson-1.9.0-file-class.py",
+    "excerptSha256": "4064630fa1e1673da4bf0f07e1ba84c7049b75e358856653f887fed82e1f73b2",
+    "license": {
+      "url": "https://raw.githubusercontent.com/mesonbuild/meson/1.9.0/COPYING",
+      "path": "MESON-COPYING",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  },
+  "scope": "Pinned source fixtures for patch application, Meson File lexical path behavior and Linux Perl output regression. No Windows Perl, engine or host-runtime proof. The full source archive is not required or downloaded by tests."
+}

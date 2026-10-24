@@ -26,10 +26,11 @@ def sha(path):
 def host_settings(manifest, system, machine):
     hosts = {('Linux', 'x86_64'): ('linux-amd64', 'LinuxX64', 'linux-x64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
              ('Linux', 'aarch64'): ('linux-arm64', 'LinuxArm64', 'linux-arm64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
-             ('Darwin', 'arm64'): ('macos-arm64', 'MacosArm64', 'macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1)}
+             ('Darwin', 'arm64'): ('macos-arm64', 'MacosArm64', 'macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1),
+             ('Windows', 'amd64'): ('windows-amd64', 'MingwX64', 'windows-x64', 'gdal4k.dll', None, 'Win32 GetProcessMemoryInfo', 'bytes', 1)}
     host = (system, machine.lower())
     if host not in hosts:
-        raise ValueError('Combined JVM diagnostics require Linux x64, Linux ARM64 or macOS ARM64: ' + repr(host))
+        raise ValueError('Combined JVM diagnostics require Linux x64, Linux ARM64, macOS ARM64 or Windows x64: ' + repr(host))
     target, gradle_target, classifier, library, flag, time_format, unit, multiplier = hosts[host]
     if manifest['target'] != target:
         raise ValueError('Combined engine target does not match actual host: ' + manifest['target'])
@@ -40,7 +41,7 @@ def host_settings(manifest, system, machine):
 
 def prepare_classpath():
     # Preserve the orchestrator's verified staged-engine Gradle property on ARM.
-    subprocess.run([str(ROOT / 'gradlew'), '--console=plain', ':gdal4k-runtime:writeCombinedDriverMemoryClasspath',
+    subprocess.run([str(ROOT / ('gradlew.bat' if os.name == 'nt' else 'gradlew')), '--console=plain', ':gdal4k-runtime:writeCombinedDriverMemoryClasspath',
                     '-I', str(ROOT / 'verification/combined-driver-memory.init.gradle'), '--no-configuration-cache'],
                    cwd=ROOT, env=os.environ.copy(), check=True)
 
@@ -153,10 +154,15 @@ def main():
     records = []
     for trial in range(3):
         log, rss = output / f'{trial}.log', output / f'{trial}.time.txt'
-        command = ['/usr/bin/time', host['flag'], '-o', str(rss), cp['java'], *settings,
-                   '-cp', cp['classpath'], 'dev.gdal4k.CombinedDriverMemoryProbe', str(args.library.resolve())]
+        java_command = [cp['java'], *settings, '-cp', cp['classpath'],
+                        'dev.gdal4k.CombinedDriverMemoryProbe', str(args.library.resolve())]
         evidence_path = output / f'{trial}.command.json'
-        execution = run_timed(command, log, evidence_path, cwd=ROOT)
+        if system == 'Windows':
+            from windows_process import run_diagnostic
+            execution = run_diagnostic(java_command, log, rss, evidence_path, cwd=ROOT)
+        else:
+            command = ['/usr/bin/time', host['flag'], '-o', str(rss), *java_command]
+            execution = run_timed(command, log, evidence_path, cwd=ROOT)
         raw = log.read_text(encoding='utf-8')
         assert execution['returncode'] == 0, (log, raw[-2000:])
         matches = re.findall(r'^GDAL4K_COMBINED_DRIVER_MEMORY (.+)$', raw, re.M)
@@ -165,10 +171,15 @@ def main():
         assert record['rounds'] == record['completedRounds'] == 3
         assert re.fullmatch(r'gdal4k-[0-9a-f]+', record['contextKey'])
         assert all(record[key] > 0 for key in ['elapsedNanos', 'jvmAllocatedBytes', 'sampledPeakHeapUsedBytes'])
-        record.update(trial=trial, peakRssBytes=rss_units.peak_rss_bytes(rss.read_text(), system),
-                      log=str(log.relative_to(ROOT)), logSha256=sha(log),
-                      rssLog=str(rss.relative_to(ROOT)), rssLogSha256=sha(rss),
-                      execution=execution, executionLog=str(evidence_path.relative_to(ROOT)),
+        if system == 'Windows':
+            from windows_process import peak_record_bytes
+            peak = peak_record_bytes(rss.read_text(encoding='utf-8'))
+        else:
+            peak = rss_units.peak_rss_bytes(rss.read_text(), system)
+        record.update(trial=trial, peakRssBytes=peak,
+                      log=log.relative_to(ROOT).as_posix(), logSha256=sha(log),
+                      rssLog=rss.relative_to(ROOT).as_posix(), rssLogSha256=sha(rss),
+                      execution=execution, executionLog=evidence_path.relative_to(ROOT).as_posix(),
                       executionLogSha256=sha(evidence_path))
         records.append(record)
         (output / 'records.json').write_text(json.dumps(records, indent=2) + '\n')
@@ -180,15 +191,16 @@ def main():
                   testedHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                   target=target, gradleTarget=host['gradleTarget'], classifier=host['classifier'],
                   platform=platform.platform(), system=system, machine=machine,
-                  osRss=dict(timeExecutable='/usr/bin/time', timeArgument=host['flag'],
-                             timeFormat=host['timeFormat'], reportedUnit=host['reportedRssUnit'],
-                             multiplierToBytes=host['rssMultiplierToBytes']),
+                  osRss=(__import__('windows_process').OS_RSS.copy() if system == 'Windows' else
+                         dict(timeExecutable='/usr/bin/time', timeArgument=host['flag'],
+                              timeFormat=host['timeFormat'], reportedUnit=host['reportedRssUnit'],
+                              multiplierToBytes=host['rssMultiplierToBytes'])),
                   version=identity['version'], profile='combined', records=records,
                   engineFingerprint=manifest['source_fingerprint'], engineLibrarySha256=library_sha,
                   engineManifestSha256=sha(args.manifest),
-                  compiledProbeSha256={str(p.relative_to(ROOT)): sha(p) for p in classes},
-                  compiledProductionSha256={str(p.relative_to(ROOT)): sha(p) for p in production},
-                  sourceSha256=sources, fixture=dict(path=str(fixture.relative_to(ROOT)), sha256=sha(fixture)),
+                  compiledProbeSha256={p.relative_to(ROOT).as_posix(): sha(p) for p in classes},
+                  compiledProductionSha256={p.relative_to(ROOT).as_posix(): sha(p) for p in production},
+                  sourceSha256=sources, fixture=dict(path=fixture.relative_to(ROOT).as_posix(), sha256=sha(fixture)),
                   median={key: statistics.median(r[key] for r in records)
                           for key in ['elapsedNanos', 'jvmAllocatedBytes', 'sampledPeakHeapUsedBytes', 'peakRssBytes']},
                   settings=dict(warmupRounds=1, rounds=3, trials=3, jvm=settings),

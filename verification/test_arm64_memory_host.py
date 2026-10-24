@@ -40,7 +40,7 @@ class MemoryHostTest(unittest.TestCase):
     def test_unknown_architectures_and_mismatched_manifest_never_fall_back_to_x64(self):
         invalid = [('Linux', 'armv7l', 'linux-amd64'), ('Linux', 'arm64', 'linux-arm64'),
                    ('Linux', 'ppc64le', 'linux-amd64'), ('Darwin', 'x86_64', 'macos-arm64'),
-                   ('Windows', 'AMD64', 'windows-amd64'), ('FreeBSD', 'aarch64', 'linux-arm64'),
+                   ('Windows', 'ARM64', 'windows-amd64'), ('FreeBSD', 'aarch64', 'linux-arm64'),
                    ('Linux', 'aarch64', 'linux-amd64'), ('Linux', 'x86_64', 'linux-arm64'),
                    ('Darwin', 'arm64', 'linux-arm64')]
         for reporter in (combined, http):

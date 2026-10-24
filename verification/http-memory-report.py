@@ -30,10 +30,11 @@ def sha(path):
 def host_settings(manifest, system, machine):
     hosts = {('Linux', 'x86_64'): ('linux-amd64', 'LinuxX64', 'linux-x64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
              ('Linux', 'aarch64'): ('linux-arm64', 'LinuxArm64', 'linux-arm64-gnu', 'libgdal4k.so', '-v', 'GNU time -v', 'KiB', 1024),
-             ('Darwin', 'arm64'): ('macos-arm64', 'MacosArm64', 'macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1)}
+             ('Darwin', 'arm64'): ('macos-arm64', 'MacosArm64', 'macos-arm64', 'libgdal4k.dylib', '-l', 'Darwin time -l', 'bytes', 1),
+             ('Windows', 'amd64'): ('windows-amd64', 'MingwX64', 'windows-x64', 'gdal4k.dll', None, 'Win32 GetProcessMemoryInfo', 'bytes', 1)}
     host = (system, machine.lower())
     if host not in hosts:
-        raise ValueError('HTTP JVM diagnostics require Linux x64, Linux ARM64 or macOS ARM64: ' + repr(host))
+        raise ValueError('HTTP JVM diagnostics require Linux x64, Linux ARM64, macOS ARM64 or Windows x64: ' + repr(host))
     target, gradle_target, classifier, library, flag, time_format, unit, multiplier = hosts[host]
     if manifest['target'] != target:
         raise ValueError('HTTP engine target does not match actual host: ' + manifest['target'])
@@ -44,7 +45,7 @@ def host_settings(manifest, system, machine):
 
 def prepare_classpath():
     # Preserve the orchestrator's verified staged-engine Gradle property on ARM.
-    subprocess.run([str(ROOT / 'gradlew'), '--console=plain', ':gdal4k-runtime:writeHttpMemoryClasspath',
+    subprocess.run([str(ROOT / ('gradlew.bat' if os.name == 'nt' else 'gradlew')), '--console=plain', ':gdal4k-runtime:writeHttpMemoryClasspath',
                     '-I', str(ROOT / 'verification/http-memory.init.gradle'), '--no-configuration-cache'],
                    cwd=ROOT, env=os.environ.copy(), check=True)
 
@@ -77,6 +78,7 @@ def fixture(path, side):
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     def __init__(self, path):
+        self.daemon_threads = os.name != 'nt'
         self.path = path
         self.digest = sha(path)
         self.records = []
@@ -157,7 +159,7 @@ def main():
     frozen_paths = [p for module in ['gdal4k', 'gdal4k-runtime']
                     for p in (ROOT / module / 'build/classes/kotlin/jvm').rglob('*.class')]
     frozen_paths += [ROOT / p for p in subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines() if (ROOT / p).is_file()]
-    before_identities = {str(p.relative_to(ROOT)): sha(p) for p in frozen_paths}
+    before_identities = {p.relative_to(ROOT).as_posix(): sha(p) for p in frozen_paths}
     spec = importlib.util.spec_from_file_location('rss_units', ROOT / 'verification/window-memory-report.py')
     rss_units = importlib.util.module_from_spec(spec); spec.loader.exec_module(rss_units)
     output = ROOT / 'verification/results/http-memory' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
@@ -179,18 +181,28 @@ def main():
             server = Server(image)
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             log, rss = output / f'{trial}-{mode}.log', output / f'{trial}-{mode}.time.txt'
+            execution_path = output / f'{trial}-{mode}.command.json'
+            execution = None
+            java_command = [cp['java'], *settings, '-cp', cp['classpath'], 'dev.gdal4k.HttpMemoryProbe', mode,
+                            f'http://127.0.0.1:{server.server_port}/fixture.tif', str(image),
+                            str(args.side), str(args.library.resolve())]
             try:
-                result = subprocess.run(['/usr/bin/time', host['flag'], '-o', str(rss),
-                                         cp['java'], *settings, '-cp', cp['classpath'], 'dev.gdal4k.HttpMemoryProbe', mode,
-                                         f'http://127.0.0.1:{server.server_port}/fixture.tif', str(image), str(args.side), str(args.library.resolve())],
-                                        cwd=ROOT, env=dict(os.environ, LC_ALL='C'), text=True, capture_output=True, timeout=300)
+                if system == 'Windows':
+                    from windows_process import run_diagnostic
+                    execution = run_diagnostic(java_command, log, rss, execution_path, cwd=ROOT, timeout=300)
+                    raw = log.read_text(encoding='utf-8')
+                else:
+                    result = subprocess.run(['/usr/bin/time', host['flag'], '-o', str(rss), *java_command],
+                                            cwd=ROOT, env=dict(os.environ, LC_ALL='C'), text=True, capture_output=True, timeout=300)
+                    raw = result.stdout
             finally:
                 server.shutdown(); thread.join(); server.server_close()
-            log.write_text(result.stdout + result.stderr)
+            if system != 'Windows':
+                log.write_text(result.stdout + result.stderr)
             network = output / f'{trial}-{mode}.requests.json'
             network.write_text(json.dumps(server.records, indent=2) + '\n')
-            assert result.returncode == 0, (log, result.stderr[-2000:])
-            matches = re.findall(r'^GDAL4K_HTTP_MEMORY (.+)$', result.stdout, re.M)
+            assert (execution['returncode'] if execution else result.returncode) == 0, (log, raw[-2000:])
+            matches = re.findall(r'^GDAL4K_HTTP_MEMORY (.+)$', raw, re.M)
             assert len(matches) == 1
             record = json.loads(matches[0])
             assert record['mode'] == mode and record['side'] == args.side and record['validatedPixels'] == 196608
@@ -199,11 +211,19 @@ def main():
             if mode == 'download-local':
                 assert len(server.records) == 1 and server.records[0]['status'] == 200
                 assert record['downloadedBytes'] == server.records[0]['bodyBytes'] == fixture_bytes
-            record.update(trial=trial, peakRssBytes=rss_units.peak_rss_bytes(rss.read_text(), system),
+            if system == 'Windows':
+                from windows_process import peak_record_bytes
+                peak = peak_record_bytes(rss.read_text(encoding='utf-8'))
+            else:
+                peak = rss_units.peak_rss_bytes(rss.read_text(), system)
+            record.update(trial=trial, peakRssBytes=peak,
                           requests=len(server.records), transferredBodyBytes=sum(r['bodyBytes'] for r in server.records),
-                          log=str(log.relative_to(ROOT)), logSha256=sha(log),
-                          rssLog=str(rss.relative_to(ROOT)), rssLogSha256=sha(rss),
-                          requestsLog=str(network.relative_to(ROOT)), requestsLogSha256=sha(network))
+                          log=log.relative_to(ROOT).as_posix(), logSha256=sha(log),
+                          rssLog=rss.relative_to(ROOT).as_posix(), rssLogSha256=sha(rss),
+                          requestsLog=network.relative_to(ROOT).as_posix(), requestsLogSha256=sha(network))
+            if execution is not None:
+                record.update(execution=execution, executionLog=execution_path.relative_to(ROOT).as_posix(),
+                              executionLogSha256=sha(execution_path))
             records.append(record)
             (output / 'records.json').write_text(json.dumps(records, indent=2) + '\n')
             print(json.dumps(record), flush=True)
@@ -218,21 +238,24 @@ def main():
                'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/RuntimeEngine.kt',
                'gdal4k-runtime/src/jniMain/kotlin/dev/gdal4k/JniTransport.kt',
                'gdal4k-runtime/src/commonMain/kotlin/dev/gdal4k/internal/BundledRuntime.generated.kt']
+    if system == 'Windows':
+        sources += ['verification/windows_process.py', 'verification/command_evidence.py']
     keys = ['elapsedNanos', 'jvmAllocatedBytes', 'sampledPeakHeapUsedBytes', 'peakRssBytes', 'requests', 'transferredBodyBytes']
     report = dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(), label=args.label,
                   testedHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                   platform=platform.platform(), system=system, machine=machine, target=target,
                   gradleTarget=host['gradleTarget'], classifier=host['classifier'], records=records,
-                  osRss=dict(timeExecutable='/usr/bin/time', timeArgument=host['flag'],
-                             timeFormat=host['timeFormat'], reportedUnit=host['reportedRssUnit'],
-                             multiplierToBytes=host['rssMultiplierToBytes']),
+                  osRss=(__import__('windows_process').OS_RSS.copy() if system == 'Windows' else
+                         dict(timeExecutable='/usr/bin/time', timeArgument=host['flag'],
+                              timeFormat=host['timeFormat'], reportedUnit=host['reportedRssUnit'],
+                              multiplierToBytes=host['rssMultiplierToBytes'])),
                   median={mode: {key: statistics.median(r[key] for r in records if r['mode'] == mode) for key in keys} for mode in args.modes},
                   engineFingerprint=manifest['source_fingerprint'], engineLibrarySha256=library_sha,
                   engineLibrary=str(args.library.resolve()), engineManifestSha256=sha(args.manifest),
-                  fixture=dict(path=str(image.relative_to(ROOT)), bytes=fixture_bytes, sha256=sha(image),
+                  fixture=dict(path=image.relative_to(ROOT).as_posix(), bytes=fixture_bytes, sha256=sha(image),
                                format='Uncompressed tiled Byte GTiff; no COG layout or overview claim'),
-                  compiledProbeSha256={str(p.relative_to(ROOT)): sha(p) for p in classes},
-                  compiledProductionSha256={str(p.relative_to(ROOT)): sha(p) for p in production},
+                  compiledProbeSha256={p.relative_to(ROOT).as_posix(): sha(p) for p in classes},
+                  compiledProductionSha256={p.relative_to(ROOT).as_posix(): sha(p) for p in production},
                   sourceSha256={name: sha(ROOT / name) for name in sources},
                   settings=dict(side=args.side, tile=TILE, windows=3, trials=args.trials, jvm=settings),
                   scope='Loopback HTTP/1.0, no added latency or throttling. Fresh JVM per case, same local GDAL warmup; network cold. Download control streams through 64KiB buffer to owned temporary file, opens locally and reads/validates all 196608 pixels in three tiles, then removes its download. Elapsed/allocation include HTTP, temporary file I/O, GDAL open/read/close, validation/checksum and removal; exclude local warmup. Whole-process OS RSS includes setup/warmup. Cumulative JVM allocation, 2ms sampled heap and OS RSS are distinct; C++/libcurl allocations are outside JVM allocation. Server body bytes exclude HTTP/TLS headers and count successfully written response bytes, not client heap or wire packet bytes. Real WAN/TLS, Native/Android, COG and universal speed claims require separate evidence.')
