@@ -53,6 +53,7 @@ jobs:
           python -m unittest discover -s verification -p test_postgis_fixture.py
           python -m unittest discover -s verification -p test_postgis_profile_report.py
           python -m unittest discover -s verification -p test_windows_process.py
+          python -m unittest discover -s verification -p test_windows_native_stall.py
           python -m unittest discover -s verification -p test_windows_pe.py
           python -m unittest discover -s verification -p test_http_fixture_windows.py
           python -m unittest discover -s verification -p test_postgis_windows_fixture.py
@@ -108,7 +109,8 @@ jobs:
             python -m unittest discover -s verification -p test_command_evidence.py
             python -m unittest discover -s verification -p test_windows_process.py
             python -m unittest discover -s verification -p test_windows_pe.py
-            python verification/ci.py mingwX64 --command-timeout-seconds 3600
+            python -m unittest discover -s verification -p test_windows_native_stall.py
+            python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics
           else
             python verification/ci.py '${{ matrix.target }}' ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
           fi
@@ -131,6 +133,7 @@ jobs:
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
             verification/results/ci-commands-*/
+            gdal4k-engine/build/jvm-resources/gdal4k/windows-amd64/gdal4k.dll
             verification/results/raster-transport-*.json
             verification/results/window-memory-*.json
             verification/results/window-memory/

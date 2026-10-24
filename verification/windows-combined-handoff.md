@@ -88,6 +88,15 @@ The existing coroutine and eight-minute test-task limits remain unchanged. These
 diagnostics address an observed Windows consumer hang; they do not establish its
 cause or a functional fix without fresh execution evidence.
 
+Bounded Windows source-test commands also attach the worker agent. If a traced
+column read stops progressing for 60 seconds, the command observer collects
+minimal native thread/module diagnostics from that worker in its owned Job
+Object, bound to its kernel process identity and produced DLL hash. A read still
+stalled at 180 seconds fails the owned command, allowing evidence collection when
+the existing coroutine cancellation cannot interrupt a native call. The overall
+command deadline remains in force. These diagnostics do not establish a fix for
+the observed second GeoPackage batch read.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including
