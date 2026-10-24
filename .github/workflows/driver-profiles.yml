@@ -351,6 +351,8 @@ jobs:
           python -c 'import platform; print(platform.system(), platform.machine())'
       - name: Actual default Windows engine size baseline
         run: python verification/ci.py mingwX64 --build-engine-only --command-timeout-seconds 10800
+      - name: Verify actual MinGW Winsock import selection
+        run: python -m unittest discover -s verification -p test_windows_winsock_link.py
       - name: Isolated combined source and published JVM and Native consumers with owned fixtures
         run: python gdal4k-engine/tools/driver-profile.py combined windows-amd64
       - uses: actions/cache/save@v6
@@ -372,6 +374,7 @@ jobs:
           path: |
             verification/results/ci-commands-mingwX64/
             verification/results/windows-process-selfcheck/
+            verification/results/windows-winsock-link-selfcheck/
             verification/results/postgis-windows-fixtures/**
             verification/results/native-http-fixture-*/*-requests.json
             verification/results/native-http-fixture-*/*.crt
@@ -403,6 +406,8 @@ jobs:
             build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/native-linker-options.json
             build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/licenses/*.txt
             build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/gdal4k_http_probe.exe
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/build.ninja
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/CMakeFiles/rules.ninja
             build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/vcpkg-buildtrees/*/*.log
             build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/CMakeCache.txt
             build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/CMakeFiles/*/CMakeCXXCompiler.cmake

@@ -143,6 +143,18 @@ keys are excluded. Host crypto and transport tests do not establish Windows
 Schannel acceptance: the fresh actual Windows controls and full consumers must
 still pass.
 
+At `775e5e0b`, the early Windows probe dependency audit rejected `wsock32.dll`
+before either TLS child control ran. The engine build completed, and all other
+33 CI jobs passed. Actual import bytes and pinned-SDK links show that common
+Winsock symbols resolve to the legacy library when it appears first. Select
+`ws2_32` before transitive static dependencies for the MinGW shared runtime and
+HTTP probe. Keep the existing DLL policy. Native and Arrow consumers receive
+the shared link's ordered system options; the internal bridge archive is not an
+independently exported CMake target. The bounded Winsock link selfcheck retains
+old/new executable imports and shared-options static-consumer evidence before
+the long combined build. Cross-linking establishes import selection only;
+actual Windows TLS and all runtime consumers remain mandatory.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including
