@@ -72,6 +72,16 @@ The pinned Windows x64 chainload toolchain explicitly identifies its CPU as
 not infer a target processor when this toolchain sets `CMAKE_SYSTEM_NAME`;
 Arrow 21 rejects the resulting empty processor before compiling its sources.
 
+Independent JVM consumers retain periodic full worker thread snapshots, including
+lock ownership, alongside the agent source/JAR hashes and build receipt. The
+vector-column roundtrip prints driver and operation boundaries so an unfinished
+native read or close can be identified even when Gradle cannot finish its XML.
+It repeats the complete GeoJSON/MEM/GPKG lifecycle ten times, including retained
+column assertions and owned stream/layer/dataset/file cleanup on every trial.
+The existing coroutine and eight-minute test-task limits remain unchanged. These
+diagnostics address an observed Windows consumer hang; they do not establish its
+cause or a functional fix without fresh execution evidence.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including

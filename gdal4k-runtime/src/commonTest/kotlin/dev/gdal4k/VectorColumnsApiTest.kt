@@ -54,23 +54,48 @@ class VectorColumnsApiTest {
         {"type":"Feature","properties":{"big":9007199254740999,"real":3.0,"text":"last"},"geometry":{"type":"Point","coordinates":[3,1]}}
     ]}""".encodeToByteArray()))
 
-    private suspend fun <T> layer(driverName: String = "GeoJSON", block: suspend (Dataset, Layer) -> T): T {
+    private suspend fun <T> layer(
+        driverName: String = "GeoJSON",
+        trace: (String) -> Unit = {},
+        block: suspend (Dataset, Layer) -> T,
+    ): T {
         val runtime = Gdal4k.runtime()
+        trace("source-open-before")
         return runtime.openDataset(fixture(), DatasetOpenOptions(kind = DatasetKind.Vector)).use { source ->
-            requireNotNull(source.getLayer(0)).use { input ->
+            trace("source-open-after")
+            try { requireNotNull(source.getLayer(0)).use { input ->
+                try {
                 if (driverName == "GeoJSON") block(source, input)
                 else requireNotNull(runtime.getDriver(driverName)).use { driver ->
                     val path = if (driverName == "GPKG") "/vsimem/vector-columns-api.gpkg" else ""
                     try {
+                        trace("create-vector-before")
                         requireNotNull(driver.createVector(path)).use { dataset ->
-                            requireNotNull(dataset.copyLayer(input, "records")).use { copied ->
-                                assertEquals(0, dataset.flushCache()); block(dataset, copied)
-                            }
+                            trace("create-vector-after")
+                            try {
+                                trace("copy-layer-before")
+                                requireNotNull(dataset.copyLayer(input, "records")).use { copied ->
+                                    trace("copy-layer-after")
+                                    trace("flush-before")
+                                    assertEquals(0, dataset.flushCache())
+                                    trace("flush-after")
+                                    try { block(dataset, copied) }
+                                    finally { trace("copied-layer-close-before") }
+                                }.also { trace("copied-layer-close-after") }
+                            } finally { trace("dataset-close-before") }
+                        }.also { trace("dataset-close-after") }
+                    } finally {
+                        if (path.isNotEmpty()) {
+                            trace("delete-before")
+                            assertEquals(0, driver.delete(path))
+                            trace("delete-after")
                         }
-                    } finally { if (path.isNotEmpty()) assertEquals(0, driver.delete(path)) }
+                    }
                 }
-            }
-        }
+                } finally { trace("input-layer-close-before") }
+            }.also { trace("input-layer-close-after") }
+            } finally { trace("source-close-before") }
+        }.also { trace("source-close-after") }
     }
 
     private data class Row(val fid: Long, val big: Long?, val real: Double?, val text: String?, val wkb: List<Byte>?)
@@ -96,19 +121,47 @@ class VectorColumnsApiTest {
     }
 
     @Test fun detachedColumnsMatchFeaturesOnGeoJsonMemAndGeoPackage() = runTest(timeout = 180.seconds) {
-        for (driver in listOf("GeoJSON", "MEM", "GPKG")) layer(driver) { _, layer ->
-            val expected = rows(layer)
-            assertEquals(9007199254740993L, expected[0].big)
-            assertEquals(-9007199254740993L, expected[1].big); assertEquals(9007199254740999L, expected[3].big)
-            val batches = mutableListOf<FeatureColumnBatch>()
-            layer.openColumnStream(3).use { stream ->
-                while (true) batches += stream.read() ?: break
-                assertNull(stream.read())
+        repeat(10) { trial ->
+            for (driver in listOf("GeoJSON", "MEM", "GPKG")) {
+                val trace: (String) -> Unit = { phase ->
+                    println("GDAL4K_VECTOR_COLUMNS_PHASE trial=$trial driver=$driver phase=$phase")
+                }
+                trace("fixture-before")
+                layer(driver, trace) { _, layer ->
+                    trace("rows-before")
+                    val expected = rows(layer)
+                    trace("rows-after")
+                    assertEquals(9007199254740993L, expected[0].big)
+                    assertEquals(-9007199254740993L, expected[1].big); assertEquals(9007199254740999L, expected[3].big)
+                    val batches = mutableListOf<FeatureColumnBatch>()
+                    trace("stream-open-before")
+                    layer.openColumnStream(3).use { stream ->
+                        trace("stream-open-after")
+                        try {
+                            var index = 0
+                            while (true) {
+                                trace("read-$index-before")
+                                val batch = stream.read()
+                                trace("read-$index-after-rows-${batch?.rowCount ?: 0}")
+                                if (batch == null) break
+                                batches += batch
+                                index++
+                            }
+                            trace("repeated-eof-before")
+                            assertNull(stream.read())
+                            trace("repeated-eof-after")
+                        } finally { trace("stream-close-before") }
+                    }
+                    trace("stream-close-after")
+                    assertTrue(batches.all { it.rowCount in 1..3 })
+                    assertEquals(expected, batches.flatMap(::rows))
+                    trace("layer-close-before")
+                    layer.close()
+                    trace("layer-close-after")
+                    assertEquals(expected, batches.flatMap(::rows))
+                }
+                trace("fixture-after")
             }
-            assertTrue(batches.all { it.rowCount in 1..3 })
-            assertEquals(expected, batches.flatMap(::rows))
-            layer.close()
-            assertEquals(expected, batches.flatMap(::rows))
         }
     }
     @Test fun filtersApplyAndColumnScanStartsAtBeginning() = runTest(timeout = 120.seconds) { layer { _, layer ->
