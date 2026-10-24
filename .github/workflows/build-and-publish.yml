@@ -40,9 +40,11 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - uses: actions/download-artifact@v4
         with: { name: gdal4k-maven, path: verification/build/downloads }
-      - run: python -c 'import tarfile; tarfile.open("verification/build/downloads/complete-maven.tar.gz").extractall(filter="data")'
+      - run: python verification/archive_transport.py restore --directory verification/build/downloads --destination . --expected complete-maven
       - name: Publish exactly the tested Maven artifacts
         env:
           PUBLISH_TARGET: ${{ inputs.publish_target || 'mavenCentral' }}

@@ -21,6 +21,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: '21' }
       - name: Install certificate and CRL verifier test dependencies
@@ -52,6 +54,8 @@ jobs:
           python -m unittest discover -s verification -p test_driver_profiles.py
           python -m unittest discover -s verification -p test_driver_profile_publications.py
           python -m unittest discover -s verification -p test_audit_parts.py
+          python -m unittest discover -s verification -p test_archive_transport.py
+          python -m unittest discover -s verification -p test_ci_stage.py
           node --test .github/actions/upload-audit-parts/index.test.cjs
           python -m unittest discover -s verification -p test_combined_driver_memory_report.py
           python -m unittest discover -s verification -p test_postgis_fixture.py
@@ -84,6 +88,8 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - run: python -m pip install -r verification/requirements.txt
       - uses: actions/cache/restore@v6
         id: native-cache
@@ -118,9 +124,9 @@ jobs:
             python -m unittest discover -s verification -p test_windows_winsock_link.py
             python -m unittest discover -s verification -p test_windows_native_stall.py
             python verification/winpthread_handoff_probe.py --output verification/results/ci-commands-mingwX64/winpthread-handoff --run
-            python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics
+            python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics --archive-format xz
           else
-            python verification/ci.py '${{ matrix.target }}' ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
+            python verification/ci.py '${{ matrix.target }}' --archive-format xz ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
           fi
       - uses: actions/cache/save@v6
         if: always()
@@ -130,7 +136,7 @@ jobs:
       - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-${{ matrix.target }}
-          path: verification/build/staged/*.tar.gz
+          path: verification/build/staged/*.tar.xz
           if-no-files-found: error
       - uses: ./.github/actions/upload-audit-artifact
         if: always()
@@ -187,6 +193,8 @@ jobs:
         with: { node-version: '24' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - run: python -m pip install -r verification/requirements.txt
       - name: Pinned Emscripten SDK
         run: |
@@ -216,7 +224,7 @@ jobs:
       - name: Same own engine in JS and wasmJs, Node and Chromium
         run: |
           source verification/tools/emsdk/emsdk_env.sh
-          python verification/ci.py web
+          python verification/ci.py web --archive-format xz
       - uses: actions/cache/save@v6
         if: always()
         with:
@@ -225,7 +233,7 @@ jobs:
       - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-web
-          path: verification/build/staged/*.tar.gz
+          path: verification/build/staged/*.tar.xz
           if-no-files-found: error
       - uses: ./.github/actions/upload-audit-artifact
         if: always()
@@ -255,6 +263,8 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - run: python -m pip install -r verification/requirements.txt
       - uses: android-actions/setup-android@v3
         with:
@@ -276,7 +286,7 @@ jobs:
           restore-keys: |
             engine-android-${{ matrix.abi }}-${{ hashFiles('gdal4k-engine/ports/**', 'gdal4k-engine/engine/**') }}-
             engine-android-${{ matrix.abi }}-
-      - run: python verification/ci.py 'android-${{ matrix.abi }}'
+      - run: python verification/ci.py 'android-${{ matrix.abi }}' --archive-format xz
       - name: Allow emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -300,7 +310,7 @@ jobs:
       - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-android-${{ matrix.abi }}
-          path: verification/build/staged/*.tar.gz
+          path: verification/build/staged/*.tar.xz
           if-no-files-found: error
       - uses: ./.github/actions/upload-audit-artifact
         if: always()
@@ -322,21 +332,26 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - uses: actions/download-artifact@v4
         with: { pattern: 'engine-*', path: verification/build/downloads, merge-multiple: true }
       - name: Restore verified outputs only
-        run: python -c 'import tarfile; from pathlib import Path; [tarfile.open(p).extractall(filter="data") for p in Path("verification/build/downloads").glob("*.tar.gz")]'
+        run: >-
+          python verification/archive_transport.py restore
+          --directory verification/build/downloads --destination .
+          --expected linuxX64 linuxArm64 macosArm64 mingwX64 iosArm64 iosSimulatorArm64 web android-arm64-v8a
       - name: Assemble complete Maven repository and verify explicit JVM payloads and Android AAR
-        run: python verification/ci.py aggregate
+        run: python verification/ci.py aggregate --archive-format xz
       - uses: ./.github/actions/upload-audit-artifact
         with:
           name: gdal4k-maven
-          path: verification/build/staged/complete-maven.tar.gz
+          path: verification/build/staged/complete-maven.tar.xz
           if-no-files-found: error
       - uses: ./.github/actions/upload-audit-artifact
         with:
           name: gdal4k-jvm-maven
-          path: verification/build/staged/jvm-maven.tar.gz
+          path: verification/build/staged/jvm-maven.tar.xz
           if-no-files-found: error
 
       - uses: ./.github/actions/upload-audit-artifact
@@ -365,11 +380,13 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - uses: actions/download-artifact@v4
         with: { name: gdal4k-jvm-maven, path: verification/build/downloads }
       - name: Consume an explicitly selected JVM payload without producer files
         run: |
-          python -c 'import tarfile; tarfile.open("verification/build/downloads/jvm-maven.tar.gz").extractall(filter="data")'
+          python verification/archive_transport.py restore --directory verification/build/downloads --destination . --expected jvm-maven
           python verification/consumer.py --target jvm --no-publish --jvm-binary ${{ matrix.binary }}
           python verification/consumer.py --target jvm --no-publish --expect-missing-jvm-binary
       - uses: ./.github/actions/upload-audit-artifact
@@ -389,11 +406,13 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check gzip and XZ transport support
+        run: python verification/archive_transport.py check
       - uses: actions/download-artifact@v4
         with: { name: engine-linuxArm64, path: verification/build/downloads }
       - uses: actions/download-artifact@v4
         with: { name: gdal4k-maven, path: verification/build/downloads }
-      - run: python -c 'import tarfile; from pathlib import Path; [tarfile.open(p).extractall(filter="data") for p in Path("verification/build/downloads").glob("*.tar.gz")]'
+      - run: python verification/archive_transport.py restore --directory verification/build/downloads --destination . --expected linuxArm64 complete-maven
       - run: python verification/ci.py linuxArm64-run
       - uses: ./.github/actions/upload-audit-artifact
         if: always()

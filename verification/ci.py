@@ -8,11 +8,11 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
 from pathlib import Path
 from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ANDROID_ENGINE, ENGINE_COORDINATES, ENGINE_TARGETS
 from command_evidence import run_with_evidence
+from archive_transport import write_archive
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT/'gdal4k-engine/build'
@@ -59,7 +59,7 @@ def consumer(target, *options):
     diagnostic_options = ['--command-timeout-seconds', max(1, COMMAND_TIMEOUT - 60)] if COMMAND_TIMEOUT is not None else []
     run(sys.executable, ROOT/'verification/consumer.py', '--target', target, '--no-publish', '--repo', REPO, *diagnostic_options, *options)
 
-def stage(name, platforms=(), targets=(), include_root=False, include_tests=False):
+def stage(name, platforms=(), targets=(), include_root=False, include_tests=False, archive_format='gzip'):
     """Only portable outputs; no producer installations, SDKs or build caches."""
     files=set()
     for platform in platforms:
@@ -79,10 +79,11 @@ def stage(name, platforms=(), targets=(), include_root=False, include_tests=Fals
         files.update(f for f in (ROOT/'gdal4k-runtime/build/bin').rglob('*') if f.is_file() and 'debugTest' in f.parts)
         for result in (ROOT/'verification/results').glob('published-consumer-linuxArm64/bin/**/*'):
             if result.is_file():files.add(result)
-    output=ROOT/f'verification/build/staged/{name}.tar.gz';output.parent.mkdir(parents=True,exist_ok=True)
-    with tarfile.open(output,'w:gz') as archive:
-        for f in sorted(files):archive.add(f,arcname=f.relative_to(ROOT),recursive=False)
+    suffix = {'gzip': 'gz', 'xz': 'xz'}[archive_format]
+    output=ROOT/f'verification/build/staged/{name}.tar.{suffix}'
+    summary = write_archive(output, sorted(files), ROOT)
     print('Staged '+str(output),flush=True)
+    print(json.dumps({'stagedArchive': summary}, sort_keys=True), flush=True)
 
 def main():
     global COMMAND_TIMEOUT, COMMAND_EVIDENCE, WINDOWS_COLUMN_DIAGNOSTICS
@@ -93,6 +94,8 @@ def main():
                    help='Bound each child command and retain output under verification/results/ci-commands-TARGET')
     p.add_argument('--windows-column-diagnostics', action='store_true',
                    help='Capture owned native/Java stacks and bound stalled source JVM column reads')
+    p.add_argument('--archive-format', choices=['gzip', 'xz'], default='gzip',
+                   help='Compression of staged CI transport archives (legacy default: gzip)')
     p.add_argument('--ios-device');a=p.parse_args();target=a.target
     if a.windows_column_diagnostics:
         if os.name != 'nt' or target != 'mingwX64' or a.build_engine_only or a.command_timeout_seconds is None:
@@ -145,7 +148,7 @@ def main():
         run(sys.executable, ROOT/'verification/audit-engine.py', PLATFORMS[target])
         publish(target)
         consumer(target,*(['--compile-only'] if cross else []),*(['--ios-device',a.ios_device] if a.ios_device else []))
-        stage(target,[PLATFORMS[target]],[target],include_tests=target=='linuxArm64')
+        stage(target,[PLATFORMS[target]],[target],include_tests=target=='linuxArm64',archive_format=a.archive_format)
     elif target=='web':
         run('node', ROOT/'verification/web-output-modes.mjs')
         gradle(':gdal4k-runtime:jsNodeTest',':gdal4k-runtime:wasmJsNodeTest',':gdal4k-runtime:jsBrowserTest',':gdal4k-runtime:wasmJsBrowserTest')
@@ -157,11 +160,11 @@ def main():
             run(sys.executable, ROOT/'verification/web-inputs.py', '--repo', REPO, '--target', t)
             run(sys.executable, ROOT/'verification/web-inputs.py', '--repo', REPO, '--target', t, '--http-policy')
             run(sys.executable, ROOT/'verification/related-inputs.py', '--repo', REPO, '--target', t)
-        stage('web',['web'],['js','wasmJs'])
+        stage('web',['web'],['js','wasmJs'],archive_format=a.archive_format)
     elif target.startswith('android-'):
         gradle(':gdal4k-engine:buildEngine'+''.join(part.title() for part in target.split('-')))
         run(sys.executable,ROOT/'verification/audit-engine.py',target)
-        stage(target,[target])
+        stage(target,[target],archive_format=a.archive_format)
     elif target=='aggregate':
         # All four JVM JNI libraries and Android ARM64 are mandatory before publication.
         engines=[*PLATFORMS.values(),'web','android-arm64-v8a']
@@ -200,8 +203,8 @@ def main():
         run(sys.executable, ROOT/'verification/publish.py','--repo',REPO,'--destination',published)
         run(sys.executable, ROOT/'verification/consumer.py','--target','jvm','--no-publish','--repo',published)
         run(sys.executable, ROOT/'verification/engine-consumer.py', '--repo', published, '--targets', 'jvm', '--jvm-binary', host_binary())
-        stage('complete-maven',targets=[*PLATFORMS,'js','wasmJs','jvm','android'],include_root=True)
-        stage('jvm-maven',targets=['jvm'],include_root=True)
+        stage('complete-maven',targets=[*PLATFORMS,'js','wasmJs','jvm','android'],include_root=True,archive_format=a.archive_format)
+        stage('jvm-maven',targets=['jvm'],include_root=True,archive_format=a.archive_format)
     elif target=='linuxArm64-run':
         # Kotlin/Native has no Linux ARM64 compiler host. Execute the cross-linked tests here.
         native=ROOT/'gdal4k-runtime/build/bin/linuxArm64/debugTest/test.kexe'
