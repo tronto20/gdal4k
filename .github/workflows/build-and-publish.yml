@@ -2,10 +2,10 @@ name: Build and Publish
 on:
   pull_request:
     branches: [main, 'codex/**']
-    paths: ['.github/workflows/**', 'build-logic/**', 'gdal4k*/**', 'verification/**', 'sample-cli/**', 'sample-app/**', 'gradle/**', '*.gradle.kts', 'gradle.properties', 'kotlin-js-store/**']
+    paths: ['.github/workflows/**', '.github/actions/**', 'build-logic/**', 'gdal4k*/**', 'verification/**', 'sample-cli/**', 'sample-app/**', 'gradle/**', '*.gradle.kts', 'gradle.properties', 'kotlin-js-store/**']
   push:
     branches: [main]
-    paths: ['.github/workflows/**', 'build-logic/**', 'gdal4k*/**', 'verification/**', 'sample-cli/**', 'sample-app/**', 'gradle/**', '*.gradle.kts', 'gradle.properties', 'kotlin-js-store/**']
+    paths: ['.github/workflows/**', '.github/actions/**', 'build-logic/**', 'gdal4k*/**', 'verification/**', 'sample-cli/**', 'sample-app/**', 'gradle/**', '*.gradle.kts', 'gradle.properties', 'kotlin-js-store/**']
   workflow_dispatch:
     inputs:
       publish:

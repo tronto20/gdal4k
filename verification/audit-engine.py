@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from windows_pe import validate_system_dependencies
 
 ROOT=Path(__file__).resolve().parent.parent
 p=argparse.ArgumentParser();p.add_argument('platform');a=p.parse_args()
@@ -54,8 +55,9 @@ else:
     output=subprocess.check_output([str(objdump),'-p',str(library)],text=True)
     if platform.startswith('windows'):
         dependencies=re.findall(r'DLL Name:\s*(\S+)',output)
-        allowed={'kernel32.dll','user32.dll','advapi32.dll','ws2_32.dll','crypt32.dll','bcrypt.dll','secur32.dll','ole32.dll','oleaut32.dll','uuid.dll','shell32.dll','msvcrt.dll','ntdll.dll','shlwapi.dll','version.dll','iphlpapi.dll'}
-        unexpected=[d for d in dependencies if d.lower() not in allowed and not d.lower().startswith(('api-ms-win-','ext-ms-win-'))]
+        try:validate_system_dependencies(dependencies)
+        except ValueError as failure:raise SystemExit(str(failure))
+        unexpected=[]
     else:
         dependencies=re.findall(r'NEEDED\s+(\S+)',output)
         allowed={'libc.so','libm.so','libdl.so','liblog.so','libz.so','libandroid.so'} if platform.startswith('android') else {'libc.so.6','libm.so.6','libdl.so.2','libpthread.so.0','librt.so.1','ld-linux-x86-64.so.2','ld-linux-aarch64.so.1'}

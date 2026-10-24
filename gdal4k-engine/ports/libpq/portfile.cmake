@@ -5,6 +5,11 @@ vcpkg_download_distfile(ARCHIVE
     SHA512 1a7606b5b2460a4fc817d491e1e03262df17ece6869fa3d2b80647baffcfb790fbcfa019c3b10fab9f9a14218651b6a358864e40a5d8c5ddc796db2d6e5b469c
 )
 
+set(gdal4k_libpq_windows_patches)
+if(VCPKG_TARGET_IS_WINDOWS)
+    list(APPEND gdal4k_libpq_windows_patches windows/meson-canonical-generator-paths.patch)
+endif()
+
 vcpkg_extract_source_archive(
     SOURCE_PATH
     ARCHIVE "${ARCHIVE}"
@@ -18,6 +23,7 @@ vcpkg_extract_source_archive(
         windows/getopt.patch
         windows/pthread-symbols.patch
         popcount-sve-hwcap-compat.patch
+        ${gdal4k_libpq_windows_patches}
 )
 
 file(GLOB _py3_include_path "${CURRENT_HOST_INSTALLED_DIR}/include/python3*")

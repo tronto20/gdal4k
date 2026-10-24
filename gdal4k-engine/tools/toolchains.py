@@ -8,10 +8,14 @@ from pathlib import Path
 KOTLIN_VERSION = '2.4.21'
 
 def mingw_header_overlay(gcc, directory):
-    """Backport GCC PR libstdc++/91786 without modifying the user's K/N SDK.
+    """Keep the pinned GCC/MinGW headers usable with K/N's current Clang.
 
     https://gcc.gnu.org/legacy-ml/libstdc++/2019-11/msg00097.html
     Move filesystem_error before u8path uses it. Definitions and ABI are unchanged.
+    The old MinGW intrin.h also redeclares three SSE3 functions that Clang's
+    x86intrin.h already defines as constexpr. Keep those declarations for GCC;
+    Clang uses its existing definitions without increasing the target CPU level.
+    Only this private producer overlay changes, never the user's K/N SDK.
     """
     text=(gcc/'include/c++/9.2.0/bits/fs_path.h').read_text()
     begin=text.index('  class filesystem_error : public std::system_error\n')
@@ -20,8 +24,18 @@ def mingw_header_overlay(gcc, directory):
     text=text[:begin]+text[end:]
     position=text.index('  template<typename _InputIterator>\n    inline auto\n    u8path(')
     text=text[:position]+definition+text[position:]
+    intrinsics=(gcc/'x86_64-w64-mingw32/include/intrin.h').read_text()
+    for declaration in (
+        '    __MACHINEX86X(__m128d _mm_movedup_pd(__m128d))\n',
+        '    __MACHINEX86X(__m128 _mm_movehdup_ps(__m128))\n',
+        '    __MACHINEX86X(__m128 _mm_moveldup_ps(__m128))\n',
+    ):
+        if intrinsics.count(declaration)!=1:
+            raise RuntimeError('Unexpected pinned MinGW intrinsic declaration: '+declaration.strip())
+        intrinsics=intrinsics.replace(declaration,'#if !defined(__clang__)\n'+declaration+'#endif\n')
     destination=directory/'bits/fs_path.h';destination.parent.mkdir(parents=True,exist_ok=True)
     destination.write_text(text)
+    (directory/'intrin.h').write_text(intrinsics)
     return directory
 
 def konan_home():
@@ -55,6 +69,7 @@ def native_toolchain(target, destination):
         # This GCC runtime uses emulated TLS, including std::call_once's internal
         # variables. Match K/N's clangFlags.mingw_x64 for every dependency too.
         text = f'''set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR AMD64)
 set(CMAKE_C_COMPILER "{(llvm/'bin/clang.exe').as_posix()}")
 set(CMAKE_CXX_COMPILER "{(llvm/'bin/clang++.exe').as_posix()}")
 set(CMAKE_C_COMPILER_TARGET x86_64-w64-windows-gnu)

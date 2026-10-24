@@ -1,0 +1,78 @@
+{
+  "version": "20260107.1",
+  "archive": {
+    "url": "https://github.com/abseil/abseil-cpp/archive/20260107.1.tar.gz",
+    "bytes": 2301097,
+    "sha512": "f5012885d6b6844a9cf5ed92ad5468b8757db33dfe1364bfb232fff928e06c550c7eb4557f45186a8ac4d18b178df9be267681abab4a6de40823b574afbe9960",
+    "sha256": "4314e2a7cbac89cac25a2f2322870f343d81579756ceff7f431803c2c9090195"
+  },
+  "members": [
+    {
+      "path": "CMakeLists.txt",
+      "archiveMember": "abseil-cpp-20260107.1/CMakeLists.txt",
+      "bytes": 9718,
+      "sha256": "60b4b6b2e7d94702e0a1c3ab42286c495794da2888b36f8791d59973de0af8d2"
+    },
+    {
+      "path": "LICENSE",
+      "archiveMember": "abseil-cpp-20260107.1/LICENSE",
+      "bytes": 11361,
+      "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747"
+    }
+  ],
+  "originalVcpkg": {
+    "revision": "3cd21e48a75f67acfef289da52893ce79144aaa1",
+    "portVersion": 3,
+    "files": {
+      "003-force-cxx-17.patch": {
+        "rawBytes": 572,
+        "rawGitBlobSha1": "317af2768afefefd0a0ac12bce57293673753161",
+        "rawSha256": "6481fcaa774212d1453396c26c5240bdbd3cbb25784a94ffa077651b718cf367",
+        "crlfSequences": 0,
+        "normalizedLfBytes": 572,
+        "normalizedLfSha256": "6481fcaa774212d1453396c26c5240bdbd3cbb25784a94ffa077651b718cf367"
+      },
+      "fix-gcc13-constexpr-function-pointer.patch": {
+        "rawBytes": 1223,
+        "rawGitBlobSha1": "9f1e40c787209828bad0de666e2c3c4ebafa27ab",
+        "rawSha256": "4ea325ea617d3b6ed9dc29e09f4d22b9836c99c114d8c4b09e181e8cbae51e6c",
+        "crlfSequences": 24,
+        "normalizedLfBytes": 1199,
+        "normalizedLfSha256": "cfac9c61994d8fda97e08ee3745a387def26441e2d83b4aec7f349648d4610aa"
+      },
+      "fix-heterogeneous_lookup_testing-target.patch": {
+        "rawBytes": 320,
+        "rawGitBlobSha1": "dea5cec607b4d8e691e3e6fff58de4cf48c4d2ae",
+        "rawSha256": "fc84e3f929674dd0f0dfd84e267f7ed431b95417bf69a61149b69c5e40c4ab6c",
+        "crlfSequences": 0,
+        "normalizedLfBytes": 320,
+        "normalizedLfSha256": "fc84e3f929674dd0f0dfd84e267f7ed431b95417bf69a61149b69c5e40c4ab6c"
+      },
+      "fix-mingw-dll.patch": {
+        "rawBytes": 508,
+        "rawGitBlobSha1": "3958ce374a58b6e26d8b200390439409f7cb3635",
+        "rawSha256": "da10bf980900c2b8c2bde9028419999a8cfa1ec3c3d77707239459a078231a5c",
+        "crlfSequences": 0,
+        "normalizedLfBytes": 508,
+        "normalizedLfSha256": "da10bf980900c2b8c2bde9028419999a8cfa1ec3c3d77707239459a078231a5c"
+      },
+      "portfile.cmake": {
+        "rawBytes": 2936,
+        "rawGitBlobSha1": "ff47e9114e06435b17f529078c2cbfcab6dc033e",
+        "rawSha256": "eaff26e978506f46faf87082698ed9db1e5612cc5ba1c7e7d3ee977048cf305c",
+        "crlfSequences": 72,
+        "normalizedLfBytes": 2864,
+        "normalizedLfSha256": "452a8db273dc68bf33f1275e9aae5da6b54d858b3d48621d35a227d5359a783c"
+      },
+      "vcpkg.json": {
+        "rawBytes": 1122,
+        "rawGitBlobSha1": "03df6a26f24fca79499bd85a84aaa9b9134d30fd",
+        "rawSha256": "4b144f80f2a186a1546944af2fa8dd3fbd050b2348faa23fabb3c0f62dbebe12",
+        "crlfSequences": 0,
+        "normalizedLfBytes": 1122,
+        "normalizedLfSha256": "4b144f80f2a186a1546944af2fa8dd3fbd050b2348faa23fabb3c0f62dbebe12"
+      }
+    }
+  },
+  "scope": "Exact official archive CMake and Apache license fixtures. Vcpkg raw Git blob hashes and repository LF-normalized hashes are separate: existing .gitattributes requires LF, with no source/context changes. SDK/network-free CMake tests use synthetic target selection and the host compiler; actual Windows and full upstream cross compile acceptance remain separate."
+}

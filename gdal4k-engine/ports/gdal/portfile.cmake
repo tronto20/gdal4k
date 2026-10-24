@@ -11,6 +11,7 @@ vcpkg_from_github(
         libkml.patch
         sqlite3.diff
         target-is-valid.patch
+        separate-gpkg-arrow-handoff.patch
 )
 vcpkg_find_acquire_program(PYTHON3)
 vcpkg_execute_required_process(

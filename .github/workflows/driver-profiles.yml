@@ -9,12 +9,16 @@ on:
       - 'build.gradle.kts'
       - 'gradle.properties'
       - '.github/workflows/driver-profiles.yml'
+      - '.github/actions/**'
   push:
     branches: [main]
     paths:
       - 'gdal4k-engine/**'
       - 'verification/driver-profile/**'
+      - 'verification/package-audit-parts.py'
+      - 'verification/test_audit_parts.py'
       - '.github/workflows/driver-profiles.yml'
+      - '.github/actions/**'
 permissions:
   contents: read
 defaults:
@@ -73,14 +77,14 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.profile-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: profile-${{ matrix.profile }}-${{ matrix.target }}
           path: |
             build/driver-profiles/**/report.json
             build/driver-profiles/**/*-maven.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: profile-evidence-${{ matrix.profile }}-${{ matrix.target }}
@@ -163,14 +167,14 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.profile-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: profile-${{ matrix.profile }}-linux-amd64
           path: |
             build/driver-profiles/**/report.json
             build/driver-profiles/**/*-maven.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: profile-evidence-${{ matrix.profile }}-linux-amd64
@@ -232,14 +236,14 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.profile-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: profile-cross-combined-linux-arm64
           path: |
             verification/build/combined-linux-arm64.tar.gz
             verification/build/combined-linux-arm64.tar.gz.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: profile-cross-evidence-combined-linux-arm64
@@ -274,14 +278,14 @@ jobs:
         run: df -h . && uname -sm && docker version
       - name: Verify unchanged transport, run actual source and published JVM and Native, close owned fixtures
         run: python verification/driver-profile/arm64-profile.py run --transfer verification/build/arm64-transfer/combined-linux-arm64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: profile-combined-linux-arm64
           path: |
             build/driver-profiles/**/report.json
             build/driver-profiles/**/*-maven.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: profile-evidence-combined-linux-arm64
@@ -309,4 +313,94 @@ jobs:
             build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DatasetOutputPathKt*.class
             build/driver-profiles/**/source/gdal4k-engine/build/verified-staged/
             build/driver-profiles/**/source/gdal4k-engine/build/engine/linux-arm64/cmake/gdal4k_http_probe
+          if-no-files-found: warn
+  combined-windows:
+    name: Profile combined on windows-amd64
+    runs-on: windows-2025
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/verification/build/vcpkg-cache,readwrite
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '21' }
+      - uses: actions/setup-python@v6
+        with: { python-version: '3.12' }
+      - run: python -m pip install -r verification/requirements.txt h5py==3.13.0 numpy==2.2.6
+      - name: Install exact Windows fixture certificate tools
+        run: python -m pip install --require-hashes -r verification/driver-profile/windows-tls-requirements.txt
+      - name: Verify actual Windows kernel peak memory, private ACL and owned process cleanup
+        run: python verification/windows-process-selfcheck.py
+      - name: Verify private Windows fixture certificate generation
+        run: python -m unittest discover -s verification -p test_http_fixture_windows.py
+      - uses: actions/cache/restore@v6
+        id: profile-cache
+        with:
+          path: verification/build/vcpkg-cache
+          key: optional-combined-windows-amd64-${{ hashFiles('gdal4k-engine/ports/**', 'gdal4k-engine/engine/**', 'gdal4k-engine/tools/toolchains.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            optional-combined-windows-amd64-${{ hashFiles('gdal4k-engine/ports/**', 'gdal4k-engine/engine/**', 'gdal4k-engine/tools/toolchains.py') }}-
+            optional-combined-windows-amd64-
+            engine-mingwX64-
+      - name: Inspect space and actual Windows x64 host
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free
+          python -c 'import platform; print(platform.system(), platform.machine())'
+      - name: Actual default Windows engine size baseline
+        run: python verification/ci.py mingwX64 --build-engine-only --command-timeout-seconds 10800
+      - name: Isolated combined source and published JVM and Native consumers with owned fixtures
+        run: python gdal4k-engine/tools/driver-profile.py combined windows-amd64
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: verification/build/vcpkg-cache
+          key: ${{ steps.profile-cache.outputs.cache-primary-key }}
+      - uses: ./.github/actions/upload-audit-artifact
+        with:
+          name: profile-combined-windows-amd64
+          path: |
+            build/driver-profiles/**/report.json
+            build/driver-profiles/**/*-maven.tar.gz
+          if-no-files-found: error
+      - uses: ./.github/actions/upload-audit-artifact
+        if: always()
+        with:
+          name: profile-evidence-combined-windows-amd64
+          path: |
+            verification/results/ci-commands-mingwX64/
+            verification/results/windows-process-selfcheck/
+            verification/results/postgis-windows-fixtures/**
+            verification/results/native-http-fixture-*/*-requests.json
+            verification/results/native-http-fixture-*/*.crt
+            verification/results/native-http-fixture-*/certificate-tool.json
+            verification/results/native-http-fixture-*/*-generator.json
+            gdal4k-engine/build/engine/windows-amd64/manifest.json
+            build/driver-profiles/**/inputs.json
+            build/driver-profiles/**/prepared.json
+            build/driver-profiles/**/source/verification/results/
+            build/driver-profiles/**/source/verification/build/driver-profile.h5
+            build/driver-profiles/**/source/verification/build/arrow-ipc-regression/arrow-ipc-check.exe
+            build/driver-profiles/**/source/gdal4k/build/test-results/
+            build/driver-profiles/**/source/gdal4k-runtime/build/test-results/
+            build/driver-profiles/**/source/gdal4k-runtime/build/bin/mingwX64/debugTest/
+            build/driver-profiles/**/source/gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/DriverProfile*.kt
+            build/driver-profiles/**/source/gdal4k-runtime/src/commonTest/kotlin/dev/gdal4k/NativeHttpProfileTest.kt
+            build/driver-profiles/**/source/gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/CombinedDriverMemoryProbe.kt
+            build/driver-profiles/**/source/gdal4k-runtime/build/combined-driver-memory-classpath.json
+            build/driver-profiles/**/source/gdal4k-runtime/build/http-memory-classpath.json
+            build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/HttpMemoryProbe*.class
+            build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/CombinedDriverMemoryProbe*.class
+            build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DriverProfile*.class
+            build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DatasetApiTestKt*.class
+            build/driver-profiles/**/source/gdal4k-runtime/build/classes/kotlin/jvm/test/dev/gdal4k/DatasetOutputPathKt*.class
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/manifest.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/native-linker-options.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/licenses/*.txt
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/gdal4k_http_probe.exe
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/vcpkg-buildtrees/*/*.log
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/CMakeCache.txt
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/windows-amd64/cmake/CMakeFiles/*/CMakeCXXCompiler.cmake
           if-no-files-found: warn

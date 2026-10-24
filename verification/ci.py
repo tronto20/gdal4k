@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build, execute and stage the actual library artifacts, never a system GDAL probe."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -22,16 +23,29 @@ PLATFORMS = {'macosArm64':'macos-arm64','linuxX64':'linux-amd64',
  'iosSimulatorArm64':'ios-simulator-arm64'}
 COMMAND_TIMEOUT = None
 COMMAND_EVIDENCE = None
+WINDOWS_COLUMN_DIAGNOSTICS = False
 
-def run(*args):
+def run(*args, env=None, windows_column_diagnostics=False, windows_column_dll_sha256=None):
     if COMMAND_TIMEOUT is not None:
-        run_with_evidence(args, cwd=ROOT, directory=COMMAND_EVIDENCE, timeout=COMMAND_TIMEOUT)
+        run_with_evidence(args, cwd=ROOT, directory=COMMAND_EVIDENCE, timeout=COMMAND_TIMEOUT, env=env,
+                          windows_column_diagnostics=windows_column_diagnostics,
+                          windows_column_dll_sha256=windows_column_dll_sha256)
     else:
-        subprocess.run([str(x) for x in args], cwd=ROOT, check=True)
+        subprocess.run([str(x) for x in args], cwd=ROOT, check=True, env=env)
 
 def gradle(*tasks, options=()):
     diagnostic_options = ['--no-daemon', '--init-script', ROOT/'verification/ci-diagnostics.init.gradle'] if COMMAND_TIMEOUT is not None else []
-    run(GRADLE, '--console=plain', *diagnostic_options, f'-Dmaven.repo.local={REPO}', *options, *tasks)
+    column_diagnostics = WINDOWS_COLUMN_DIAGNOSTICS and any(task.endswith(':jvmTest') for task in tasks)
+    environment, dll_sha = None, None
+    if column_diagnostics:
+        from jvm_hang_diagnostics import prepare_jvm_hang_diagnostics
+        agent = prepare_jvm_hang_diagnostics(ROOT/'gdal4k-runtime')
+        environment = os.environ.copy()
+        environment['GDAL4K_SOURCE_JVM_AGENT64'] = base64.urlsafe_b64encode(agent['jvm_arg'].encode('utf-8')).decode('ascii')
+        manifest = json.loads((BUILD/'engine/windows-amd64/manifest.json').read_text())
+        dll_sha = manifest['artifacts']['jvm-resources/gdal4k/windows-amd64/gdal4k.dll']
+    run(GRADLE, '--console=plain', *diagnostic_options, f'-Dmaven.repo.local={REPO}', *options, *tasks,
+        env=environment, windows_column_diagnostics=column_diagnostics, windows_column_dll_sha256=dll_sha)
 
 def publish(target):
     title=target[0].upper()+target[1:]
@@ -71,13 +85,19 @@ def stage(name, platforms=(), targets=(), include_root=False, include_tests=Fals
     print('Staged '+str(output),flush=True)
 
 def main():
-    global COMMAND_TIMEOUT, COMMAND_EVIDENCE
+    global COMMAND_TIMEOUT, COMMAND_EVIDENCE, WINDOWS_COLUMN_DIAGNOSTICS
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('target', choices=[*PLATFORMS,'web','android-arm64-v8a','aggregate','linuxArm64-run'])
     p.add_argument('--build-engine-only',action='store_true',help='Build the native engine before starting a simulator or running Kotlin tests')
     p.add_argument('--command-timeout-seconds', type=int,
                    help='Bound each child command and retain output under verification/results/ci-commands-TARGET')
+    p.add_argument('--windows-column-diagnostics', action='store_true',
+                   help='Capture owned native/Java stacks and bound stalled source JVM column reads')
     p.add_argument('--ios-device');a=p.parse_args();target=a.target
+    if a.windows_column_diagnostics:
+        if os.name != 'nt' or target != 'mingwX64' or a.build_engine_only or a.command_timeout_seconds is None:
+            p.error('--windows-column-diagnostics requires a bounded Windows mingwX64 source-test command')
+        WINDOWS_COLUMN_DIAGNOSTICS = True
     if a.command_timeout_seconds is not None:
         if a.command_timeout_seconds <= 0:p.error('--command-timeout-seconds must be positive')
         COMMAND_TIMEOUT = a.command_timeout_seconds

@@ -21,6 +21,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '21' }
       - run: |
           python -m unittest discover -s verification -p test_publish.py
           python -m unittest discover -s verification -p test_consumer_evidence.py
@@ -28,6 +30,14 @@ jobs:
           python -m unittest discover -s verification -p test_embed_data.py
           python -m unittest discover -s verification -p test_arrow_ipc_toolchain.py
           python -m unittest discover -s verification -p test_libpq_hwcap_compat.py
+          python -m unittest discover -s verification -p test_libpq_windows_paths.py
+          python -m unittest discover -s verification -p test_boost_atomic_windows.py
+          python -m unittest discover -s verification -p test_abseil_windows_flags.py
+          python -m unittest discover -s verification -p test_native_toolchain_processor.py
+          python -m unittest discover -s verification -p test_native_link_response_files.py
+          python -m unittest discover -s verification -p test_jvm_hang_diagnostics.py
+          python -m unittest discover -s verification -p test_gpkg_arrow_handoff.py
+          python -m unittest discover -s verification -p test_winpthread_handoff_probe.py
           python -m unittest discover -s verification -p test_xsimd_hwcap_compat.py
           python -m unittest discover -s verification -p test_arrow_ipc_staged.py
           python -m unittest discover -s verification -p test_staged_engine.py
@@ -38,9 +48,19 @@ jobs:
           python -m unittest discover -s verification -p test_arm64_postgis_report.py
           python -m unittest discover -s verification -p test_postgis_arm64_fixture.py
           python -m unittest discover -s verification -p test_driver_profiles.py
+          python -m unittest discover -s verification -p test_driver_profile_publications.py
+          python -m unittest discover -s verification -p test_audit_parts.py
+          node --test .github/actions/upload-audit-parts/index.test.cjs
           python -m unittest discover -s verification -p test_combined_driver_memory_report.py
           python -m unittest discover -s verification -p test_postgis_fixture.py
           python -m unittest discover -s verification -p test_postgis_profile_report.py
+          python -m unittest discover -s verification -p test_windows_process.py
+          python -m unittest discover -s verification -p test_windows_native_stall.py
+          python -m unittest discover -s verification -p test_windows_pe.py
+          python -m unittest discover -s verification -p test_http_fixture_windows.py
+          python -m unittest discover -s verification -p test_http_error_diagnostics.py
+          python -m unittest discover -s verification -p test_postgis_windows_fixture.py
+          python -m unittest discover -s verification -p test_postgis_windows_report.py
   native:
     name: Native ${{ matrix.target }}
     strategy:
@@ -90,7 +110,11 @@ jobs:
           if [ '${{ matrix.target }}' = mingwX64 ]; then
             python -m unittest discover -s verification -p test_embed_data.py
             python -m unittest discover -s verification -p test_command_evidence.py
-            python verification/ci.py mingwX64 --command-timeout-seconds 3600
+            python -m unittest discover -s verification -p test_windows_process.py
+            python -m unittest discover -s verification -p test_windows_pe.py
+            python -m unittest discover -s verification -p test_windows_native_stall.py
+            python verification/winpthread_handoff_probe.py --output verification/results/ci-commands-mingwX64/winpthread-handoff --run
+            python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics
           else
             python verification/ci.py '${{ matrix.target }}' ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
           fi
@@ -99,12 +123,12 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-${{ matrix.target }}
           path: verification/build/staged/*.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-${{ matrix.target }}
@@ -113,6 +137,7 @@ jobs:
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
             verification/results/ci-commands-*/
+            gdal4k-engine/build/jvm-resources/gdal4k/windows-amd64/gdal4k.dll
             verification/results/raster-transport-*.json
             verification/results/window-memory-*.json
             verification/results/window-memory/
@@ -192,12 +217,12 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.web-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-web
           path: verification/build/staged/*.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-web
@@ -267,12 +292,12 @@ jobs:
         with:
           path: verification/build/vcpkg-cache
           key: ${{ steps.android-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: engine-android-${{ matrix.abi }}
           path: verification/build/staged/*.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-android-${{ matrix.abi }}
@@ -298,18 +323,18 @@ jobs:
         run: python -c 'import tarfile; from pathlib import Path; [tarfile.open(p).extractall(filter="data") for p in Path("verification/build/downloads").glob("*.tar.gz")]'
       - name: Assemble complete Maven repository and verify explicit JVM payloads and Android AAR
         run: python verification/ci.py aggregate
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: gdal4k-maven
           path: verification/build/staged/complete-maven.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         with:
           name: gdal4k-jvm-maven
           path: verification/build/staged/jvm-maven.tar.gz
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-jvm-payload-selection
@@ -342,7 +367,7 @@ jobs:
           python -c 'import tarfile; tarfile.open("verification/build/downloads/jvm-maven.tar.gz").extractall(filter="data")'
           python verification/consumer.py --target jvm --no-publish --jvm-binary ${{ matrix.binary }}
           python verification/consumer.py --target jvm --no-publish --expect-missing-jvm-binary
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-published-jvm-${{ matrix.os }}
@@ -365,7 +390,7 @@ jobs:
         with: { name: gdal4k-maven, path: verification/build/downloads }
       - run: python -c 'import tarfile; from pathlib import Path; [tarfile.open(p).extractall(filter="data") for p in Path("verification/build/downloads").glob("*.tar.gz")]'
       - run: python verification/ci.py linuxArm64-run
-      - uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/upload-audit-artifact
         if: always()
         with:
           name: evidence-linux-arm64-runtime

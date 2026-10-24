@@ -1,9 +1,30 @@
 // Used only by bounded CI commands, including the independent consumer build.
+def sourceJvmAgent64 = System.getenv('GDAL4K_SOURCE_JVM_AGENT64')
+def sourceJvmAgent = null
+if (sourceJvmAgent64 != null) {
+    try {
+        def decoded = java.util.Base64.getUrlDecoder().decode(sourceJvmAgent64)
+        sourceJvmAgent = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+            .decode(java.nio.ByteBuffer.wrap(decoded)).toString()
+    } catch (IllegalArgumentException | java.nio.charset.CharacterCodingException error) {
+        throw new GradleException('GDAL4K_SOURCE_JVM_AGENT64 must encode one UTF-8 javaagent argument', error)
+    }
+    if (!sourceJvmAgent.startsWith('-javaagent:') || sourceJvmAgent.indexOf('\u0000') >= 0 ||
+        sourceJvmAgent.contains('\n') || sourceJvmAgent.contains('\r')) {
+        throw new GradleException('GDAL4K_SOURCE_JVM_AGENT64 must encode one UTF-8 javaagent argument')
+    }
+}
+
 allprojects {
     tasks.withType(org.gradle.api.tasks.testing.AbstractTestTask).configureEach {
         testLogging {
             events 'started', 'passed', 'failed', 'skipped'
             showStandardStreams = true
+        }
+    }
+    if (sourceJvmAgent != null) {
+        tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
+            jvmArgs([sourceJvmAgent])
         }
     }
 }

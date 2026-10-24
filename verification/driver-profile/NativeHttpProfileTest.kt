@@ -89,8 +89,13 @@ class NativeHttpProfileTest {
     @Test fun trustedTlsAndUntrustedOrWrongHostnameRejection() = runTest(timeout = 30.seconds) {
         val r = Gdal4k.runtime()
         r.openDataset(url("ok", origin = driverProfileRuntimeFixture.httpsBase), DatasetOpenOptions(httpInputPolicy = HttpInputPolicy())).use { readLast(it) }
-        for (origin in listOf(driverProfileRuntimeFixture.untrustedBase, driverProfileRuntimeFixture.wrongNameBase))
-            assertFailsWith<GdalException> { r.openDataset(url("ok", origin = origin), DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(maxRetries = 2))) }
+        for (origin in listOf(driverProfileRuntimeFixture.untrustedBase, driverProfileRuntimeFixture.wrongNameBase)) {
+            val error = assertFailsWith<GdalException> {
+                r.openDataset(url("ok", origin = origin) + "?secret-native-tls-test-token",
+                    DatasetOpenOptions(httpInputPolicy = HttpInputPolicy(maxRetries = 2)))
+            }
+            assertFalse(error.message.orEmpty().contains("secret-native-tls-test-token"))
+        }
     }
     @Test fun requestDeadlineHasBoundedRetryAndNoFullDownloadFallback() = runTest(timeout = 30.seconds) {
         assertFailsWith<GdalException> {

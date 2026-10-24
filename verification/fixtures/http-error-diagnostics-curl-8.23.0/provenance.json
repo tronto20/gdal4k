@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "dependency": "curl",
+  "version": "8.23.0",
+  "upstreamRepository": "https://github.com/curl/curl",
+  "upstreamRef": "curl-8_23_0",
+  "archiveUrl": "https://github.com/curl/curl/archive/curl-8_23_0.tar.gz",
+  "archiveSha512": "e1003f374675a6ae50463995a6c705208c4247120093f1fcccf030847161235b3dfc0e40927114ccbc5b4530893990ccb96ec15400ffe4bcb275d26a0499f10e",
+  "vcpkgBaseline": "3cd21e48a75f67acfef289da52893ce79144aaa1",
+  "selectedPortVersion": "8.23.0",
+  "scope": "Exact original upstream API-size/enum and Schannel static failure-message fixtures; source only, no runtime dependency change",
+  "files": [
+    {
+      "path": "curl.h.gz",
+      "archiveMember": "curl-curl-8_23_0/include/curl/curl.h",
+      "rawBytes": 136671,
+      "rawSha256": "ad8989a81e79b407355e14d673410d51420bfec48287f4b890d0b211d9235ec3",
+      "storedBytes": 35196,
+      "storedSha256": "1c51caddede43c3a40d14b397a693f467dd471972eb2a7a29cf01339ee32418a",
+      "compression": "gzip; mtime0"
+    },
+    {
+      "path": "schannel_verify.c.gz",
+      "archiveMember": "curl-curl-8_23_0/lib/vtls/schannel_verify.c",
+      "rawBytes": 28998,
+      "rawSha256": "b8750a9f6c147d8ed9b137a54a14f6d3206069b58263de17245dd41cb6d4ecf6",
+      "storedBytes": 7343,
+      "storedSha256": "660b75b971fb63bf23a21c4bde652660823381ab33e207eef6fa1ebe9f8baac5",
+      "compression": "gzip; mtime0"
+    },
+    {
+      "path": "COPYING",
+      "archiveMember": "curl-curl-8_23_0/COPYING",
+      "rawBytes": 1088,
+      "rawSha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681",
+      "storedBytes": 1088,
+      "storedSha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681",
+      "compression": "none"
+    }
+  ],
+  "originalsUnmodified": true,
+  "note": "Selected vcpkg port normalizes only curlver.h version/timestamp macros; neither fixture is changed by that normalization."
+}
