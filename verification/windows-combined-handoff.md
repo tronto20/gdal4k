@@ -67,6 +67,11 @@ selected bytes. The original artifacts remain available to normal CI consumers.
 
 ## Remaining acceptance
 
+The pinned Windows x64 chainload toolchain explicitly identifies its CPU as
+`AMD64`, matching the existing `x86_64-w64-windows-gnu` compiler target. CMake does
+not infer a target processor when this toolchain sets `CMAKE_SYSTEM_NAME`;
+Arrow 21 rejects the resulting empty processor before compiling its sources.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including

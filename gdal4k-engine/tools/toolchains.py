@@ -69,6 +69,7 @@ def native_toolchain(target, destination):
         # This GCC runtime uses emulated TLS, including std::call_once's internal
         # variables. Match K/N's clangFlags.mingw_x64 for every dependency too.
         text = f'''set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR AMD64)
 set(CMAKE_C_COMPILER "{(llvm/'bin/clang.exe').as_posix()}")
 set(CMAKE_CXX_COMPILER "{(llvm/'bin/clang++.exe').as_posix()}")
 set(CMAKE_C_COMPILER_TARGET x86_64-w64-windows-gnu)
