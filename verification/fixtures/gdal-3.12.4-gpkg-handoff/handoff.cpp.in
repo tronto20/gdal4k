@@ -1,0 +1,276 @@
+// Offline adapter for the exact GDAL handoff blocks inserted below.
+// GDAL value conversion, SQLite execution and Arrow allocations are stubbed;
+// producer/consumer locking, predicates, notifications and joins are upstream.
+#include <atomic>
+#include <cassert>
+#include <cerrno>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <ctime>
+#include <future>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+struct ArrowArray
+{
+    std::vector<int> values{};
+    std::vector<int> shrinks{};
+    int clearCount = 0;
+    bool releaseCalled = false;
+    static void Release(ArrowArray *array)
+    {
+        array->releaseCalled = true;
+        array->values.clear();
+        array->release = nullptr;
+    }
+    void (*release)(ArrowArray *) = Release;
+};
+struct OGRArrowArrayHelper
+{
+    ArrowArray *array;
+    int m_nMaxBatchSize = 3;
+    explicit OGRArrowArrayHelper(ArrowArray *value) : array(value) {}
+    void Shrink(int rows)
+    {
+        assert(rows >= 0 && static_cast<size_t>(rows) <= array->values.size());
+        array->values.resize(rows);
+        array->shrinks.push_back(rows);
+    }
+    void ClearArray()
+    {
+        ++array->clearCount;
+        array->values.clear();
+        array->release = nullptr;
+    }
+};
+struct OGRFeatureDefn {};
+struct OGRGeoPackageLayer {};
+struct OGRLayer {};
+struct sqlite3 {};
+using GIntBig = int64_t;
+std::atomic<int> interrupts{0};
+void sqlite3_interrupt(sqlite3 *) { ++interrupts; }
+void CPLDebug(const char *, const char *, int) {}
+constexpr int CE_Failure = 1, CPLE_AppDefined = 1;
+std::string lastError{};
+void CPLError(int, int, const char *, const char *message) { lastError = message; }
+#define CPLAssert assert
+
+@@STATE@@
+
+struct Handoff
+{
+    std::unique_ptr<OGRGPKGTableLayerFillArrowArray> m_poFillArrowArray;
+    std::thread m_oThreadNextArrowArray{};
+    explicit Handoff(ArrowArray &first)
+        : m_poFillArrowArray(std::make_unique<OGRGPKGTableLayerFillArrowArray>())
+    {
+        m_poFillArrowArray->psHelper = std::make_unique<OGRArrowArrayHelper>(&first);
+        m_poFillArrowArray->bAsynchronousMode = true;
+    }
+    void fill(const std::vector<int> &values)
+    {
+        std::lock_guard lock(m_poFillArrowArray->oMutex);
+        assert(m_poFillArrowArray->nCountRows >= 0);
+        m_poFillArrowArray->psHelper->array->values = values;
+        m_poFillArrowArray->nCountRows = static_cast<int>(values.size());
+    }
+    void publish(bool memoryLimited)
+    {
+        auto psFillArrowArray = m_poFillArrowArray.get();
+@@SUBMIT@@
+@@PARTIAL@@
+        if (memoryLimited)
+            DealWithTooBigArray(psFillArrowArray->nCountRows);
+        else
+        {
+            std::unique_lock<std::mutex> lock(psFillArrowArray->oMutex);
+            SubmitBatchToCaller(lock);
+        }
+    }
+    int consume(bool resume, std::unique_ptr<OGRArrowArrayHelper> psHelper,
+                ArrowArray *out_array)
+    {
+        if (resume)
+@@RESUME@@
+@@CONSUME@@
+    void finish(std::string osErrorMsg)
+    {
+@@FINISH@@
+    void cancel()
+    {
+@@CANCEL@@
+    }
+};
+
+std::pair<int, int> batches(bool partial)
+{
+    const std::vector<std::vector<int>> expected = partial
+        ? std::vector<std::vector<int>>{{1, 2}, {3, 4, 5}, {6}}
+        : std::vector<std::vector<int>>{{1, 2, 3}, {4, 5, 6}, {7}};
+    std::vector<std::unique_ptr<ArrowArray>> arrays;
+    arrays.push_back(std::make_unique<ArrowArray>());
+    Handoff handoff(*arrays.front());
+    handoff.m_oThreadNextArrowArray = std::thread([&]()
+    {
+        for (size_t i = 0; i + 1 < expected.size(); ++i)
+        {
+            handoff.fill(expected[i]);
+            handoff.publish(partial && i == 0);
+        }
+        handoff.fill(expected.back());
+        handoff.finish("");
+    });
+    for (size_t i = 0; i < expected.size(); ++i)
+    {
+        if (i)
+            arrays.push_back(std::make_unique<ArrowArray>());
+        auto helper = i ? std::make_unique<OGRArrowArrayHelper>(arrays.back().get()) : nullptr;
+        assert(handoff.consume(i != 0, std::move(helper), arrays.back().get()) == 0);
+        assert(arrays.back()->values == expected[i]);
+        assert(arrays.back()->release != nullptr && arrays.back()->clearCount == 0);
+        std::lock_guard lock(handoff.m_poFillArrowArray->oMutex);
+        assert(handoff.m_poFillArrowArray->bIsFinished == (i + 1 == expected.size()));
+        assert(handoff.m_poFillArrowArray->bMemoryLimitReached == (partial && i == 0));
+        assert(!handoff.m_poFillArrowArray->bErrorOccurred);
+    }
+    assert(!handoff.m_oThreadNextArrowArray.joinable());
+    int rows = 0;
+    for (size_t i = 0; i < expected.size(); ++i)
+    {
+        // Earlier batches remain intact after their producer helper is replaced.
+        assert(arrays[i]->values == expected[i]);
+        assert(arrays[i]->shrinks == std::vector<int>{static_cast<int>(expected[i].size())});
+        rows += static_cast<int>(arrays[i]->values.size());
+    }
+    return {3, rows};
+}
+std::pair<int, int> eof()
+{
+    ArrowArray array;
+    Handoff handoff(array);
+    handoff.m_oThreadNextArrowArray = std::thread([&]() { handoff.finish(""); });
+    assert(handoff.consume(false, nullptr, &array) == 0);
+    assert(array.values.empty() && array.release == nullptr && array.clearCount == 1);
+    assert(array.shrinks == std::vector<int>{0});
+    assert(handoff.m_poFillArrowArray->bIsFinished && !handoff.m_oThreadNextArrowArray.joinable());
+    return {1, 0};
+}
+std::pair<int, int> error()
+{
+    ArrowArray first, second;
+    Handoff handoff(first);
+    handoff.m_oThreadNextArrowArray = std::thread([&]()
+    {
+        handoff.fill({1, 2});
+        handoff.finish("fixture SQLite failure");
+    });
+    assert(handoff.consume(false, nullptr, &first) == EIO);
+    assert(lastError == "fixture SQLite failure");
+    assert(first.values.empty() && first.clearCount == 1 && first.release == nullptr);
+    assert(!handoff.m_oThreadNextArrowArray.joinable());
+    auto *original = handoff.m_poFillArrowArray->psHelper.get();
+    assert(handoff.consume(true, std::make_unique<OGRArrowArrayHelper>(&second), &second) == EIO);
+    assert(second.releaseCalled && second.release == nullptr);
+    assert(handoff.m_poFillArrowArray->psHelper.get() == original);
+    assert(handoff.m_poFillArrowArray->osErrorMsg == "fixture SQLite failure");
+    return {2, 0};
+}
+std::pair<int, int> cancel()
+{
+    ArrowArray array;
+    Handoff handoff(array);
+    std::atomic<int> cancelled{0};
+    handoff.m_oThreadNextArrowArray = std::thread([&]()
+    {
+        handoff.fill({1, 2, 3});
+        handoff.publish(false);
+        {
+            std::lock_guard lock(handoff.m_poFillArrowArray->oMutex);
+            cancelled = handoff.m_poFillArrowArray->nCountRows;
+        }
+        handoff.finish("");
+    });
+    assert(handoff.consume(false, nullptr, &array) == 0);
+    handoff.cancel();
+    assert(cancelled == -1 && !handoff.m_poFillArrowArray && !handoff.m_oThreadNextArrowArray.joinable());
+    assert((array.values == std::vector<int>{1, 2, 3}));
+    assert(array.shrinks == std::vector<int>{3} && array.clearCount == 0);
+    return {1, 3};
+}
+std::pair<int, int> cancel_before_first()
+{
+    ArrowArray array;
+    Handoff handoff(array);
+    std::promise<void> start;
+    auto signal = start.get_future();
+    handoff.m_oThreadNextArrowArray = std::thread([&]()
+    {
+        signal.wait();
+        handoff.finish("");
+    });
+    auto cancelled = std::async(std::launch::async, [&]() { handoff.cancel(); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    for (;;)
+    {
+        {
+            std::lock_guard lock(handoff.m_poFillArrowArray->oMutex);
+            if (handoff.m_poFillArrowArray->nCountRows == -1)
+                break;
+        }
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::yield();
+    }
+    start.set_value();
+    assert(cancelled.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    cancelled.get();
+    assert(!handoff.m_poFillArrowArray && !handoff.m_oThreadNextArrowArray.joinable());
+    assert(array.shrinks.empty() && array.clearCount == 0);
+    return {0, 0};
+}
+std::pair<int, int> synchronous_partial()
+{
+    ArrowArray array;
+    Handoff handoff(array);
+    sqlite3 database;
+    handoff.m_poFillArrowArray->bAsynchronousMode = false;
+    handoff.m_poFillArrowArray->hDB = &database;
+    handoff.fill({1, 2});
+    const int before = interrupts;
+    handoff.publish(true);
+    assert(interrupts == before + 1);
+    assert(handoff.m_poFillArrowArray->bMemoryLimitReached);
+    assert(!handoff.m_poFillArrowArray->bThreadReady && !handoff.m_poFillArrowArray->bIsFinished);
+    assert((array.values == std::vector<int>{1, 2}) && array.shrinks.empty());
+    return {0, 2};
+}
+int main(int argc, char **argv)
+{
+    assert(argc == 3);
+    const std::string name(argv[1]);
+    const int rounds = std::stoi(argv[2]);
+    assert(rounds > 0 && rounds <= 1000);
+    int arrays = 0, rows = 0;
+    for (int i = 0; i < rounds; ++i)
+    {
+        const auto result = name == "full" ? batches(false)
+                          : name == "partial" ? batches(true)
+                          : name == "eof" ? eof()
+                          : name == "error" ? error()
+                          : name == "cancel" ? cancel()
+                          : name == "cancel-before-first" ? cancel_before_first()
+                          : name == "synchronous-partial" ? synchronous_partial()
+                          : std::pair<int, int>{-1, -1};
+        assert(result.first >= 0);
+        arrays += result.first;
+        rows += result.second;
+    }
+    std::cout << "{\"case\":\"" << name << "\",\"rounds\":" << rounds
+              << ",\"arrays\":" << arrays << ",\"rows\":" << rows << "}\n";
+}

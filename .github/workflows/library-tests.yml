@@ -36,6 +36,8 @@ jobs:
           python -m unittest discover -s verification -p test_native_toolchain_processor.py
           python -m unittest discover -s verification -p test_native_link_response_files.py
           python -m unittest discover -s verification -p test_jvm_hang_diagnostics.py
+          python -m unittest discover -s verification -p test_gpkg_arrow_handoff.py
+          python -m unittest discover -s verification -p test_winpthread_handoff_probe.py
           python -m unittest discover -s verification -p test_xsimd_hwcap_compat.py
           python -m unittest discover -s verification -p test_arrow_ipc_staged.py
           python -m unittest discover -s verification -p test_staged_engine.py
@@ -110,6 +112,7 @@ jobs:
             python -m unittest discover -s verification -p test_windows_process.py
             python -m unittest discover -s verification -p test_windows_pe.py
             python -m unittest discover -s verification -p test_windows_native_stall.py
+            python verification/winpthread_handoff_probe.py --output verification/results/ci-commands-mingwX64/winpthread-handoff --run
             python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics
           else
             python verification/ci.py '${{ matrix.target }}' ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}

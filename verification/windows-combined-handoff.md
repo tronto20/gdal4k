@@ -97,6 +97,24 @@ the existing coroutine cancellation cannot interrupt a native call. The overall
 command deadline remains in force. These diagnostics do not establish a fix for
 the observed second GeoPackage batch read.
 
+The GDAL overlay separates GeoPackage Arrow batch-ready and producer-resume
+condition variables. Both keep the original mutex, predicate loops, helper
+replacement, terminal publication and cancellation/join ordering. The source
+archive, compiler and SDK stay pinned. This avoids one participant waiting on
+the queue it has just signalled; it does not establish that the original GDAL
+handshake violates the C++ condition-variable contract.
+
+The mandatory Windows handoff probe copies the existing SDK's exact condition
+object and changes only its external mutex-unlock symbol to a private hook.
+Win32 events park the producer after unlock and before queue entry, forcing the
+consumer's next read into that window. The shared-queue control must observe
+the stalled state and then cancel and join both threads; separate queues must
+deliver three rows, one row, repeated EOF and early cancellation. Original SDK
+bytes stay untouched. Retain its build, object identity and owned execution
+receipts under `verification/results/ci-commands-mingwX64/winpthread-handoff`.
+The probe isolates the SDK mechanism. Acceptance still requires fresh actual
+GDAL source and published consumers on all applicable platforms.
+
 - Actual Windows kernel peak working-set collection, protected private ACLs,
   process identity and owned descendant timeout cleanup.
 - Fresh normal default and combined producers for the current source, including
