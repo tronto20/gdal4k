@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -54,6 +55,27 @@ def read_record(path):
             out[key] = value
         return out
     return json.loads(path.read_bytes(), object_pairs_hook=unique)
+
+
+def read_stdin_record():
+    """Read bounded UTF-8 metadata bytes without command-line JSON quoting."""
+    raw = sys.stdin.buffer.read(MAX_RECORD + 1)
+    need(len(raw) <= MAX_RECORD, 'Oversized Native stdin metadata')
+
+    def unique(pairs):
+        out = {}
+        for key, value in pairs:
+            need(key not in out, 'Duplicate Native stdin metadata key')
+            out[key] = value
+        return out
+
+    def finite_json(value):
+        raise ValueError('Nonfinite Native stdin metadata value: ' + value)
+
+    value = json.loads(raw.decode('utf-8', errors='strict'), object_pairs_hook=unique,
+                       parse_constant=finite_json)
+    need(isinstance(value, dict), 'Native stdin metadata must be an object')
+    return value
 
 
 def write_record(path, value):
@@ -378,14 +400,14 @@ class NativeConsumerWatchdog:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--directory', type=Path, required=True)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--owner-json')
-    group.add_argument('--launch-json')
+    group.add_argument('--owner-json-stdin', action='store_true')
+    group.add_argument('--launch-json-stdin', action='store_true')
     args = parser.parse_args()
-    value = json.loads(args.owner_json or args.launch_json)
-    if args.owner_json: write_owner(args.directory, value)
+    value = read_stdin_record()
+    if args.owner_json_stdin: write_owner(args.directory, value)
     else: write_launch(args.directory, value)
 
 

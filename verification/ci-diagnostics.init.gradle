@@ -24,20 +24,26 @@ if (sourceJvmAgent64 != null) {
 allprojects {
     if (nativeDirectory != null) {
         def recordNative = { option, value ->
+            def payload = groovy.json.JsonOutput.toJson(value)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+            if (payload.length > 64 * 1024) {
+                throw new GradleException('Native diagnostic record exceeds the 64KiB stdin limit')
+            }
             project.exec {
                 commandLine(nativePython, nativeHelper, '--directory', nativeDirectory,
-                            option, groovy.json.JsonOutput.toJson(value))
+                            option)
+                standardInput = new java.io.ByteArrayInputStream(payload)
             }.assertNormalExitValue()
         }
         if (project == rootProject) {
-            recordNative('--owner-json', [gradlePid: ProcessHandle.current().pid(),
+            recordNative('--owner-json-stdin', [gradlePid: ProcessHandle.current().pid(),
                 javaExecutable: new File(System.getProperty('java.home'), 'bin/java.exe').canonicalPath,
                 workingDirectory: project.projectDir.canonicalPath])
         }
         tasks.matching { it.name == 'mingwX64Test' }.configureEach {
             doFirst { nativeTask ->
                 // Public KGP KotlinNativeTest properties; no runner/filter changes.
-                recordNative('--launch-json', [task: nativeTask.name, gradlePid: ProcessHandle.current().pid(),
+                recordNative('--launch-json-stdin', [task: nativeTask.name, gradlePid: ProcessHandle.current().pid(),
                     executable: nativeTask.executable.canonicalPath,
                     workingDirectory: String.valueOf(nativeTask.workingDir ?: project.projectDir.canonicalPath),
                     args: nativeTask.args, includePatterns: nativeTask.includePatterns.toList(), excludePatterns: nativeTask.excludePatterns.toList()])

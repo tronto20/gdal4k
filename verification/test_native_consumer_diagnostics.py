@@ -3,7 +3,10 @@ import hashlib
 import ast
 import io
 import json
+import os
 from pathlib import Path
+import shutil
+import sys
 import tempfile
 import subprocess
 import time
@@ -13,6 +16,108 @@ from unittest import mock
 import native_consumer_diagnostics as diag
 import windows_dump_quota as quota
 import command_evidence as commands
+
+
+class NativeMetadataStdinTests(unittest.TestCase):
+    def test_main_dispatches_utf8_stdin_without_json_on_argv(self):
+        value = dict(gradlePid=9007199254740993,
+                     javaExecutable='C:\\Program Files\\Java "quoted"\\bin\\java.exe',
+                     workingDirectory='D:\\내 자료\\space and slash\\',
+                     args=['snow 雪', 'emoji 😀', 'a "quote"', r'back\slash'])
+        raw = json.dumps(value, ensure_ascii=False).encode('utf-8')
+        for flag, writer in [('--owner-json-stdin', 'write_owner'), ('--launch-json-stdin', 'write_launch')]:
+            with self.subTest(flag=flag), mock.patch.object(sys, 'argv', ['helper', '--directory', 'metadata', flag]), \
+                    mock.patch.object(sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(raw)})()), \
+                    mock.patch.object(diag, 'write_owner') as owner, mock.patch.object(diag, 'write_launch') as launch:
+                diag.main()
+                expected, other = (owner, launch) if writer == 'write_owner' else (launch, owner)
+                expected.assert_called_once_with(Path('metadata'), value)
+                other.assert_not_called()
+
+    def test_stdin_refuses_invalid_bytes_json_shape_duplicates_or_overflow_before_write(self):
+        values = [b'', b'\xff', b'{not-json}', b'{} trailing', b'[]', b'null', b'1', b'"text"',
+                  b'{"x":1,"x":2}', b'{"nested":{"x":1,"x":2}}',
+                  b'{"x":NaN}', b'{"x":Infinity}', b'{"x":-Infinity}', b'x' * (diag.MAX_RECORD + 1)]
+        for raw in values:
+            stream = mock.Mock(); stream.read.return_value = raw
+            with self.subTest(raw=raw[:40]), mock.patch.object(sys, 'argv', ['helper', '--directory', 'metadata', '--owner-json-stdin']), \
+                    mock.patch.object(sys, 'stdin', type('Input', (), {'buffer': stream})()), \
+                    mock.patch.object(diag, 'write_owner') as owner, mock.patch.object(diag, 'write_launch') as launch:
+                with self.assertRaises((ValueError, UnicodeDecodeError)):
+                    diag.main()
+                stream.read.assert_called_once_with(diag.MAX_RECORD + 1)
+                owner.assert_not_called(); launch.assert_not_called()
+
+    def test_stdin_byte_limit_accepts_exact_bound_and_rejects_missing_or_raw_argv_mode(self):
+        raw = b'{"x":"' + b'x' * (diag.MAX_RECORD - 8) + b'"}'
+        self.assertEqual(diag.MAX_RECORD, len(raw))
+        with mock.patch.object(sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(raw)})()):
+            self.assertEqual('x' * (diag.MAX_RECORD - 8), diag.read_stdin_record()['x'])
+        for mode in [[], ['--owner-json'], ['--owner-json', '{"x":1}'], ['--owner-json-stdin', '--launch-json-stdin']]:
+            with self.subTest(mode=mode), mock.patch.object(sys, 'argv', ['helper', '--directory', 'metadata', *mode]), \
+                    mock.patch.object(sys, 'stderr', io.StringIO()), mock.patch.object(diag, 'read_stdin_record') as reading:
+                with self.assertRaises(SystemExit): diag.main()
+                reading.assert_not_called()
+
+    def test_real_java_process_builder_pipes_utf8_to_production_parser(self):
+        java_home = os.environ.get('JAVA_HOME')
+        java = Path(java_home) / 'bin' / ('java.exe' if os.name == 'nt' else 'java') if java_home else None
+        if java is None or not java.is_file():
+            found = shutil.which('java'); java = Path(found) if found else None
+        self.assertTrue(java is not None and java.is_file(), 'An existing JDK is required for the ProcessBuilder stdin boundary control')
+        with tempfile.TemporaryDirectory(prefix='native metadata stdin ') as temporary:
+            root = Path(temporary).resolve()
+            receiver = root / 'receiver with spaces.py'
+            receiver.write_text(
+                'import json, sys\nfrom pathlib import Path\n' +
+                'sys.path.insert(0, ' + repr(str(Path(diag.__file__).resolve().parent)) + ')\n' +
+                'import native_consumer_diagnostics as diag\n' +
+                'def received(directory, value):\n' +
+                '    (Path(directory) / "decoded.json").write_bytes(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))\n' +
+                'diag.write_owner = received\ndiag.write_launch = received\ndiag.main()\n', encoding='utf-8')
+            source = root / 'ProcessBoundary.java'
+            source.write_text('''import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+public class ProcessBoundary {
+    public static void main(String[] args) throws Exception {
+        byte[] value = Files.readAllBytes(Path.of(args[4]));
+        Process process = new ProcessBuilder(args[0], args[1], "--directory", args[2], args[3])
+            .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+            .redirectError(ProcessBuilder.Redirect.INHERIT).start();
+        try {
+            try (OutputStream input = process.getOutputStream()) { input.write(value); }
+            if (!process.waitFor(20, TimeUnit.SECONDS)) throw new IllegalStateException("Owned Python receiver timed out");
+            if (process.exitValue() != 0) throw new IllegalStateException("Owned Python receiver exited " + process.exitValue());
+        } finally {
+            if (process.isAlive()) { process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS); }
+        }
+    }
+}
+''', encoding='utf-8')
+            value = dict(gradlePid=9007199254740993,
+                         javaExecutable='C:\\Program Files\\Java "quoted"\\bin\\java.exe',
+                         workingDirectory='D:\\내 자료\\folder with spaces\\',
+                         args=['snow 雪', 'emoji 😀', 'a "quote"', r'back\slash'])
+            raw = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            payload = root / 'payload with spaces.json'; payload.write_bytes(raw)
+            for flag in ['--owner-json-stdin', '--launch-json-stdin']:
+                destination = root / flag.removeprefix('--'); destination.mkdir()
+                evidence = root / ('commands-' + flag.removeprefix('--'))
+                command = [str(java), str(source), sys.executable, str(receiver), str(destination), flag, str(payload)]
+                try:
+                    receipt = commands.run_with_evidence(command, cwd=root, directory=evidence, timeout=30)
+                except Exception as error:
+                    log = evidence / '001.log'
+                    tail = log.read_bytes()[-8192:].decode('utf-8', errors='replace') if log.is_file() else '(no command log)'
+                    self.fail('Owned Java ProcessBuilder boundary failed: ' + repr(error) + '\n' + tail)
+                record = json.loads(receipt.read_bytes())
+                self.assertEqual(('passed', 0), (record['status'], record['returncode']))
+                self.assertTrue(record['outputComplete'])
+                self.assertEqual(raw, (destination / 'decoded.json').read_bytes())
+                self.assertEqual(value, json.loads((destination / 'decoded.json').read_bytes()))
+                self.assertNotIn(raw.decode('utf-8'), ' '.join(record['command']))
 
 
 class FakeOwned:
