@@ -192,12 +192,22 @@ def write_minidump(dbghelp, process_handle, pid, output, *, limit=MAX_DUMP, flag
     write.restype = C.c_int32
     # There is no writable ordinary file handle. Callback failure has no
     # unbounded fallback path, even if a platform ignores our IoStart policy.
+    clear_error = getattr(C, 'set_last_error', None)
+    get_error = getattr(C, 'get_last_error', None)
+    if clear_error is not None:
+        clear_error(0)
     ok = write(process_handle, pid, None, flags, None, None, C.byref(callbacks.information))
-    error_code = C.get_last_error() if not ok and hasattr(C, 'get_last_error') else None
+    error_code = get_error() if get_error is not None else None
     receipt = callbacks.receipt()
-    receipt.update(miniDumpReturnCode=int(bool(ok)), win32Error=error_code)
+    unsigned_error = None if error_code is None else error_code & 0xffffffff
+    receipt.update(miniDumpReturnCode=int(bool(ok)), miniDumpBooleanReturn=bool(ok),
+                   apiLastErrorObserved=error_code, apiLastErrorUnsigned32=unsigned_error,
+                   apiLastErrorHex=None if unsigned_error is None else f'0x{unsigned_error:08x}',
+                   apiLastErrorClearedBeforeCall=clear_error is not None, requestedDumpFlags=flags,
+                   apiLastErrorInterpretation='MiniDumpWriteDump documents this value as an HRESULT; no failure cause inferred')
     if not ok or callbacks.error or not callbacks.started or not callbacks.finished:
-        error = RuntimeError('Quota-backed MiniDumpWriteDump failed')
+        error = RuntimeError('Quota-backed MiniDumpWriteDump failed: ' +
+                             json.dumps(receipt, separators=(',', ':'), ensure_ascii=True))
         error.quota = receipt
         raise error
     output.flush()
@@ -294,6 +304,7 @@ def _self_check_worker(directory):
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     handle = None
     paths = [directory / 'success.dmp', directory / 'quota-failure.dmp']
+    primary = None
     try:
         handle = api.check(api.k.OpenProcess(0x400 | 0x10 | 0x100000, False, owned.identity['pid']))
         if (api.process_id(handle) != owned.identity['pid'] or not api.in_job(handle, owned.job)
@@ -321,14 +332,33 @@ def _self_check_worker(directory):
                     successDumpDirectory=success_directory,
                     rejectedDumpBytes=paths[1].stat().st_size, callbackLayoutProjection=callback_layout(),
                     compiledSdkAbiVerified=False, fullMemoryRequested=False)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
+        cleanup_failures = []
+        def cleanup(stage, action):
+            try:
+                action()
+            except Exception as error:
+                cleanup_failures.append(dict(stage=stage, type=type(error).__name__[:128],
+                                             message=str(error)[:512]))
         if handle:
-            api.close(handle)
-        owned.terminate_tree()
-        owned.process.wait(timeout=1)
-        owned.close_before(time.monotonic() + 1)
+            cleanup('close-read-handle', lambda: api.close(handle))
+        cleanup('terminate-owned-tree', owned.terminate_tree)
+        cleanup('wait-owned-child', lambda: owned.process.wait(timeout=1))
+        cleanup('close-owned-job', lambda: owned.close_before(time.monotonic() + 1))
         for path in paths:
-            path.unlink(missing_ok=True)
+            cleanup('remove-' + path.name, lambda path=path: path.unlink(missing_ok=True))
+        if cleanup_failures:
+            text = json.dumps(cleanup_failures, separators=(',', ':'), ensure_ascii=True)
+            if primary is not None:
+                primary.selfCheckWorkerCleanupFailures = cleanup_failures
+                primary.add_note('Owned self-check cleanup also failed: ' + text)
+            else:
+                error = RuntimeError('Owned minidump self-check cleanup failed: ' + text)
+                error.selfCheckWorkerCleanupFailures = cleanup_failures
+                raise error
 
 
 def _source_sha():
@@ -354,10 +384,22 @@ def self_check(directory, *, timeout=20):
         except subprocess.TimeoutExpired:
             raise RuntimeError('Actual minidump self-check exceeded its bounded deadline')
         path = directory / 'self-check.json'
-        if owned.process.returncode != 0 or not path.is_file() or path.stat().st_size > SELF_CHECK_METADATA:
+        if not path.is_file() or path.stat().st_size > SELF_CHECK_METADATA:
             raise RuntimeError('Actual minidump self-check failed or omitted its bounded receipt')
         value = json.loads(path.read_bytes())
-        if value['status'] != 'passed' or value['sourceSha256'] != _source_sha() or not value['actualWindowsOwnedChildSelfCheck']:
+        if not isinstance(value, dict) or value.get('sourceSha256') != _source_sha():
+            raise RuntimeError('Actual minidump self-check receipt/source differs')
+        if owned.process.returncode != 0 or value.get('status') != 'passed':
+            details = dict(workerReturncode=owned.process.returncode,
+                           error=value.get('error'), dumpQuota=value.get('dumpQuota'),
+                           cleanupFailures=value.get('cleanupFailures'))
+            text = encode_json(details, SELF_CHECK_METADATA).decode('ascii').rstrip()
+            error = RuntimeError('Actual minidump self-check failed: ' + text)
+            error.selfCheckReceipt = value
+            error.quota = value.get('dumpQuota')
+            error.selfCheckWorkerCleanupFailures = value.get('cleanupFailures')
+            raise error
+        if value.get('actualWindowsOwnedChildSelfCheck') is not True:
             raise RuntimeError('Actual minidump self-check receipt/source differs')
     except BaseException as error:
         primary = error
@@ -392,7 +434,9 @@ def main():
         value = _self_check_worker(args.self_check_worker)
     except Exception as error:
         value = dict(status='failed', actualWindowsOwnedChildSelfCheck=False, sourceSha256=_source_sha(),
-                     error=dict(type=type(error).__name__, message=str(error)[:2048]))
+                     error=dict(type=type(error).__name__, message=str(error)[:2048]),
+                     dumpQuota=getattr(error, 'quota', None),
+                     cleanupFailures=getattr(error, 'selfCheckWorkerCleanupFailures', None))
         write_json(args.self_check_worker / 'self-check.json', value, SELF_CHECK_METADATA, protect=private_file)
         raise
     write_json(args.self_check_worker / 'self-check.json', value, SELF_CHECK_METADATA, protect=private_file)

@@ -38,6 +38,62 @@ def synthetic_dump(path, flags=native.FLAGS):
 
 
 class PhaseAndParserTest(unittest.TestCase):
+    def test_failed_collector_receipt_and_bounded_error_tail_survive_both_modes(self):
+        for bounded in [False, True]:
+            with self.subTest(bounded=bounded), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                receipt = dict(status='captured', stage='write-minidump',
+                               error=dict(type='RuntimeError', message='actual writer error'),
+                               dumpQuota=dict(apiLastErrorUnsigned32=2147942487, apiLastErrorHex='0x80070057',
+                                              miniDumpReturnCode=0, ioStartObserved=False))
+                (root / 'collector.json').write_text(json.dumps(receipt))
+                raw = b'not-in-tail-' * 4096 + b'\nactual collector traceback\xff\n'
+                (root / 'collector.log').write_bytes(raw)
+                process = MagicMock(); process.poll.return_value = 1
+                result = native.CaptureSession(process, root, lambda: 0, 20,
+                                               dict(boundedNativeMetadata=bounded)).poll()
+                self.assertEqual('collector-failed', result['status'])
+                self.assertEqual(1, result['returncode'])
+                self.assertEqual(receipt['error'], result['error'])
+                self.assertEqual(receipt['dumpQuota'], result['dumpQuota'])
+                log = result['collectorErrorLog']; tail = raw[-32 * 1024:]
+                self.assertEqual(len(raw) - len(tail), log['tailOffsetBytes'])
+                self.assertEqual(len(tail), log['tailBytes'])
+                self.assertEqual(hashlib.sha256(tail).hexdigest(), log['tailSha256'])
+                self.assertEqual(tail.decode('utf-8', errors='replace'), log['tailUtf8Replace'])
+                self.assertTrue(log['tailOnly'])
+
+    def test_failed_collector_receipt_bound_precedes_json_read_for_both_modes(self):
+        for bounded in [False, True]:
+            with self.subTest(bounded=bounded), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = root / 'collector.json'
+                path.write_bytes(b' ' * (256 * 1024 + 1))
+                process = MagicMock(); process.poll.return_value = 1
+                original = Path.read_text
+                def no_oversize_read(candidate, *args, **kwargs):
+                    self.assertNotEqual(candidate, path, 'Oversized failure JSON must not be read')
+                    return original(candidate, *args, **kwargs)
+                with patch.object(Path, 'read_text', no_oversize_read):
+                    result = native.CaptureSession(process, root, lambda: 0, 20,
+                                                   dict(boundedNativeMetadata=bounded)).poll()
+                self.assertEqual('collector-invalid-receipt', result['status'])
+                self.assertEqual(1, result['returncode'])
+                self.assertIn('metadata quota', result['message'])
+
+    def test_failed_collector_without_receipt_retains_tail_and_refuses_linked_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'
+            path.write_bytes(b'actual startup exception before request validation\n')
+            process = MagicMock(); process.poll.return_value = 1
+            result = native.CaptureSession(process, root, lambda: 0, 20).poll()
+            self.assertEqual('collector-failed', result['status'])
+            self.assertIn('actual startup exception', result['collectorErrorLog']['tailUtf8Replace'])
+            with patch.object(Path, 'is_symlink', return_value=True), patch.object(Path, 'open') as opening:
+                with self.assertRaisesRegex(ValueError, 'regular nonreparse'):
+                    native._collector_failure_log(root)
+            opening.assert_not_called()
+
     def test_exact_current_read_duplicate_and_late_after_do_not_reset_timer(self):
         clock = Clock(); tracker = native.PhaseTracker(clock)
         tracker.observe_line(phase().strip()); clock.now = 50

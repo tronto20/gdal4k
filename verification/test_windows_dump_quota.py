@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import struct
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import windows_dump_quota as quota
 import windows_native_stall as native
+import windows_process as windows
 
 
 SDK_IO_EXCERPT = '''#include <pshpack4.h>
@@ -104,6 +106,45 @@ class RandomAccessQuotaTests(unittest.TestCase):
 
 
 class CallbackQuotaTests(unittest.TestCase):
+    def test_api_last_error_is_cleared_then_snapshotted_before_receipt_code(self):
+        for returned, observed in [(0, 123), (1, 123), (0, -2147024809), (1, -2147024809)]:
+            with self.subTest(apiReturn=returned, apiLastError=observed):
+                events, state = [], {'lastError': 777}
+                def clear(value):
+                    events.append('clear'); state['lastError'] = value
+                def snapshot():
+                    events.append('snapshot'); return state['lastError']
+                class Write:
+                    def __call__(self, *args):
+                        events.append('api')
+                        self.assertion = state['lastError']
+                        state['lastError'] = observed
+                        return returned
+                function = Write(); original = quota.DumpIoCallbacks.receipt
+                def receipt(callbacks):
+                    events.append('receipt'); state['lastError'] = 999
+                    return original(callbacks)
+                with patch.object(quota.C, 'set_last_error', clear, create=True), \
+                     patch.object(quota.C, 'get_last_error', snapshot, create=True), \
+                     patch.object(quota.DumpIoCallbacks, 'receipt', receipt), self.assertRaises(RuntimeError) as caught:
+                    quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=function), 1, 123, TrackingOutput())
+                self.assertEqual(['clear', 'api', 'snapshot', 'receipt'], events)
+                self.assertEqual(0, function.assertion)
+                value = caught.exception.quota
+                self.assertEqual(observed, value['apiLastErrorObserved'])
+                self.assertEqual(observed & 0xffffffff, value['apiLastErrorUnsigned32'])
+                self.assertEqual(f'0x{observed & 0xffffffff:08x}', value['apiLastErrorHex'])
+                if observed < 0:
+                    self.assertEqual((2147942487, '0x80070057'),
+                                     (value['apiLastErrorUnsigned32'], value['apiLastErrorHex']))
+                self.assertTrue(value['apiLastErrorClearedBeforeCall'])
+                self.assertIn('HRESULT', value['apiLastErrorInterpretation'])
+                self.assertIn('no failure cause inferred', value['apiLastErrorInterpretation'])
+                self.assertEqual(bool(returned), value['miniDumpBooleanReturn'])
+                self.assertEqual(0x1000, value['requestedDumpFlags'])
+                self.assertIn('"apiLastErrorObserved":' + str(observed), str(caught.exception))
+                self.assertFalse(value['ordinaryFileHandleFallback'])
+
     def test_packed4_projection_matches_independently_parsed_sdk_io_fields(self):
         types = {'HANDLE': (8, 8), 'ULONG64': (8, 8), 'PVOID': (8, 8), 'ULONG': (4, 4)}
         fields = re.findall(r'^\s*(HANDLE|ULONG64|PVOID|ULONG)\s+(\w+);$', SDK_IO_EXCERPT, re.MULTILINE)
@@ -200,6 +241,132 @@ class CallbackQuotaTests(unittest.TestCase):
 
 
 class MetadataQuotaTests(unittest.TestCase):
+    def mocked_self_check(self, path, payload, returncode):
+        owned = MagicMock()
+        owned.process.returncode = returncode
+        def start(*args, **kwargs):
+            if payload is not None:
+                (path / 'self-check.json').write_bytes(payload)
+            return owned
+        with patch.object(quota, 'os', SimpleNamespace(name='nt')), \
+             patch.object(windows, 'OwnedProcess', side_effect=start), \
+             patch.object(windows, 'private_directory'):
+            try:
+                return quota.self_check(path)
+            finally:
+                owned.close_before.assert_called_once()
+
+    def test_failed_self_check_worker_receipt_keeps_cause_and_quota_without_approval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'worker'
+            receipt = dict(status='failed', sourceSha256=quota._source_sha(), actualWindowsOwnedChildSelfCheck=False,
+                           error=dict(type='RuntimeError', message='owned worker actual error'),
+                           dumpQuota=dict(miniDumpBooleanReturn=False, apiLastErrorObserved=123,
+                                          callbackError=dict(type='QuotaExceeded', message='bounded callback')),
+                           cleanupFailures=[dict(stage='close-owned-job', type='OSError', message='owned cleanup failed')])
+            with self.assertRaisesRegex(RuntimeError, 'owned worker actual error') as caught:
+                self.mocked_self_check(path, json.dumps(receipt).encode(), 1)
+            self.assertEqual(receipt, caught.exception.selfCheckReceipt)
+            self.assertEqual(receipt['dumpQuota'], caught.exception.quota)
+            self.assertEqual(receipt['cleanupFailures'], caught.exception.selfCheckWorkerCleanupFailures)
+            self.assertIn('"apiLastErrorObserved":123', str(caught.exception))
+            self.assertIn('owned cleanup failed', str(caught.exception))
+            self.assertIsNone(quota._LAST_SELF_CHECK)
+
+    def test_rc1_cannot_promote_even_a_passed_source_qualified_worker_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            receipt = dict(status='passed', sourceSha256=quota._source_sha(), actualWindowsOwnedChildSelfCheck=True)
+            with self.assertRaisesRegex(RuntimeError, '"workerReturncode":1'):
+                self.mocked_self_check(Path(temporary) / 'worker', json.dumps(receipt).encode(), 1)
+            self.assertIsNone(quota._LAST_SELF_CHECK)
+
+    def test_missing_oversized_or_wrong_source_self_check_receipts_are_refused(self):
+        wrong = json.dumps(dict(status='failed', sourceSha256='0' * 64, error=dict(message='unqualified'))).encode()
+        for name, raw in [('missing', None), ('oversized', b'x' * (quota.SELF_CHECK_METADATA + 1)), ('wrong-source', wrong)]:
+            with self.subTest(kind=name), tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaises(RuntimeError):
+                    self.mocked_self_check(Path(temporary) / 'worker', raw, 1)
+                self.assertIsNone(quota._LAST_SELF_CHECK)
+
+    def test_failed_worker_main_writes_its_quota_receipt_and_keeps_original_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            primary = RuntimeError('actual worker error')
+            primary.quota = dict(miniDumpBooleanReturn=False, apiLastErrorObserved=123)
+            primary.selfCheckWorkerCleanupFailures = [dict(stage='close-owned-job', type='OSError', message='owned cleanup failed')]
+            with patch.object(quota.sys, 'argv', ['quota', '--self-check-worker', str(path)]), \
+                 patch.object(quota, '_self_check_worker', side_effect=primary), \
+                 patch.object(windows, 'private_file'), self.assertRaises(RuntimeError) as caught:
+                quota.main()
+            self.assertIs(primary, caught.exception)
+            value = json.loads((path / 'self-check.json').read_bytes())
+            self.assertEqual('failed', value['status'])
+            self.assertEqual(primary.quota, value['dumpQuota'])
+            self.assertEqual(primary.selfCheckWorkerCleanupFailures, value['cleanupFailures'])
+            self.assertEqual(quota._source_sha(), value['sourceSha256'])
+            self.assertLessEqual((path / 'self-check.json').stat().st_size, quota.SELF_CHECK_METADATA)
+
+    def mocked_self_check_worker(self, directory, writer):
+        owned = MagicMock()
+        owned.identity = dict(pid=123, creationTime100ns=456, imagePath=r'C:\owned\python.exe')
+        owned.job = 777
+        owned.terminate_tree.side_effect = OSError('terminate fixture failure')
+        owned.process.wait.side_effect = subprocess.TimeoutExpired(['owned-child'], 1)
+        owned.close_before.side_effect = OSError('close fixture failure')
+        api = MagicMock()
+        api.k.OpenProcess.return_value = 101
+        api.check.side_effect = lambda value: value
+        api.process_id.return_value = 123
+        api.in_job.return_value = True
+        api.exited.return_value = False
+        api.identity_from_handle.return_value = owned.identity
+        api.close.side_effect = OSError('handle fixture failure')
+        with patch.object(quota, 'os', SimpleNamespace(name='nt')), \
+             patch.object(windows, 'OwnedProcess', return_value=owned), \
+             patch.object(windows, '_api', return_value=api), \
+             patch.object(windows, 'private_directory'), patch.object(windows, 'private_file'), \
+             patch.object(quota.C, 'WinDLL', create=True), \
+             patch.object(quota, 'write_minidump', side_effect=writer), \
+             patch.object(quota, 'check_dump_directory', return_value={}):
+            try:
+                return quota._self_check_worker(directory)
+            finally:
+                api.close.assert_called_once_with(101)
+                owned.terminate_tree.assert_called_once()
+                owned.process.wait.assert_called_once_with(timeout=1)
+                owned.close_before.assert_called_once()
+
+    def test_worker_cleanup_failures_preserve_primary_writer_error_and_quota(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            primary = RuntimeError('original writer error')
+            primary.quota = dict(apiLastErrorObserved=-2147024809, apiLastErrorUnsigned32=2147942487,
+                                 apiLastErrorHex='0x80070057')
+            def writer(*args, **kwargs):
+                raise primary
+            with self.assertRaises(RuntimeError) as caught:
+                self.mocked_self_check_worker(path, writer)
+            self.assertIs(primary, caught.exception)
+            self.assertEqual('0x80070057', caught.exception.quota['apiLastErrorHex'])
+            self.assertEqual(['close-read-handle', 'terminate-owned-tree', 'wait-owned-child', 'close-owned-job'],
+                             [row['stage'] for row in caught.exception.selfCheckWorkerCleanupFailures])
+            self.assertEqual(list(path.iterdir()), [])
+
+    def test_worker_cleanup_failure_refuses_an_otherwise_successful_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            def writer(dbghelp, handle, pid, output, *, limit):
+                if limit == 16:
+                    error = RuntimeError('expected quota refusal')
+                    error.quota = dict(callbackError=dict(type='QuotaExceeded'))
+                    raise error
+                output.write(b'MDMP' + b'x' * 28)
+                return {}
+            with self.assertRaisesRegex(RuntimeError, 'Owned minidump self-check cleanup failed') as caught:
+                self.mocked_self_check_worker(path, writer)
+            self.assertEqual(4, len(caught.exception.selfCheckWorkerCleanupFailures))
+            self.assertEqual(list(path.iterdir()), [])
+
     def test_json_cap_is_checked_before_file_creation_or_protection(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'metadata.json'; protect = MagicMock()
@@ -336,15 +503,18 @@ class MetadataQuotaTests(unittest.TestCase):
             self.assertEqual(original_bytes, path.read_bytes())
             self.assertEqual(before, path.stat())
 
-    def test_source_jvm_failure_path_is_not_expanded_and_receipt_error_cannot_mask_primary(self):
+    def test_source_jvm_failure_receipt_and_acl_error_cannot_mask_primary(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary); request_path = directory / 'request.json'
             original = RuntimeError('primary collector error')
             def collect(state): raise original
-            with self.assertRaises(RuntimeError) as caught:
+            with patch.object(native, 'private_file'), self.assertRaises(RuntimeError) as caught:
                 native._run_validated_collector(request_path, dict(copyNativeDll=True), collect)
             self.assertIs(original, caught.exception)
-            self.assertFalse((directory / 'collector.json').exists())
+            value = json.loads((directory / 'collector.json').read_bytes())
+            self.assertEqual('collector-failed', value['status'])
+            self.assertEqual('primary collector error', value['error']['message'])
+            (directory / 'collector.json').unlink()
             with patch.object(native, 'private_file', side_effect=PermissionError('ACL failed')), self.assertRaises(RuntimeError) as caught:
                 native._run_validated_collector(request_path, dict(copyNativeDll=False, target=dict(pid=123)), collect)
             self.assertIs(original, caught.exception)

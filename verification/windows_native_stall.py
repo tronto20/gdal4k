@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import windows_dump_quota as dump_quota
 FLAGS = 0x1000  # MiniDumpNormal + MiniDumpWithThreadInfo; no full/process memory.
 MAX_DUMP = 128 * 1024**2
 MAX_DLL = 512 * 1024**2
+MAX_COLLECTOR_LOG_TAIL = 32 * 1024
 PHASE = re.compile(r'^\s*GDAL4K_VECTOR_COLUMNS_PHASE trial=(\d+) driver=([A-Za-z0-9_]+) phase=([A-Za-z0-9-]+)\s*$')
 WORKER = re.compile(r'^\s*GDAL4K_JVM_HANG_AGENT PREMAIN_COMPLETE workerPid=([1-9]\d*)\b')
 READ = re.compile(r'read-(\d+)-before\Z')
@@ -420,6 +422,7 @@ def _bounded_collector_failure(directory, target, stage, error):
         catalog['observationError'] = {'type': type(observation_error).__name__, 'message': str(observation_error)[:1024]}
     value = {'status': 'collector-failed', 'stage': str(stage)[:128], 'target': target,
              'error': {'type': type(error).__name__, 'message': str(error)[:1024]},
+             'dumpQuota': getattr(error, 'quota', None),
              'dumpCatalog': catalog, 'rootCauseOrRuntimeAcceptance': False}
     try:
         dump_quota.write_json(path, value, dump_quota.COLLECTOR_METADATA, protect=private_file)
@@ -433,13 +436,12 @@ def _run_validated_collector(request_path, request, collect):
     try:
         return collect(state)
     except Exception as error:
-        if request.get('copyNativeDll', True) is False:
-            try:
-                _bounded_collector_failure(Path(request_path).parent, request.get('target'), state['stage'], error)
-            except Exception as receipt_error:
-                # Preserve the original collector failure if even its private
-                # bounded failure record cannot be created.
-                error.collectorReceiptFailure = {'type': type(receipt_error).__name__, 'message': str(receipt_error)[:1024]}
+        try:
+            _bounded_collector_failure(Path(request_path).parent, request.get('target'), state['stage'], error)
+        except Exception as receipt_error:
+            # Preserve the original collector failure if even its private
+            # bounded failure record cannot be created.
+            error.collectorReceiptFailure = {'type': type(receipt_error).__name__, 'message': str(receipt_error)[:1024]}
         raise
 
 
@@ -506,6 +508,30 @@ def _collect(request_path, process_handle, job_handle):
                                     lambda state: _collect_validated(request_path, request, process_handle, job_handle, state))
 
 
+def _collector_failure_log(directory):
+    """Retain only a bounded tail of this private collector's actual output."""
+    path = Path(directory) / 'collector.log'
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(before.st_mode) or path.is_symlink() or getattr(before, 'st_file_attributes', 0) & 0x400:
+        raise ValueError('Collector error log must be an owned regular nonreparse file')
+    with path.open('rb') as source:
+        opened = os.fstat(source.fileno())
+        signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if signature(opened) != signature(before):
+            raise ValueError('Collector error log identity changed before reading')
+        offset = max(0, opened.st_size - MAX_COLLECTOR_LOG_TAIL)
+        source.seek(offset)
+        tail = source.read(MAX_COLLECTOR_LOG_TAIL)
+        if signature(os.fstat(source.fileno())) != signature(opened) or signature(path.stat()) != signature(opened):
+            raise ValueError('Collector error log changed during bounded reading')
+    return dict(path='collector.log', bytesObserved=opened.st_size, tailOffsetBytes=offset,
+                tailBytes=len(tail), tailSha256=hashlib.sha256(tail).hexdigest(),
+                tailUtf8Replace=tail.decode('utf-8', errors='replace'), tailOnly=True)
+
+
 class CaptureSession:
     def __init__(self, process, directory, clock, limit, metadata=None):
         self.process, self.directory, self.clock, self.limit = process, directory, clock, limit
@@ -524,13 +550,22 @@ class CaptureSession:
             path = self.directory / 'collector.json'
             try:
                 bounded = self.metadata.get('boundedNativeMetadata', False)
-                if bounded and path.is_file() and path.stat().st_size > dump_quota.COLLECTOR_METADATA:
+                if (bounded or code != 0) and path.is_file() and path.stat().st_size > dump_quota.COLLECTOR_METADATA:
                     raise ValueError('Native collector receipt exceeds its metadata quota')
-                self.result = json.loads(path.read_text()) if (code == 0 or bounded) and path.is_file() else {'status': 'collector-failed', 'returncode': code}
+                self.result = json.loads(path.read_text()) if path.is_file() else {'status': 'collector-failed', 'returncode': code}
+                if not isinstance(self.result, dict):
+                    raise ValueError('Native collector receipt must be an object')
                 if code != 0:
                     self.result.update(status='collector-failed', returncode=code)
             except (ValueError, OSError) as error:
                 self.result = {'status': 'collector-invalid-receipt', 'returncode': code, 'message': str(error)}
+            if code != 0:
+                try:
+                    log = _collector_failure_log(self.directory)
+                    if log is not None:
+                        self.result['collectorErrorLog'] = log
+                except (ValueError, OSError) as error:
+                    self.result['collectorErrorLogFailure'] = {'type': type(error).__name__, 'message': str(error)[:1024]}
         self.result['directory'] = str(self.directory)
         self.result.update(self.metadata)
         return self.result
