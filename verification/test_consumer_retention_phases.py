@@ -264,7 +264,9 @@ class ConsumerRetentionPhasesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as owned:
             root = Path(owned)
             workspace = evidence.consumer_workspace_root(root)
-            self.assertEqual(workspace, root / 'verification/build/consumer-workspaces')
+            expected = root / 'verification/build/consumer-workspaces'
+            self.assertEqual(workspace, expected.resolve(strict=True))
+            self.assertTrue(workspace.samefile(expected))
             with tempfile.TemporaryDirectory(prefix='consumer-', dir=workspace) as temporary:
                 self.assertEqual(Path(temporary).stat().st_dev, (root / 'verification/results').stat().st_dev)
                 (Path(temporary) / 'settings.gradle.kts').write_text('rootProject.name="isolated"')
@@ -434,7 +436,8 @@ class ConsumerRetentionPhasesTest(unittest.TestCase):
             report = evidence.restore_hidden_paths([(original, moved)])
             self.assertEqual(len(report['restored']), 1)
             self.assertTrue(original.is_symlink())
-            self.assertEqual(original.resolve(), protected)
+            self.assertEqual(original.resolve(strict=True), protected.resolve(strict=True))
+            self.assertTrue(original.samefile(protected))
             self.assertEqual((protected / 'keep').read_bytes(), b'unchanged')
 
     def test_failure_guard_catches_workspace_exit_and_archives_provisional_success(self):
