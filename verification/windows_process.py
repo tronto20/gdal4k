@@ -6,6 +6,7 @@ not evidence of a Windows process or kernel-memory measurement.
 import ctypes as C
 import json
 from functools import lru_cache
+import math
 import os
 import ntpath
 from pathlib import Path
@@ -74,6 +75,7 @@ class Win32:
             (self.k, 'OpenProcess', [DWORD, C.c_int, DWORD], HANDLE),
             (self.k, 'CloseHandle', [HANDLE], C.c_int),
             (self.k, 'GetCurrentProcess', [], HANDLE),
+            (self.k, 'GetProcessId', [HANDLE], DWORD),
             (self.k, 'GetProcessTimes', [HANDLE] + [C.POINTER(FILETIME)] * 4, C.c_int),
             (self.k, 'QueryFullProcessImageNameW', [HANDLE, DWORD, C.c_wchar_p, C.POINTER(DWORD)], C.c_int),
             (self.k, 'WaitForSingleObject', [HANDLE, DWORD], DWORD),
@@ -82,6 +84,7 @@ class Win32:
             (self.k, 'AssignProcessToJobObject', [HANDLE, HANDLE], C.c_int),
             (self.k, 'TerminateJobObject', [HANDLE, C.c_uint], C.c_int),
             (self.k, 'QueryInformationJobObject', [HANDLE, C.c_int, HANDLE, DWORD, C.POINTER(DWORD)], C.c_int),
+            (self.k, 'IsProcessInJob', [HANDLE, HANDLE, C.POINTER(C.c_int)], C.c_int),
             (self.k, 'CreateToolhelp32Snapshot', [DWORD, DWORD], HANDLE),
             (self.k, 'Thread32First', [HANDLE, C.POINTER(THREADENTRY)], C.c_int),
             (self.k, 'Thread32Next', [HANDLE, C.POINTER(THREADENTRY)], C.c_int),
@@ -180,6 +183,50 @@ class Win32:
         value = JOB_ACCOUNTING()
         self.check(self.k.QueryInformationJobObject(job, 1, C.byref(value), C.sizeof(value), None))
         return int(value.ActiveProcesses)
+
+    def in_job(self, handle, job):
+        """Verify membership using held process and Job handles, never a PID name."""
+        present = C.c_int()
+        self.check(self.k.IsProcessInJob(handle, job, C.byref(present)))
+        return bool(present.value)
+
+    def process_id(self, handle):
+        return int(self.check(self.k.GetProcessId(handle)))
+
+    def job_process_ids(self, job, max_processes=4096):
+        """Read one complete bounded JobObjectBasicProcessIdList snapshot.
+
+        The two DWORD counts precede pointer-sized IDs on both supported ABIs.
+        Job membership may change while querying; truncated/unstable lists are
+        retried with a strict allocation and retry bound, never treated as full.
+        """
+        if type(max_processes) is not int or not 0 < max_processes <= 4096:
+            raise ValueError('Owned Job PID bound must be within1..4096')
+        capacity = min(16, max_processes)
+        for _ in range(10):
+            size = 2 * C.sizeof(DWORD) + capacity * C.sizeof(SIZE_T)
+            buffer = C.create_string_buffer(size)
+            returned = DWORD()
+            ok = self.k.QueryInformationJobObject(job, 3, buffer, size, C.byref(returned))
+            assigned, count = struct.unpack_from('<II', buffer.raw)
+            if assigned > max_processes or count > capacity or count > assigned:
+                raise ValueError('Owned Job PID list exceeds the configured bound')
+            if ok:
+                if returned.value and not 8 + count * C.sizeof(SIZE_T) <= returned.value <= size:
+                    raise ValueError('Owned Job PID list returned an invalid length')
+                if assigned == count:
+                    ids = list((SIZE_T * count).from_buffer_copy(buffer.raw, 8))
+                    if any(pid <= 0 or pid > 0xffffffff for pid in ids) or len(ids) != len(set(ids)):
+                        raise ValueError('Owned Job PID list contains invalid/duplicate IDs')
+                    return ids
+            else:
+                error = C.get_last_error()
+                if error != 234:  # ERROR_MORE_DATA is the only retriable error.
+                    raise C.WinError(error)
+            if capacity >= max_processes:
+                raise ValueError('Owned Job PID list is incomplete at the configured bound')
+            capacity = min(max_processes, max(capacity * 2, assigned))
+        raise RuntimeError('Owned Job PID list remained unstable within the retry bound')
 
     def terminate_job(self, job):
         self.check(self.k.TerminateJobObject(job, 124))
@@ -366,6 +413,13 @@ def private_file(path):
     return _private(path, False)
 
 
+class OwnedCleanupIncomplete(RuntimeError):
+    """A bounded own-Job close did not prove both exit and handle closure."""
+    def __init__(self, cleanup):
+        self.cleanup = dict(cleanup)
+        super().__init__('Owned Windows Job cleanup incomplete: ' + cleanup['reason'])
+
+
 class OwnedProcess:
     """Assign a suspended child to an owned kill-on-close job before any code runs."""
     def __init__(self, command, **kwargs):
@@ -396,6 +450,82 @@ class OwnedProcess:
                     windowsProcess=dict(self.identity), queryPhase='after-process-exit-before-handle-close',
                     returncode=self.process.returncode)
 
+    def _require_live_job(self):
+        if not self.job or self.process is None or self.process.poll() is not None:
+            raise ValueError('A live owned Windows process tree is required')
+        handle = self.process._handle
+        if (self.api.exited(handle) or self.api.process_id(handle) != self.identity['pid']
+                or not self.api.in_job(handle, self.job)
+                or not same_identity(self.api.identity_from_handle(handle, self.identity['pid']), self.identity)):
+            raise ValueError('Owned Windows root process identity or Job membership changed')
+
+    @staticmethod
+    def _valid_member_identity(value):
+        if (type(value) is not dict or type(value.get('pid')) is not int or value['pid'] <= 0
+                or type(value.get('creationTime100ns')) is not int or value['creationTime100ns'] <= 0
+                or type(value.get('imagePath')) is not str or not ntpath.isabs(value['imagePath'])
+                or any(c in value['imagePath'] for c in '\x00\r\n')):
+            raise ValueError('Invalid owned Windows member identity')
+        return value
+
+    def _member_identity(self, pid, expected=None):
+        handle = self.api.open_process(pid)
+        try:
+            if self.api.exited(handle):
+                raise ProcessLookupError(pid)
+            # A listed PID can exit and be reused before OpenProcess. Verify
+            # membership before reading its image/creation identity; a foreign
+            # reused PID is never returned as an owned diagnostic target.
+            if self.api.process_id(handle) != pid or not self.api.in_job(handle, self.job):
+                raise ValueError('Enumerated process is outside the owned Job Object')
+            try:
+                first = self._valid_member_identity(self.api.identity_from_handle(handle, pid))
+                second = self._valid_member_identity(self.api.identity_from_handle(handle, pid))
+            except OSError:
+                if self.api.exited(handle):
+                    raise ProcessLookupError(pid) from None
+                raise
+            if (first['pid'] != pid or not same_identity(first, second)
+                    or (expected is not None and not same_identity(first, expected))
+                    or not self.api.in_job(handle, self.job)):
+                raise ValueError('Owned Windows member identity changed')
+            if self.api.exited(handle):
+                raise ProcessLookupError(pid)
+            return first
+        finally:
+            self.api.close(handle)
+
+    def member_identity(self, pid, expected=None):
+        """Return a fresh identity only for an enumerated live member.
+
+        The returned identity is an observation, not a retained process handle.
+        A later collector must revalidate its held handle against this identity.
+        """
+        if type(pid) is not int or not 0 < pid <= 0xffffffff:
+            raise ValueError('A positive Windows PID is required')
+        if expected is not None:
+            self._valid_member_identity(expected)
+            if expected['pid'] != pid:
+                raise ValueError('Expected Windows member PID differs')
+        self._require_live_job()
+        if pid not in self.api.job_process_ids(self.job):
+            raise ValueError('Requested PID is not in the owned Job Object')
+        result = self._member_identity(pid, expected)
+        self._require_live_job()
+        return result
+
+    def member_identities(self, max_processes=4096):
+        """Enumerate live own-Job identities with a held handle per observation."""
+        self._require_live_job()
+        result = []
+        for pid in self.api.job_process_ids(self.job, max_processes):
+            try:
+                result.append(self._member_identity(pid))
+            except ProcessLookupError:
+                pass  # A signaled held handle proves this listed process exited.
+        self._require_live_job()
+        return result
+
     def terminate_tree(self):
         self.api.terminate_job(self.job)
         self.forced_tree_termination = True
@@ -414,6 +544,108 @@ class OwnedProcess:
         self.cleanup = dict(activeProcessesAfter=0, jobClosed=True,
                             forcedTreeTermination=self.forced_tree_termination)
         return self.cleanup
+
+    def close_before(self, deadline, *, clock=time.monotonic):
+        """Close only this held Job without polling past an absolute deadline.
+
+        The bounded path never waits on a PID or changes the existing close().
+        CloseHandle still requests the Job's kill-on-close policy if active
+        processes remain; that request is not reported as observed process exit.
+        Synchronous Win32 calls themselves cannot be interrupted by this clock.
+        """
+        def finite(value):
+            try:
+                return type(value) in (int, float) and math.isfinite(value)
+            except OverflowError:
+                return False
+        if not finite(deadline) or not callable(clock):
+            raise ValueError('A finite absolute cleanup deadline and clock are required')
+        started = clock()
+        if not finite(started):
+            raise ValueError('Cleanup clock must return a finite monotonic value')
+        last_clock = started
+        def read_clock():
+            nonlocal last_clock
+            now = clock()
+            if not finite(now) or now < last_clock:
+                raise ValueError('Cleanup clock returned a nonfinite or decreasing value')
+            last_clock = now
+            return now
+        if self.job is None:
+            if self.cleanup and self.cleanup.get('status') == 'incomplete':
+                raise OwnedCleanupIncomplete(self.cleanup)
+            return self.cleanup
+        job = self.job
+        last_active = None
+        closed = False
+        reason = None
+        errors = []
+        first_error = None
+        operation = 'query-active-processes'
+        try:
+            count = self.api.active_processes(job)
+            if type(count) is not int or not 0 <= count <= 0xffffffff:
+                raise ValueError('Win32 returned an invalid active-process count')
+            last_active = count
+            if last_active:
+                operation = 'verify-owned-job-handle'
+                if self.job != job:
+                    raise ValueError('Held owned Job changed during cleanup')
+                operation = 'terminate-owned-job'
+                self.api.terminate_job(job)
+                self.forced_tree_termination = True
+                while last_active:
+                    operation = 'read-cleanup-clock'
+                    now = read_clock()
+                    if now >= deadline:
+                        reason = 'deadline-exhausted'
+                        break
+                    operation = 'verify-owned-job-handle'
+                    if self.job != job:
+                        raise ValueError('Held owned Job changed during cleanup')
+                    operation = 'query-active-processes'
+                    count = self.api.active_processes(job)
+                    if type(count) is not int or not 0 <= count <= 0xffffffff:
+                        raise ValueError('Win32 returned an invalid active-process count')
+                    last_active = count
+                    if last_active:
+                        operation = 'read-cleanup-clock'
+                        now = read_clock()
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            reason = 'deadline-exhausted'
+                            break
+                        operation = 'poll-owned-job'
+                        time.sleep(min(0.05, remaining))
+        except Exception as error:
+            first_error = error
+            reason = operation + '-failed'
+            errors.append(dict(operation=operation, type=type(error).__name__, message=str(error)))
+        finally:
+            if self.job != job:
+                reason = reason or 'owned-job-handle-changed'
+                errors.append(dict(operation='close-owned-job', type='ValueError',
+                                   message='Held owned Job changed; refusing an unowned/reused handle'))
+            else:
+                try:
+                    self.api.close(job)
+                    self.job = None
+                    closed = True
+                except Exception as error:
+                    first_error = first_error or error
+                    reason = reason or 'close-owned-job-failed'
+                    errors.append(dict(operation='close-owned-job', type=type(error).__name__, message=str(error)))
+        if last_active == 0 and closed and not errors:
+            self.cleanup = dict(activeProcessesAfter=0, jobClosed=True,
+                                forcedTreeTermination=self.forced_tree_termination)
+            return self.cleanup
+        self.cleanup = dict(status='incomplete', reason=reason or 'process-exit-unconfirmed',
+                            lastActiveProcesses=last_active,
+                            activeProcessesAfter=0 if last_active == 0 else None,
+                            lastActiveCountObservedBeforeHandleClose=last_active is not None,
+                            jobClosed=closed, forcedTreeTermination=self.forced_tree_termination,
+                            killOnCloseRequested=closed, deadlineMonotonic=deadline, errors=errors)
+        raise OwnedCleanupIncomplete(self.cleanup) from first_error
 
 
 OS_RSS = dict(collector='Win32 GetProcessMemoryInfo', field='PeakWorkingSetSize',

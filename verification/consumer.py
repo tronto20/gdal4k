@@ -2,16 +2,19 @@
 """Verify published Maven artifacts from a fresh, unrelated Kotlin consumer build."""
 import argparse
 import importlib.util
+import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ENGINE_TARGETS, library_version_from_repo
-from consumer_evidence import preserve_consumer_evidence
+from consumer_evidence import preserve_consumer_evidence, consumer_workspace, PhaseRecorder, consumer_failure_guard, restore_hidden_paths
 from command_evidence import run_with_evidence
 from jvm_hang_diagnostics import prepare_jvm_hang_diagnostics
 
@@ -19,6 +22,9 @@ ROOT=Path(__file__).resolve().parent.parent
 p=argparse.ArgumentParser()
 p.add_argument('--target', required=True, choices=['jvm','js','wasmJs','macosArm64','linuxX64','linuxArm64','mingwX64','iosArm64','iosSimulatorArm64','android'])
 p.add_argument('--command-timeout-seconds', type=int, help='Bound the consumer Gradle command and retain its output and XML on timeout')
+p.add_argument('--completion-deadline-monotonic', type=float, help='Internal absolute evidence/cleanup deadline inside the outer CI command bound')
+p.add_argument('--windows-native-consumer-diagnostics', action='store_true')
+p.add_argument('--native-diagnostic-budget-bytes', type=int)
 p.add_argument('--repo',type=Path,default=ROOT/'verification/build/consumer-maven')
 p.add_argument('--no-publish',action='store_true')
 p.add_argument('--compile-only',action='store_true',help='Link Native tests or compile Android device tests without running them')
@@ -28,6 +34,13 @@ p.add_argument('--jvm-binary', action='append', choices=JVM_BINARIES, help='Expl
 p.add_argument('--expect-missing-jvm-binary', action='store_true', help='Verify actionable failure in a fresh JVM without the host payload')
 a=p.parse_args()
 if a.command_timeout_seconds is not None and a.command_timeout_seconds <= 0:p.error('--command-timeout-seconds must be positive')
+if a.completion_deadline_monotonic is not None and (not math.isfinite(a.completion_deadline_monotonic) or a.completion_deadline_monotonic <= time.monotonic() or a.command_timeout_seconds is None):p.error('Completion deadline must be finite, future and bounded')
+if a.windows_native_consumer_diagnostics:
+ if os.name != 'nt' or a.target != 'mingwX64' or a.compile_only or a.command_timeout_seconds is None or a.completion_deadline_monotonic is None:p.error('Native diagnostics require an actual bounded Windows mingwX64 consumer')
+ from native_consumer_diagnostics import valid_budget
+ try:valid_budget(a.native_diagnostic_budget_bytes)
+ except ValueError as error:p.error(str(error))
+elif a.native_diagnostic_budget_bytes is not None:p.error('Native diagnostic budget requires its explicit opt-in')
 if (a.jvm_binary or a.expect_missing_jvm_binary) and a.target != 'jvm': p.error('JVM binary options require --target jvm')
 binaries = a.jvm_binary or ([] if a.expect_missing_jvm_binary or a.target != 'jvm' else [host_binary()])
 if a.expect_missing_jvm_binary and host_binary() in binaries: p.error('The missing-binary test cannot include the host payload')
@@ -114,7 +127,10 @@ class PublishedConsumerTest {
     }
 }
 '''.replace('EXPECTED_BINARY', host_binary())
-with tempfile.TemporaryDirectory(prefix='gdal4k-published-consumer-') as temporary:
+case = '-compile' if target=='android' and a.compile_only else '-missing' if a.expect_missing_jvm_binary and not binaries else '-wrong' if a.expect_missing_jvm_binary else '-multiple' if len(binaries)>1 else ''
+destination=ROOT/'verification/results'/('published-consumer-'+target+('-browser' if a.browser else '')+case)
+phases=PhaseRecorder(destination/'retention', max_total_bytes=(960*1024 if a.windows_native_consumer_diagnostics else None))
+with consumer_failure_guard(destination,phase_recorder=phases), consumer_workspace(ROOT, phase_recorder=phases, deadline=a.completion_deadline_monotonic) as temporary:
  consumer=Path(temporary)
  (consumer/'settings.gradle.kts').write_text('pluginManagement { repositories { mavenCentral(); google(); gradlePluginPortal() } }\nrootProject.name="published-gdal4k-consumer"\n')
  android='id("com.android.kotlin.multiplatform.library") version "8.11.2"' if target=='android' else ''
@@ -217,25 +233,43 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
  # The native consumer must link the archive stored inside its published KLIB.
  platform={'macosArm64':'macos-arm64','linuxX64':'linux-amd64','linuxArm64':'linux-arm64','mingwX64':'windows-amd64','iosArm64':'ios-arm64','iosSimulatorArm64':'ios-simulator-arm64'}.get(target)
  hidden=[]
- case = '-compile' if target=='android' and a.compile_only else '-missing' if a.expect_missing_jvm_binary and not binaries else '-wrong' if a.expect_missing_jvm_binary else '-multiple' if len(binaries)>1 else ''
- destination=ROOT/'verification/results'/('published-consumer-'+target+('-browser' if a.browser else '')+case)
  fixture_module.preserve_consumer_sources(consumer, destination, profile_fixture_sources)
+ native_directory=None; command_env=None; native_callback_check=None
+ if a.windows_native_consumer_diagnostics:
+  from native_consumer_diagnostics import write_record, prepare_native_diagnostics
+  native_directory=phases.directory/'native';native_directory.mkdir()
+  source_bindings=[]
+  for path in [consumer/'settings.gradle.kts',consumer/'build.gradle.kts',consumer/'gradle.properties',*sorted((consumer/'src').rglob('*.kt'))]:
+   raw=path.read_bytes();source_bindings.append({'path':str(path.relative_to(consumer)),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+  for name in ['native_consumer_diagnostics.py','windows_dump_quota.py','windows_native_stall.py','windows_process.py','consumer.py','consumer_evidence.py','command_evidence.py','ci-diagnostics.init.gradle']:
+   path=ROOT/'verification'/name;raw=path.read_bytes()
+   source_bindings.append({'path':'verification/'+name,'sourceScope':'verification-helper','bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+  write_record(native_directory/'context.json',{'consumerRoot':str(consumer.resolve()),'evidenceRoot':str(destination.resolve()),'budgetBytes':a.native_diagnostic_budget_bytes,'completionDeadlineMonotonic':a.completion_deadline_monotonic,'sourceBindings':source_bindings})
+  native_callback_check=prepare_native_diagnostics(native_directory,budget=a.native_diagnostic_budget_bytes,deadline=a.completion_deadline_monotonic)
+  command_env=dict(os.environ,GDAL4K_NATIVE_DIAGNOSTIC_DIR=str(native_directory.resolve()),GDAL4K_NATIVE_DIAGNOSTIC_PYTHON=sys.executable,GDAL4K_NATIVE_DIAGNOSTIC_HELPER=str(ROOT/'verification/native_consumer_diagnostics.py'))
  try:
   if platform:
    for original in [ROOT/f'gdal4k-engine/build/engine/{platform}',ROOT/f'gdal4k-engine/build/classes/kotlin/{target}/main/cinterop',ROOT/f'gdal4k-runtime/build/classes/kotlin/{target}/main/cinterop']:
     if original.exists():
      moved=original.with_name(original.name+'-consumer-hidden')
      if moved.exists():raise RuntimeError('Previous hidden producer files must be restored: '+str(moved))
+     phases.record('producer-hide','before',path=str(original))
      original.rename(moved);hidden.append((original,moved))
+     phases.record('producer-hide','after',path=str(original))
   try:
    diagnostic_options = ['--no-daemon', '--init-script', ROOT/'verification/ci-diagnostics.init.gradle'] if a.command_timeout_seconds is not None else []
    command = [gradle,'-p',consumer,'--console=plain',*diagnostic_options,'--refresh-dependencies',task]
    if a.command_timeout_seconds is not None:
-    run_with_evidence(command, cwd=consumer, directory=destination/'commands', timeout=a.command_timeout_seconds)
+    run_with_evidence(command, cwd=consumer, directory=destination/'commands', timeout=a.command_timeout_seconds,
+                      env=command_env, windows_native_diagnostics=native_directory,
+                      native_diagnostic_budget=a.native_diagnostic_budget_bytes,
+                      completion_deadline=a.completion_deadline_monotonic,
+                      native_callback_self_check=native_callback_check)
    else:
     run(command,cwd=consumer)
   finally:
-   preservation=preserve_consumer_evidence(consumer,destination,sys.exc_info()[1])
+   preservation=preserve_consumer_evidence(consumer,destination,sys.exc_info()[1],
+                                        deadline=a.completion_deadline_monotonic,phase_recorder=phases)
   runtime_files = []
   runtime_coordinates = []
   if target=='jvm':
@@ -246,6 +280,8 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
    actual_payloads = {b for b in JVM_BINARIES if any(name.endswith('-'+b+'.jar') for name in engine_files)}
    if actual_payloads != set(binaries) or len(engine_files) != len(binaries):
     raise RuntimeError(f'Unexpected JVM classifier files: {engine_files}; expected {binaries}')
-  (destination/'result.json').write_text(json.dumps({'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'profile_runtime_fixture_sources':profile_fixture_sources,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed', **({'jvm_hang_diagnostics': {'interval_millis':hang_diagnostics['interval_millis'], 'retained_directory':'test-results/jvm-hang-diagnostics'}} if target=='jvm' else {})},indent=2)+'\n')
+  consumer_result={'target':target,'version':VERSION,'browser':a.browser,'compiled_only':a.compile_only,'producer_paths_hidden':bool(hidden),'producer_paths_hidden_count':len(hidden),'producer_paths_hidden_names':[str(original.relative_to(ROOT)) for original,_ in hidden],'artifact_preservation':preservation,'profile_runtime_fixture_sources':profile_fixture_sources,'jvm_binaries':binaries,'runtime_files':runtime_files,'runtime_coordinates':runtime_coordinates,'expected_missing_binary':a.expect_missing_jvm_binary,'result':'passed', **({'jvm_hang_diagnostics': {'interval_millis':hang_diagnostics['interval_millis'], 'retained_directory':'test-results/jvm-hang-diagnostics'}} if target=='jvm' else {})}
  finally:
-  for original,moved in reversed(hidden):moved.rename(original)
+  restore_hidden_paths(hidden,phase_recorder=phases,failure=sys.exc_info()[1])
+with consumer_failure_guard(destination,phase_recorder=phases):
+ (destination/'result.json').write_text(json.dumps(consumer_result,indent=2)+'\n')

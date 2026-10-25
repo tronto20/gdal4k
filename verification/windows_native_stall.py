@@ -22,6 +22,7 @@ import threading
 import time
 
 from windows_process import DWORD, HANDLE, _api, private_directory, private_file, same_identity, verify_private_path
+import windows_dump_quota as dump_quota
 
 FLAGS = 0x1000  # MiniDumpNormal + MiniDumpWithThreadInfo; no full/process memory.
 MAX_DUMP = 128 * 1024**2
@@ -150,7 +151,7 @@ def _frame(pc, sp, modules):
             'moduleOffset': pc - module['baseAddress'] if module else None, 'functionNameClaimed': False}
 
 
-def _native_stacks(dbg, api, process_handle, target, dump, inventory, directory):
+def _native_stacks(dbg, api, process_handle, target, dump, inventory, directory, *, bounded_metadata=False):
     """Unwind captured contexts/stacks; never suspend a target thread.
 
     Forced collector termination cannot strand the target in SuspendThread.
@@ -186,11 +187,16 @@ def _native_stacks(dbg, api, process_handle, target, dump, inventory, directory)
     search = directory / 'offline-images'; search.mkdir(exist_ok=False); private_directory(search)
     api.check(initialize(process_handle, str(search), False))
     rows, module_loads = [], []
+    logged_threads, omitted_threads, metadata_truncated = 0, 0, False
+    omitted_modules = max(0, len(inventory['modules']) - 128) if bounded_metadata else 0
     segments = [t for t in inventory['nativeThreads'] if t['stackBytes']]
-    with Path(dump).open('rb') as source, (directory / 'native-stacks.jsonl').open('x', encoding='utf-8') as log:
+    log_path = directory / 'native-stacks.jsonl'
+    options = {} if bounded_metadata else {'encoding': 'utf-8'}
+    with Path(dump).open('rb') as source, log_path.open('xb' if bounded_metadata else 'x', **options) as log:
         private_file(directory / 'native-stacks.jsonl')
+        bounded_log = dump_quota.BoundedJsonl(log) if bounded_metadata else None
         try:
-            for module in inventory['modules']:
+            for module in inventory['modules'][:128] if bounded_metadata else inventory['modules']:
                 observed = module['path']; local = observed[4:] if observed.startswith('\\\\?\\') else observed
                 drive, _ = ntpath.splitdrive(local)
                 if not re.fullmatch(r'[A-Za-z]:', drive) or drive_type(drive + '\\') not in (3, 6):
@@ -268,9 +274,56 @@ def _native_stacks(dbg, api, process_handle, target, dump, inventory, directory)
                     row['error'] = {'type': type(error).__name__, 'message': str(error)}
                 finally:
                     if handle: api.close(handle)
-                rows.append(row); log.write(json.dumps(row) + '\n'); log.flush(); os.fsync(log.fileno())
+                if bounded_metadata:
+                    kept = {key: value for key, value in row.items() if key != 'frames'}
+                    if 'error' in kept:
+                        kept['error'] = {'type': kept['error']['type'], 'message': dump_quota.short_text(kept['error']['message'])}
+                    kept['frames'] = []
+                    for frame in row['frames'][:16]:
+                        actual = dict(frame)
+                        if actual.get('module') is not None:
+                            name = dump_quota.short_text(actual['module'])
+                            actual.update(module=name['text'], modulePathTruncated=name['truncated'], fullModulePathSha256=name['fullUtf8Sha256'])
+                        kept['frames'].append(actual)
+                    kept.update(capturedFrameCount=len(row['frames']), framesTruncated=len(row['frames']) > 16)
+                    try:
+                        bounded_log.append(kept, reserve=4096)
+                        logged_threads += 1
+                        metadata_truncated = (metadata_truncated or kept['framesTruncated']
+                                              or any(f.get('modulePathTruncated') for f in kept['frames'])
+                                              or kept.get('error', {}).get('message', {}).get('truncated', False))
+                    except dump_quota.QuotaExceeded:
+                        omitted_threads = len(inventory['nativeThreads']) - logged_threads
+                        metadata_truncated = True
+                        break
+                else:
+                    rows.append(row); log.write(json.dumps(row) + '\n'); log.flush(); os.fsync(log.fileno())
+            if bounded_metadata:
+                bounded_log.append({'record': 'bounded-native-stack-summary', 'loggedThreads': logged_threads,
+                                    'omittedThreads': omitted_threads, 'moduleLoadsOmitted': omitted_modules,
+                                    'metadataTruncated': metadata_truncated or bool(omitted_modules),
+                                    'allThreadStacksClaimed': False})
         finally:
             api.check(cleanup(process_handle))
+    if bounded_metadata:
+        module_sample = [{**{k: v for k, v in row.items() if k not in ['path', 'message']},
+                          'path': dump_quota.short_text(row['path']),
+                          **({'message': dump_quota.short_text(row['message'])} if 'message' in row else {})}
+                         for row in module_loads[:4]]
+        error_sample = [{**{k: v for k, v in row.items() if k != 'message'},
+                         'message': dump_quota.short_text(row['message'])} for row in callback_errors[:4]]
+        sample_truncated = (any(row['path']['truncated'] or row.get('message', {}).get('truncated', False) for row in module_sample)
+                            or any(row['message']['truncated'] for row in error_sample))
+        return {'stackLog': {'path': str(log_path), 'bytes': log_path.stat().st_size, 'sha256': _sha(log_path)},
+                'loggedThreads': logged_threads, 'omittedThreads': omitted_threads,
+                'moduleLoadCount': len(module_loads), 'moduleLoadsOmitted': omitted_modules,
+                'moduleLoadSample': module_sample,
+                'metadataTruncated': metadata_truncated or bool(omitted_modules) or len(module_loads) > 4 or len(callback_errors) > 4 or sample_truncated,
+                'allThreadStacksClaimed': False, 'maxFramesPerThreadUnwound': 128, 'maxFramesPerThreadLogged': 16,
+                'stackwalkAbi': stackwalk_layout(), 'memoryReadCallbackErrors': error_sample,
+                'contextAndStackSource': 'minidump', 'unwindMetadataSource': 'owned-live-process-local-module-images',
+                'symbolLookupRequested': False, 'symbolServerRequested': False, 'environmentSymbolPathsIgnored': True,
+                'targetSuspendThreadCalls': 0, 'fullMemoryRequested': False}
     return {'threads': rows, 'moduleLoads': module_loads, 'maxFramesPerThread': 128, 'stackwalkAbi': stackwalk_layout(),
             'memoryReadCallbackErrors': callback_errors,
             'contextAndStackSource': 'minidump', 'unwindMetadataSource': 'owned-live-process-local-module-images',
@@ -353,36 +406,104 @@ def _copy_native(inventory, directory, expected_sha, required):
             'loadedMemoryDigestClaimed': False}
 
 
+def _bounded_collector_failure(directory, target, stage, error):
+    """Create one compact failure receipt without replacing earlier evidence."""
+    path = Path(directory) / 'collector.json'
+    if path.exists():
+        return False
+    dump = Path(directory) / 'native.dmp'
+    catalog = {'path': str(dump), 'present': False, 'parsed': False, 'payloadValidClaimed': False}
+    try:
+        if dump.is_file():
+            catalog.update(present=True, bytes=dump.stat().st_size)
+    except OSError as observation_error:
+        catalog['observationError'] = {'type': type(observation_error).__name__, 'message': str(observation_error)[:1024]}
+    value = {'status': 'collector-failed', 'stage': str(stage)[:128], 'target': target,
+             'error': {'type': type(error).__name__, 'message': str(error)[:1024]},
+             'dumpCatalog': catalog, 'rootCauseOrRuntimeAcceptance': False}
+    try:
+        dump_quota.write_json(path, value, dump_quota.COLLECTOR_METADATA, protect=private_file)
+    except FileExistsError:
+        return False  # Another earlier record won the create-only race.
+    return True
+
+
+def _run_validated_collector(request_path, request, collect):
+    state = {'stage': 'request-validated'}
+    try:
+        return collect(state)
+    except Exception as error:
+        if request.get('copyNativeDll', True) is False:
+            try:
+                _bounded_collector_failure(Path(request_path).parent, request.get('target'), state['stage'], error)
+            except Exception as receipt_error:
+                # Preserve the original collector failure if even its private
+                # bounded failure record cannot be created.
+                error.collectorReceiptFailure = {'type': type(receipt_error).__name__, 'message': str(receipt_error)[:1024]}
+        raise
+
+
+def _collect_validated(request_path, request, process_handle, job_handle, state):
+    directory = request_path.parent
+    bounded_metadata = request.get('copyNativeDll', True) is False
+    identity = request['target']; api = _api()
+    state['stage'] = 'verify-target-before-dump'
+    _verify_inherited(api, process_handle, job_handle, identity)
+    dump = directory / 'native.dmp'; started = _now()
+    state['stage'] = 'load-dbghelp'
+    dbghelp = C.WinDLL('Dbghelp.dll', use_last_error=True, winmode=0x800)
+    with dump.open('xb') as output:
+        private_file(dump)
+        state['stage'] = 'write-minidump'
+        try:
+            quota = dump_quota.write_minidump(dbghelp, process_handle, identity['pid'], output, flags=FLAGS)
+        except Exception as error:
+            if bounded_metadata:
+                dump_quota.write_json(directory / 'collector.json',
+                                      {'status': 'collector-failed', 'stage': 'write-minidump', 'target': identity,
+                                       'error': {'type': type(error).__name__, 'message': str(error)[:1024]},
+                                       'dumpQuota': getattr(error, 'quota', None),
+                                       'partialDumpBytesObservedBeforeFileClose': dump.stat().st_size,
+                                       'partialDumpPayloadValid': False, 'rootCauseOrRuntimeAcceptance': False},
+                                      dump_quota.COLLECTOR_METADATA, protect=private_file)
+            raise
+    state['stage'] = 'verify-target-after-dump'
+    _verify_inherited(api, process_handle, job_handle, identity)
+    state['stage'] = 'parse-dump-inventory'
+    inventory = dump_inventory(dump)
+    state['stage'] = 'copy-native-module'
+    native = (_copy_native(inventory, directory, request.get('expectedDllSha256'), request['requireGdal'])
+              if request.get('copyNativeDll', True) else None)
+    try:
+        state['stage'] = 'unwind-native-stacks'
+        native_stacks = _native_stacks(dbghelp, api, process_handle, identity, dump, inventory, directory,
+                                       bounded_metadata=bounded_metadata)
+    except Exception as error:
+        native_stacks = {'error': {'type': type(error).__name__, 'message': str(error)[:1024] if bounded_metadata else str(error)},
+                         'minidumpRetainedAsFallback': True, 'targetSuspendThreadCalls': 0}
+    state['stage'] = 'build-collector-receipt'
+    receipt = {'status': 'captured', 'startedAtUtc': started, 'completedAtUtc': _now(), 'target': identity,
+               'ownedJobMembershipVerified': True, 'collectorPid': os.getpid(), 'collectorOutsideTarget': True,
+               'dump': {'path': str(dump), 'sha256': _sha(dump), **(dump_quota.inventory_summary(inventory) if bounded_metadata else inventory)},
+               'dumpQuota': quota, 'nativeDll': native, 'nativeStacks': native_stacks,
+               'rootCauseOrRuntimeAcceptance': False}
+    if bounded_metadata:
+        state['stage'] = 'write-collector-receipt'
+        dump_quota.write_json(directory / 'collector.json', receipt, dump_quota.COLLECTOR_METADATA, protect=private_file)
+    else:
+        _write_new(directory / 'collector.json', receipt)
+
+
 def _collect(request_path, process_handle, job_handle):
     if os.name != 'nt':
         raise RuntimeError('Native stall collection requires actual Windows')
-    import msvcrt
     request_path = Path(request_path); verify_private_path(request_path)
     directory = request_path.parent; verify_private_path(directory, directory=True)
+    if request_path.stat().st_size > dump_quota.REQUEST_METADATA:
+        raise ValueError('Native collector request exceeds its pre-read metadata cap')
     request = json.loads(request_path.read_text(encoding='utf-8'))
-    identity = request['target']; api = _api()
-    _verify_inherited(api, process_handle, job_handle, identity)
-    dump = directory / 'native.dmp'; started = _now()
-    dbghelp = C.WinDLL('Dbghelp.dll', use_last_error=True, winmode=0x800)
-    write = dbghelp.MiniDumpWriteDump
-    write.argtypes = [HANDLE, DWORD, HANDLE, DWORD, HANDLE, HANDLE, HANDLE]; write.restype = C.c_int
-    with dump.open('xb') as output:
-        private_file(dump)
-        api.check(write(process_handle, identity['pid'], msvcrt.get_osfhandle(output.fileno()), FLAGS, None, None, None))
-        output.flush(); os.fsync(output.fileno())
-    _verify_inherited(api, process_handle, job_handle, identity)
-    inventory = dump_inventory(dump)
-    native = _copy_native(inventory, directory, request.get('expectedDllSha256'), request['requireGdal'])
-    try:
-        native_stacks = _native_stacks(dbghelp, api, process_handle, identity, dump, inventory, directory)
-    except Exception as error:
-        native_stacks = {'error': {'type': type(error).__name__, 'message': str(error)},
-                         'minidumpRetainedAsFallback': True, 'targetSuspendThreadCalls': 0}
-    receipt = {'status': 'captured', 'startedAtUtc': started, 'completedAtUtc': _now(), 'target': identity,
-               'ownedJobMembershipVerified': True, 'collectorPid': os.getpid(), 'collectorOutsideTarget': True,
-               'dump': {'path': str(dump), 'sha256': _sha(dump), **inventory}, 'nativeDll': native, 'nativeStacks': native_stacks,
-               'rootCauseOrRuntimeAcceptance': False}
-    _write_new(directory / 'collector.json', receipt)
+    return _run_validated_collector(request_path, request,
+                                    lambda state: _collect_validated(request_path, request, process_handle, job_handle, state))
 
 
 class CaptureSession:
@@ -402,7 +523,12 @@ class CaptureSession:
         else:
             path = self.directory / 'collector.json'
             try:
-                self.result = json.loads(path.read_text()) if code == 0 and path.is_file() else {'status': 'collector-failed', 'returncode': code}
+                bounded = self.metadata.get('boundedNativeMetadata', False)
+                if bounded and path.is_file() and path.stat().st_size > dump_quota.COLLECTOR_METADATA:
+                    raise ValueError('Native collector receipt exceeds its metadata quota')
+                self.result = json.loads(path.read_text()) if (code == 0 or bounded) and path.is_file() else {'status': 'collector-failed', 'returncode': code}
+                if code != 0:
+                    self.result.update(status='collector-failed', returncode=code)
             except (ValueError, OSError) as error:
                 self.result = {'status': 'collector-invalid-receipt', 'returncode': code, 'message': str(error)}
         self.result['directory'] = str(self.directory)
@@ -420,7 +546,10 @@ class CaptureSession:
         return self.result or self.poll()
 
 
-def _start_capture(owned, identity, directory, *, expected_sha=None, require_gdal=True, clock=time.monotonic, limit=20):
+def _start_capture(owned, identity, directory, *, expected_sha=None, require_gdal=True,
+                   copy_native=True, clock=time.monotonic, limit=20):
+    if type(limit) not in (int, float) or not 0 < limit <= 20:
+        raise ValueError('Native collector must have a positive bound of at most20s')
     if os.name != 'nt' or not owned.job or owned.process.poll() is not None:
         raise ValueError('A live owned Windows process tree is required')
     if require_gdal and (expected_sha is None or not re.fullmatch(r'[0-9a-f]{64}', expected_sha)):
@@ -441,18 +570,28 @@ def _start_capture(owned, identity, directory, *, expected_sha=None, require_gda
             result = HANDLE(); api.check(duplicate(current, original, current, C.byref(result), rights, True, 0))
             duplicates.append(result.value)
         request = directory / 'request.json'
-        _write_new(request, {'target': identity, 'expectedDllSha256': expected_sha, 'requireGdal': require_gdal})
+        value = {'target': identity, 'expectedDllSha256': expected_sha,
+                 'requireGdal': require_gdal, 'copyNativeDll': copy_native}
+        if copy_native:
+            _write_new(request, value)
+        else:
+            dump_quota.write_json(request, value, dump_quota.REQUEST_METADATA, protect=private_file)
         startup = subprocess.STARTUPINFO(); startup.lpAttributeList = {'handle_list': duplicates}
         command = [sys.executable, str(Path(__file__).resolve()), '--collect', str(request),
                    '--process-handle', str(duplicates[0]), '--job-handle', str(duplicates[1])]
-        log = directory / 'collector.log'
-        with log.open('xb') as output:
-            private_file(log)
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+        if copy_native:
+            log = directory / 'collector.log'
+            with log.open('xb') as output:
+                private_file(log)
+                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                           startupinfo=startup, close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        startupinfo=startup, close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)
         metadata = {'collectorHeldProcess': {'pid': process.pid,
                                              'creationTime100ns': api.creation_time_from_handle(process._handle)},
                     'targetIdentityRequested': identity, 'explicitInheritedHandleCount': 2,
+                    'boundedNativeMetadata': not copy_native,
                     'inheritedTargetAccess': 'QUERY_INFORMATION|VM_READ|SYNCHRONIZE',
                     'inheritedJobAccess': 'JOB_OBJECT_QUERY', 'collectorTimeoutSeconds': limit}
         return CaptureSession(process, directory, clock, limit, metadata)
