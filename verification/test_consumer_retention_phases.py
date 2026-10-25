@@ -1,7 +1,9 @@
 """Portable evidence/deadline guards, not Windows kernel/runtime acceptance."""
 import errno
+import ctypes
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -21,6 +23,55 @@ class ConsumerRetentionPhasesTest(unittest.TestCase):
         source.parent.mkdir(parents=True)
         source.write_bytes(b'<testsuite tests="0"/>')
         return consumer, Path(root) / 'evidence', source
+
+    def test_nonlink_directory_alias_returns_same_canonical_identity(self):
+        with tempfile.TemporaryDirectory() as owned:
+            root = Path(owned).resolve()
+            (root / 'existing').mkdir()
+            alias = root / 'existing' / '..'
+            self.assertNotEqual(alias, root)
+            self.assertEqual(evidence._directory(alias, create=False), root)
+            self.assertTrue(alias.samefile(root))
+
+    def test_canonical_resolution_to_another_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as owned:
+            root = Path(owned).resolve()
+            source, other = root / 'source', root / 'other'
+            source.mkdir(); other.mkdir()
+            original = Path.resolve
+            def resolve(path, *args, **kwargs):
+                return other if path == source else original(path, *args, **kwargs)
+            with mock.patch.object(Path, 'resolve', resolve):
+                with self.assertRaisesRegex(RuntimeError, 'canonical identity differs'):
+                    evidence._directory(source, create=False)
+            self.assertEqual(list(source.iterdir()), [])
+            self.assertEqual(list(other.iterdir()), [])
+
+    @unittest.skipUnless(os.name == 'nt', 'Actual Windows 8.3 directory alias control')
+    def test_actual_windows_short_alias_preserves_partial_xml(self):
+        with tempfile.TemporaryDirectory(prefix='gdal4k-retention-long-name-') as owned:
+            root = Path(owned).resolve()
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            short_path = kernel.GetShortPathNameW
+            short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+            short_path.restype = ctypes.c_uint32
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = short_path(str(root), buffer, len(buffer))
+            if not length:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.assertLess(length, len(buffer))
+            alias = Path(buffer.value)
+            if alias == root:
+                self.skipTest('This actual Windows filesystem exposes no distinct 8.3 alias for the owned directory')
+            self.assertTrue(alias.samefile(root))
+            consumer, destination, source = self.fixture(alias)
+            contents = source.read_bytes()
+            failure = subprocess.TimeoutExpired(['owned-native-fixture'], 3540)
+            result = evidence.preserve_consumer_evidence(consumer, destination, failure)
+            self.assertFalse(result.get('incomplete'), repr(result))
+            self.assertEqual((destination / 'test-results/nativeTest/partial.xml').read_bytes(), contents)
+            self.assertEqual(json.loads((destination / 'failure.json').read_text())['exception'], 'TimeoutExpired')
+            self.assertEqual(evidence._directory(consumer, create=False), consumer.resolve())
 
     def test_failure_identity_is_durable_before_copytree(self):
         with tempfile.TemporaryDirectory() as owned:

@@ -25,18 +25,28 @@ def _directory(path, *, create):
     path = Path(path).absolute()
     # Check existing ancestors before mkdir so a symlink cannot redirect a new
     # evidence/workspace directory into an unrelated source or cache tree.
-    for part in [path, *path.parents]:
-        try:
-            attributes = part.lstat()
-        except FileNotFoundError:
-            continue
-        if part.is_symlink() or getattr(attributes, 'st_file_attributes', 0) & 0x400:
-            raise RuntimeError('Refusing symlinked/reparse consumer directory: ' + str(part))
+    def check_ancestors(candidate):
+        for part in [candidate, *candidate.parents]:
+            try:
+                attributes = part.lstat()
+            except FileNotFoundError:
+                continue
+            if part.is_symlink() or getattr(attributes, 'st_file_attributes', 0) & 0x400:
+                raise RuntimeError('Refusing symlinked/reparse consumer directory: ' + str(part))
+
+    check_ancestors(path)
     if create:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not path.is_dir() or path.resolve(strict=True) != path:
-        raise RuntimeError('Consumer directory must be canonical and nonsymlinked: ' + str(path))
-    return path
+    if not path.is_dir():
+        raise RuntimeError('Consumer directory must be an existing nonsymlinked directory: ' + str(path))
+    canonical = path.resolve(strict=True)
+    check_ancestors(canonical)
+    # Windows TemporaryDirectory may use a genuine 8.3 alias (RUNNER~1).
+    # Accept a different spelling only for the same actual directory, after
+    # checking both paths for link/reparse ancestors.
+    if not path.samefile(canonical):
+        raise RuntimeError('Consumer directory canonical identity differs: ' + str(path))
+    return canonical
 
 
 def consumer_workspace_root(root):

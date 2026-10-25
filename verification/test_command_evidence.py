@@ -113,12 +113,14 @@ class CommandEvidenceTest(unittest.TestCase):
                 xml.parent.mkdir(parents=True)
                 contents = b'<testsuite tests="1"><testcase name="finished-before-stall"/></testsuite>'
                 xml.write_bytes(contents)
-                with self.assertRaises(subprocess.TimeoutExpired):
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
                     try:
                         run_with_evidence([sys.executable, '-c', 'print("before stall", flush=True); import time; time.sleep(120)'],
                                           cwd=consumer, directory=destination/'commands', timeout=1)
                     finally:
                         preserve_consumer_evidence(consumer, destination, sys.exc_info()[1])
+                preservation = getattr(caught.exception, 'consumer_preservation', {})
+                self.assertFalse(preservation.get('incomplete'), repr(preservation))
             self.assertEqual((destination/'test-results/nativeTest/TEST-stalled.xml').read_bytes(), contents)
             self.assertEqual(json.loads((destination/'failure.json').read_text())['exception'], 'TimeoutExpired')
             self.assertEqual(json.loads((destination/'commands/001.json').read_text())['status'], 'timed_out')
