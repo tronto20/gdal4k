@@ -176,7 +176,10 @@ class DumpIoCallbacks:
                 output.Cancel.CheckCancel = bool(self.error)
                 output.Cancel.Cancel = bool(self.error)
             elif kind == 16:  # IsProcessSnapshotCallback: live held process handle.
-                output.Status = S_FALSE
+                # Live-process candidate; actual owned-child capture must validate it.
+                output.Status = S_OK
+            elif kind == 17:  # VmStartCallback: no custom virtual-memory callbacks.
+                output.Status = S_OK
             return 1
         except BaseException as error:
             if self.error is None:

@@ -40,11 +40,12 @@ class TrackingOutput(io.BytesIO):
         return super().write(data)
 
 
-def callback_event(callbacks, kind, offset=0, pointer=None, amount=0):
+def callback_event(callbacks, kind, offset=0, pointer=None, amount=0, *, initial_status=0):
     value = quota.MINIDUMP_CALLBACK_INPUT_IO()
     value.ProcessId, value.ProcessHandle, value.CallbackType = 123, 456, kind
     value.Io.Offset, value.Io.Buffer, value.Io.BufferBytes = offset, pointer, amount
     output = quota.MINIDUMP_CALLBACK_OUTPUT()
+    output.Status = initial_status
     result = callbacks.routine(None, C.byref(value), C.byref(output))
     return result, output.Status
 
@@ -204,6 +205,46 @@ class CallbackQuotaTests(unittest.TestCase):
         self.assertEqual(b'\0' * 4 + b'hello', output.getvalue())
         self.assertTrue(callbacks.receipt()['ioFinishObserved'])
         self.assertFalse(callbacks.receipt()['ordinaryFileHandleFallback'])
+
+    def test_live_process_candidate_and_vm_decline_overwrite_poisoned_output(self):
+        for kind in [16, 17]:
+            for poison in [quota.S_FALSE, quota.E_FAIL, 0x12345678]:
+                with self.subTest(kind=kind, poison=poison):
+                    output = TrackingOutput()
+                    callbacks = quota.DumpIoCallbacks(quota.BoundedRandomAccessSink(output, 64))
+                    self.assertEqual((1, quota.S_OK), callback_event(callbacks, kind, initial_status=poison))
+                    self.assertIsNone(callbacks.error)
+                    self.assertFalse(callbacks.started)
+                    self.assertEqual(0, callbacks.io_calls)
+                    self.assertFalse(output.writes)
+        for kind in [0, 1, 0xfffffffe]:  # Module/thread flag defaults and unrelated callbacks.
+            callbacks = quota.DumpIoCallbacks(quota.BoundedRandomAccessSink(TrackingOutput(), 64))
+            self.assertEqual((1, 0x12345678), callback_event(callbacks, kind, initial_status=0x12345678))
+
+    def test_reused_io_negotiation_output_still_requires_bounded_writes_and_finish(self):
+        output = TrackingOutput(); callbacks = quota.DumpIoCallbacks(quota.BoundedRandomAccessSink(output, 32))
+        value = quota.MINIDUMP_CALLBACK_INPUT_IO()
+        value.ProcessId, value.ProcessHandle = 123, 456
+        result = quota.MINIDUMP_CALLBACK_OUTPUT(); result.Status = quota.E_FAIL
+        def emit(kind):
+            value.CallbackType = kind
+            return callbacks.routine(None, C.byref(value), C.byref(result)), result.Status
+        self.assertEqual((1, quota.S_FALSE), emit(quota.IO_START))
+        self.assertEqual((1, quota.S_OK), emit(16))
+        # Poison the reused output as an SDK caller may; no zero-init assumption.
+        result.Status = quota.S_FALSE
+        self.assertEqual((1, quota.S_OK), emit(17))
+        self.assertFalse(callbacks.finished)
+        self.assertEqual(0, callbacks.io_calls)
+        buffer = C.create_string_buffer(b'MDMP' + b'x' * 28)
+        value.Io.Offset, value.Io.Buffer, value.Io.BufferBytes = 0, C.addressof(buffer), 32
+        self.assertEqual((1, quota.S_OK), emit(quota.IO_WRITE_ALL))
+        self.assertEqual((1, quota.S_OK), emit(quota.IO_FINISH))
+        self.assertEqual(b'MDMP' + b'x' * 28, output.getvalue())
+        self.assertEqual(32, callbacks.sink.extent)
+        self.assertEqual({'11': 1, '12': 1, '13': 1, '16': 1, '17': 1}, callbacks.receipt()['callbackTypeCounts'])
+        self.assertTrue(callbacks.finished)
+        self.assertIsNone(callbacks.error)
 
     def test_quota_callback_failure_does_not_dereference_invalid_pointer(self):
         output = TrackingOutput(); callbacks = quota.DumpIoCallbacks(quota.BoundedRandomAccessSink(output, 4))
