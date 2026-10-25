@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import struct
 import subprocess
 import sys
@@ -38,6 +39,94 @@ def synthetic_dump(path, flags=native.FLAGS):
 
 
 class PhaseAndParserTest(unittest.TestCase):
+    def log_stat(self, actual, **changes):
+        value = dict(st_dev=actual.st_dev, st_ino=actual.st_ino, st_size=actual.st_size,
+                     st_mtime_ns=actual.st_mtime_ns, st_ctime_ns=1000, st_mode=actual.st_mode,
+                     st_file_attributes=0, st_reparse_tag=0, st_birthtime_ns=1000)
+        value.update(changes)
+        return SimpleNamespace(**value)
+
+    def test_tail_accepts_stable_cross_api_ctime_meanings_with_strict_same_api_snapshots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'; raw = b'actual log tail\n'; path.write_bytes(raw)
+            actual = path.stat(); before = self.log_stat(actual); opened = self.log_stat(actual, st_ctime_ns=2000)
+            with patch.object(Path, 'lstat', side_effect=[before, before]), patch.object(Path, 'is_symlink', return_value=False), \
+                    patch.object(native.os, 'fstat', side_effect=[opened, opened]):
+                result = native._collector_failure_log(root)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), result['tailSha256'])
+            self.assertEqual(raw.decode(), result['tailUtf8Replace'])
+
+    def test_tail_refuses_changed_path_or_fd_ctime_with_exact_labelled_signatures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'; path.write_bytes(b'owned log\n'); actual = path.stat()
+            for family in ['path', 'fd']:
+                before = self.log_stat(actual); opened = self.log_stat(actual, st_ctime_ns=2000)
+                path_after = self.log_stat(actual, st_ctime_ns=1001) if family == 'path' else before
+                fd_after = self.log_stat(actual, st_ctime_ns=2001) if family == 'fd' else opened
+                with self.subTest(family=family), patch.object(Path, 'lstat', side_effect=[before, path_after]), \
+                        patch.object(Path, 'is_symlink', return_value=False), patch.object(native.os, 'fstat', side_effect=[opened, fd_after]):
+                    with self.assertRaisesRegex(ValueError, 'changed during bounded reading') as caught:
+                        native._collector_failure_log(root)
+                observed = caught.exception.collectorLogSignatures
+                self.assertEqual('1000', observed['pathLstatBefore']['ctimeNs'])
+                self.assertEqual('2000', observed['heldFdFstatBefore']['ctimeNs'])
+                self.assertEqual(str(path_after.st_ctime_ns), observed['pathLstatAfter']['ctimeNs'])
+                self.assertEqual(str(fd_after.st_ctime_ns), observed['heldFdFstatAfter']['ctimeNs'])
+
+    def test_tail_refuses_cross_api_identity_size_mtime_birthtime_changes_or_zero_ids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'; path.write_bytes(b'owned log\n'); actual = path.stat()
+            changes = [dict(st_dev=actual.st_dev + 1), dict(st_ino=actual.st_ino + 1),
+                       dict(st_size=actual.st_size + 1), dict(st_mtime_ns=actual.st_mtime_ns + 1),
+                       dict(st_birthtime_ns=1001), dict(st_dev=0), dict(st_ino=0)]
+            for change in changes:
+                before = self.log_stat(actual); opened = self.log_stat(actual, **change)
+                with self.subTest(change=change), patch.object(Path, 'lstat', return_value=before), \
+                        patch.object(Path, 'is_symlink', return_value=False), patch.object(native.os, 'fstat', return_value=opened):
+                    with self.assertRaisesRegex(ValueError, 'identity changed before reading') as caught:
+                        native._collector_failure_log(root)
+                self.assertEqual({'pathLstatBefore', 'heldFdFstatBefore'}, set(caught.exception.collectorLogSignatures))
+
+    def test_tail_refuses_metadata_identity_or_reparse_changes_after_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'; path.write_bytes(b'owned log\n'); actual = path.stat()
+            changes = [dict(st_dev=actual.st_dev + 1), dict(st_ino=actual.st_ino + 1), dict(st_size=actual.st_size + 1),
+                       dict(st_mtime_ns=actual.st_mtime_ns + 1), dict(st_mode=stat.S_IFLNK | 0o777),
+                       dict(st_file_attributes=0x400), dict(st_reparse_tag=0xa000000c)]
+            for family in ['path', 'fd']:
+                for change in changes:
+                    before = self.log_stat(actual); changed = self.log_stat(actual, **change)
+                    path_after = changed if family == 'path' else before
+                    fd_after = changed if family == 'fd' else before
+                    with self.subTest(family=family, change=change), patch.object(Path, 'lstat', side_effect=[before, path_after]), \
+                            patch.object(Path, 'is_symlink', return_value=False), patch.object(native.os, 'fstat', side_effect=[before, fd_after]):
+                        with self.assertRaisesRegex(ValueError, 'changed during bounded reading'):
+                            native._collector_failure_log(root)
+
+    def test_tail_refuses_nonregular_or_reparse_metadata_before_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'; path.write_bytes(b'owned log\n'); actual = path.stat()
+            for change in [dict(st_mode=stat.S_IFLNK | 0o777), dict(st_file_attributes=0x400), dict(st_reparse_tag=0xa000000c)]:
+                before = self.log_stat(actual, **change)
+                with self.subTest(change=change), patch.object(Path, 'lstat', return_value=before), \
+                        patch.object(Path, 'is_symlink', return_value=False), patch.object(Path, 'open') as opening:
+                    with self.assertRaisesRegex(ValueError, 'regular nonreparse'):
+                        native._collector_failure_log(root)
+                opening.assert_not_called()
+
+    def test_tail_signature_refusal_is_serialized_in_failed_session(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'collector.log'; path.write_bytes(b'owned log\n'); actual = path.stat()
+            before = self.log_stat(actual); opened = self.log_stat(actual, st_ino=actual.st_ino + 1)
+            process = MagicMock(); process.poll.return_value = 1
+            with patch.object(Path, 'lstat', return_value=before), patch.object(Path, 'is_symlink', return_value=False), \
+                    patch.object(native.os, 'fstat', return_value=opened):
+                result = native.CaptureSession(process, root, lambda: 0, 20).poll()
+            self.assertEqual('collector-failed', result['status'])
+            signatures = result['collectorErrorLogFailure']['signatures']
+            self.assertEqual(str(actual.st_ino), signatures['pathLstatBefore']['inode'])
+            self.assertEqual(str(actual.st_ino + 1), signatures['heldFdFstatBefore']['inode'])
+
     def test_failed_collector_receipt_and_bounded_error_tail_survive_both_modes(self):
         for bounded in [False, True]:
             with self.subTest(bounded=bounded), tempfile.TemporaryDirectory() as temporary:

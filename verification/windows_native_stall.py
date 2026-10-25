@@ -515,18 +515,59 @@ def _collector_failure_log(directory):
         before = path.lstat()
     except FileNotFoundError:
         return None
-    if not stat.S_ISREG(before.st_mode) or path.is_symlink() or getattr(before, 'st_file_attributes', 0) & 0x400:
-        raise ValueError('Collector error log must be an owned regular nonreparse file')
+    observations = {}
+
+    def fields(value):
+        return dict(device=value.st_dev, inode=value.st_ino, bytes=value.st_size,
+                    mtimeNs=value.st_mtime_ns, ctimeNs=value.st_ctime_ns, mode=value.st_mode,
+                    fileAttributes=getattr(value, 'st_file_attributes', 0),
+                    reparseTag=getattr(value, 'st_reparse_tag', 0),
+                    birthtimeNs=getattr(value, 'st_birthtime_ns', None))
+
+    def observe(label, value):
+        # Decimal strings preserve exact Windows identities/times in readers
+        # whose JSON number representation cannot hold every 64-bit integer.
+        observations[label] = {name: str(item) if item is not None else None for name, item in fields(value).items()}
+
+    def refuse(message):
+        error = ValueError(message)
+        error.collectorLogSignatures = dict(observations)
+        raise error
+
+    def regular(value):
+        return (stat.S_ISREG(value.st_mode) and not getattr(value, 'st_file_attributes', 0) & 0x400
+                and not getattr(value, 'st_reparse_tag', 0))
+
+    def same_file(left, right):
+        # CPython 3.14 Windows path stat retains legacy creation-time ctime;
+        # fd fstat exposes change-time ctime. Compare each API's own ctime
+        # before/after below, rather than equating those different meanings.
+        if not all(value.st_dev > 0 and value.st_ino > 0 for value in [left, right]):
+            return False
+        names = ['st_dev', 'st_ino', 'st_size', 'st_mtime_ns']
+        if any(getattr(left, name) != getattr(right, name) for name in names):
+            return False
+        births = [getattr(value, 'st_birthtime_ns', None) for value in [left, right]]
+        return None in births or births[0] == births[1]
+
+    observe('pathLstatBefore', before)
+    if not regular(before) or path.is_symlink():
+        refuse('Collector error log must be an owned regular nonreparse file')
     with path.open('rb') as source:
         opened = os.fstat(source.fileno())
-        signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-        if signature(opened) != signature(before):
-            raise ValueError('Collector error log identity changed before reading')
+        observe('heldFdFstatBefore', opened)
+        if not regular(opened) or not same_file(before, opened):
+            refuse('Collector error log identity changed before reading')
         offset = max(0, opened.st_size - MAX_COLLECTOR_LOG_TAIL)
         source.seek(offset)
         tail = source.read(MAX_COLLECTOR_LOG_TAIL)
-        if signature(os.fstat(source.fileno())) != signature(opened) or signature(path.stat()) != signature(opened):
-            raise ValueError('Collector error log changed during bounded reading')
+        fd_after, path_after = os.fstat(source.fileno()), path.lstat()
+        observe('heldFdFstatAfter', fd_after)
+        observe('pathLstatAfter', path_after)
+        if (not regular(fd_after) or not regular(path_after) or path.is_symlink()
+                or fields(before) != fields(path_after) or fields(opened) != fields(fd_after)
+                or not same_file(path_after, fd_after)):
+            refuse('Collector error log changed during bounded reading')
     return dict(path='collector.log', bytesObserved=opened.st_size, tailOffsetBytes=offset,
                 tailBytes=len(tail), tailSha256=hashlib.sha256(tail).hexdigest(),
                 tailUtf8Replace=tail.decode('utf-8', errors='replace'), tailOnly=True)
@@ -566,6 +607,9 @@ class CaptureSession:
                         self.result['collectorErrorLog'] = log
                 except (ValueError, OSError) as error:
                     self.result['collectorErrorLogFailure'] = {'type': type(error).__name__, 'message': str(error)[:1024]}
+                    signatures = getattr(error, 'collectorLogSignatures', None)
+                    if signatures is not None:
+                        self.result['collectorErrorLogFailure']['signatures'] = signatures
         self.result['directory'] = str(self.directory)
         self.result.update(self.metadata)
         return self.result

@@ -27,6 +27,9 @@ IO_START, IO_WRITE_ALL, IO_FINISH = 11, 12, 13
 S_OK, S_FALSE = 0, 1
 E_FAIL = -2147467259
 E_DISK_FULL = -2147024784  # HRESULT_FROM_WIN32(ERROR_DISK_FULL=112).
+NUL_DEVICE = r'\\.\NUL'
+CALLBACK_TYPE_LIMIT = 32
+CALLBACK_COUNT_LIMIT = 0xffffffff
 
 
 class QuotaExceeded(ValueError):
@@ -128,6 +131,8 @@ class DumpIoCallbacks:
         self.sink = sink
         self.started = self.finished = False
         self.io_calls = 0
+        self.callback_types = {}
+        self.callback_type_overflow = self.callback_count_overflow = 0
         self.error = None
         self.routine = CALLBACK(self._callback)
         self.information = MINIDUMP_CALLBACK_INFORMATION(self.routine, None)
@@ -135,10 +140,22 @@ class DumpIoCallbacks:
     def _callback(self, parameter, input_pointer, output_pointer):
         # No Python exception may escape across the DbgHelp callback boundary.
         try:
-            if not input_pointer or not output_pointer:
+            if not input_pointer:
                 raise ValueError('Missing minidump callback input/output')
-            value, output = input_pointer.contents, output_pointer.contents
+            value = input_pointer.contents
             kind = value.CallbackType
+            if kind in self.callback_types:
+                if self.callback_types[kind] == CALLBACK_COUNT_LIMIT:
+                    self.callback_count_overflow = min(CALLBACK_COUNT_LIMIT, self.callback_count_overflow + 1)
+                else:
+                    self.callback_types[kind] += 1
+            elif len(self.callback_types) < CALLBACK_TYPE_LIMIT:
+                self.callback_types[kind] = 1
+            else:
+                self.callback_type_overflow = min(CALLBACK_COUNT_LIMIT, self.callback_type_overflow + 1)
+            if not output_pointer:
+                raise ValueError('Missing minidump callback input/output')
+            output = output_pointer.contents
             if kind == IO_START:
                 if self.started:
                     raise ValueError('Repeated minidump IoStart callback')
@@ -148,7 +165,7 @@ class DumpIoCallbacks:
                 if not self.started or self.finished or self.error:
                     raise ValueError('Minidump I/O callback order or prior failure')
                 self.sink.write_pointer(int(value.Io.Offset), value.Io.Buffer, int(value.Io.BufferBytes))
-                self.io_calls += 1
+                self.io_calls = min(CALLBACK_COUNT_LIMIT, self.io_calls + 1)
                 output.Status = S_OK
             elif kind == IO_FINISH:
                 if not self.started or self.finished or self.error:
@@ -178,7 +195,29 @@ class DumpIoCallbacks:
                     ioWriteAllCallbacks=self.io_calls, ioStartObserved=self.started, ioFinishObserved=self.finished,
                     callbackError=self.error, ordinaryFileHandleFallback=False, maxCopyChunkBytes=CHUNK,
                     callbackLayoutProjection=callback_layout(), sdkSourceReferenceSha256=SDK_REFERENCE_SHA256,
+                    callbackTypeCounts={str(kind): count for kind, count in sorted(self.callback_types.items())},
+                    callbackTypeCardinalityLimit=CALLBACK_TYPE_LIMIT, callbackCountLimit=CALLBACK_COUNT_LIMIT,
+                    callbackTypeOverflowEvents=self.callback_type_overflow,
+                    callbackCountOverflowEvents=self.callback_count_overflow,
                     compiledSdkAbiVerified=False)
+
+
+def _fixed_nul_api():
+    kernel = C.WinDLL('kernel32', use_last_error=True, winmode=0x800)
+    create = kernel.CreateFileW
+    create.argtypes = [C.c_wchar_p, C.c_uint32, C.c_uint32, C.c_void_p,
+                       C.c_uint32, C.c_uint32, C.c_void_p]
+    create.restype = C.c_void_p
+    kind = kernel.GetFileType
+    kind.argtypes = [C.c_void_p]; kind.restype = C.c_uint32
+    close = kernel.CloseHandle
+    close.argtypes = [C.c_void_p]; close.restype = C.c_int32
+    return create, kind, close
+
+
+def _observed_error(value):
+    unsigned = None if value is None else value & 0xffffffff
+    return dict(raw=value, unsigned32=unsigned, hex=None if unsigned is None else f'0x{unsigned:08x}')
 
 
 def write_minidump(dbghelp, process_handle, pid, output, *, limit=MAX_DUMP, flags=0x1000):
@@ -190,31 +229,110 @@ def write_minidump(dbghelp, process_handle, pid, output, *, limit=MAX_DUMP, flag
     write.argtypes = [C.c_void_p, C.c_uint32, C.c_void_p, C.c_uint32, C.c_void_p, C.c_void_p,
                       C.POINTER(MINIDUMP_CALLBACK_INFORMATION)]
     write.restype = C.c_int32
-    # There is no writable ordinary file handle. Callback failure has no
-    # unbounded fallback path, even if a platform ignores our IoStart policy.
     clear_error = getattr(C, 'set_last_error', None)
     get_error = getattr(C, 'get_last_error', None)
-    if clear_error is not None:
-        clear_error(0)
-    ok = write(process_handle, pid, None, flags, None, None, C.byref(callbacks.information))
-    error_code = get_error() if get_error is not None else None
-    receipt = callbacks.receipt()
-    unsigned_error = None if error_code is None else error_code & 0xffffffff
-    receipt.update(miniDumpReturnCode=int(bool(ok)), miniDumpBooleanReturn=bool(ok),
-                   apiLastErrorObserved=error_code, apiLastErrorUnsigned32=unsigned_error,
-                   apiLastErrorHex=None if unsigned_error is None else f'0x{unsigned_error:08x}',
-                   apiLastErrorClearedBeforeCall=clear_error is not None, requestedDumpFlags=flags,
-                   apiLastErrorInterpretation='MiniDumpWriteDump documents this value as an HRESULT; no failure cause inferred')
-    if not ok or callbacks.error or not callbacks.started or not callbacks.finished:
-        error = RuntimeError('Quota-backed MiniDumpWriteDump failed: ' +
-                             json.dumps(receipt, separators=(',', ':'), ensure_ascii=True))
+    create = get_type = close = None
+    handle = None
+    primary = receipt = api_error = None
+    ok = error_code = None
+    called = False
+    stage = 'load-fixed-nul-api'
+    device = dict(path=NUL_DEVICE, desiredAccess=0x40000000, shareMode=3,
+                  securityAttributesNull=True, inheritableByCreateFileContract=False,
+                  creationDisposition=3, flagsAndAttributes=0, ordinaryFileFallback=False,
+                  nativeDumpWrittenOnlyByBoundedCallbacks=True, closeAttempted=False, closed=False)
+
+    def evidence():
+        value = callbacks.receipt()
+        observed = _observed_error(error_code)
+        value.update(miniDumpApiCalled=called, miniDumpReturnedNormally=called and api_error is None,
+                     miniDumpReturnCode=None if not called or api_error is not None else int(bool(ok)),
+                     miniDumpBooleanReturn=None if not called or api_error is not None else bool(ok),
+                     apiLastErrorObserved=observed['raw'], apiLastErrorUnsigned32=observed['unsigned32'],
+                     apiLastErrorHex=observed['hex'], apiLastErrorClearedBeforeCall=called and clear_error is not None,
+                     requestedDumpFlags=flags, nulDevice=device, writerStage=stage,
+                     apiLastErrorInterpretation=(
+                         'MiniDumpWriteDump documents this value as an HRESULT; no failure cause inferred'
+                         if called and api_error is None else
+                         'Observed ctypes thread-local last-error snapshot after API raised; no normal HRESULT return or cause inferred'
+                         if called else 'MiniDumpWriteDump was not called; no API error return claimed'))
+        if api_error is not None:
+            winerror = getattr(api_error, 'winerror', None)
+            winerror = winerror if type(winerror) is int else None
+            value['apiException'] = dict(type=type(api_error).__name__[:128], message=str(api_error)[:1024],
+                                         winerror=_observed_error(winerror),
+                                         winerrorInterpretation='Exception winerror preserved separately as observed NTSTATUS; no conversion or cause inferred')
+        return value
+
+    try:
+        create, get_type, close = _fixed_nul_api()
+        stage = 'open-fixed-nul-device'
+        # A fixed non-inherited character-device handle satisfies the API's
+        # handle contract. It cannot write ordinary payload bytes to disk even
+        # if DbgHelp ignores custom I/O; ignored callbacks still fail below.
+        opened = create(NUL_DEVICE, 0x40000000, 3, None, 3, 0, None)
+        if opened in (None, 0, C.c_void_p(-1).value, -1):
+            code = get_error() if get_error is not None else None
+            device['createFileErrorObserved'] = _observed_error(code)
+            raise RuntimeError('CreateFileW rejected the fixed NUL device handle')
+        handle = opened
+        stage = 'verify-fixed-nul-character-device'
+        device['fileTypeObserved'] = int(get_type(handle))
+        if device['fileTypeObserved'] != 2:  # FILE_TYPE_CHAR
+            raise RuntimeError('Fixed NUL device handle is not FILE_TYPE_CHAR')
+        stage = 'write-minidump'
+        if clear_error is not None:
+            clear_error(0)
+        called = True
+        try:
+            ok = write(process_handle, pid, handle, flags, None, None, C.byref(callbacks.information))
+        except Exception as error:
+            error_code = get_error() if get_error is not None else None
+            api_error = error
+        else:
+            error_code = get_error() if get_error is not None else None
+        receipt = evidence()
+        if api_error is not None:
+            api_error.quota = receipt
+            api_error.add_note('Bounded MiniDumpWriteDump observation: ' + json.dumps(receipt, separators=(',', ':'), ensure_ascii=True))
+            raise api_error
+        if (not ok or callbacks.error or not callbacks.started or not callbacks.finished
+                or callbacks.io_calls <= 0 or sink.extent <= 0):
+            error = RuntimeError('Quota-backed MiniDumpWriteDump failed: ' +
+                                 json.dumps(receipt, separators=(',', ':'), ensure_ascii=True))
+            error.quota = receipt
+            raise error
+        output.flush()
+        os.fsync(output.fileno())
+        if output.tell() > limit or os.fstat(output.fileno()).st_size > limit:
+            raise RuntimeError('Bounded callback sink violated its extent quota')
+        return receipt
+    except BaseException as error:
+        primary = error
+        if receipt is None:
+            receipt = evidence()
+        if api_error is None:
+            receipt['writerException'] = dict(type=type(error).__name__[:128], message=str(error)[:1024])
         error.quota = receipt
-        raise error
-    output.flush()
-    os.fsync(output.fileno())
-    if output.tell() > limit or os.fstat(output.fileno()).st_size > limit:
-        raise RuntimeError('Bounded callback sink violated its extent quota')
-    return receipt
+        raise
+    finally:
+        if handle is not None:
+            device['closeAttempted'] = True
+            try:
+                if not close(handle):
+                    code = get_error() if get_error is not None else None
+                    raise RuntimeError('CloseHandle failed for the fixed NUL device: ' + str(code))
+                device['closed'] = True
+            except Exception as error:
+                failure = dict(type=type(error).__name__[:128], message=str(error)[:1024])
+                device['closeError'] = failure
+                if primary is not None:
+                    primary.nulDeviceCleanupFailure = failure
+                    primary.add_note('Fixed NUL device cleanup also failed: ' + json.dumps(failure, separators=(',', ':'), ensure_ascii=True))
+                else:
+                    error = RuntimeError('Fixed NUL device cleanup failed: ' + json.dumps(failure, separators=(',', ':'), ensure_ascii=True))
+                    error.quota = receipt
+                    raise error
 
 
 def encode_json(value, limit):

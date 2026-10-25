@@ -106,6 +106,33 @@ class RandomAccessQuotaTests(unittest.TestCase):
 
 
 class CallbackQuotaTests(unittest.TestCase):
+    def setUp(self):
+        # Portable contract checks exercise only this fake Win32 device API.
+        # ActualWindowsCallbackQuotaTests below uses the real APIs separately.
+        self.kernel = SimpleNamespace(CreateFileW=MagicMock(return_value=0x1234),
+                                      GetFileType=MagicMock(return_value=2), CloseHandle=MagicMock(return_value=1))
+        self.dll_patch = patch.object(quota.C, 'WinDLL', return_value=self.kernel, create=True)
+        self.dll_patch.start()
+        self.addCleanup(self.dll_patch.stop)
+
+    def writer(self, mode='positive'):
+        class Write:
+            def __call__(self, process, pid, handle, flags, exception, user, information):
+                self.handle = handle
+                if mode == 'ignored':
+                    return 1
+                callback = C.cast(information, C.POINTER(quota.MINIDUMP_CALLBACK_INFORMATION)).contents.CallbackRoutine
+                shim = SimpleNamespace(routine=callback)
+                if not callback_event(shim, quota.IO_START)[0]:
+                    return 0
+                if mode != 'no-write':
+                    buffer = C.create_string_buffer(b'MDMP' + b'x' * 28)
+                    amount = 0 if mode == 'zero-write' else 32
+                    if not callback_event(shim, quota.IO_WRITE_ALL, 0, C.addressof(buffer), amount)[0]:
+                        return 0
+                return callback_event(shim, quota.IO_FINISH)[0]
+        return Write()
+
     def test_api_last_error_is_cleared_then_snapshotted_before_receipt_code(self):
         for returned, observed in [(0, 123), (1, 123), (0, -2147024809), (1, -2147024809)]:
             with self.subTest(apiReturn=returned, apiLastError=observed):
@@ -202,35 +229,135 @@ class CallbackQuotaTests(unittest.TestCase):
         self.assertEqual(0, callbacks.routine(None, None, None))
         self.assertIsNotNone(callbacks.error)
 
-    def test_writer_passes_null_file_handle_and_has_no_ordinary_fallback(self):
-        class FakeWrite:
-            def __init__(self, make_callbacks=True): self.make_callbacks = make_callbacks; self.handle = 'unset'
-            def __call__(self, process, pid, handle, flags, exception, user, information):
-                self.handle = handle
-                if self.make_callbacks:
-                    callback = C.cast(information, C.POINTER(quota.MINIDUMP_CALLBACK_INFORMATION)).contents.CallbackRoutine
-                    shim = SimpleNamespace(routine=callback)
-                    buffer = C.create_string_buffer(b'MDMP' + b'x' * 28)
-                    if not callback_event(shim, quota.IO_START)[0]: return 0
-                    if not callback_event(shim, quota.IO_WRITE_ALL, 0, C.addressof(buffer), 32)[0]: return 0
-                    return callback_event(shim, quota.IO_FINISH)[0]
-                return 1
+    def test_writer_passes_only_fixed_noninherit_nul_char_device_and_no_ordinary_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / 'quota.dmp'; function = FakeWrite()
+            path = Path(temporary) / 'quota.dmp'; function = self.writer()
             with path.open('xb') as output:
                 receipt = quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=function), 1, 123, output, limit=64)
-            self.assertIsNone(function.handle)
+            self.assertEqual(0x1234, function.handle)
             self.assertEqual(32, path.stat().st_size)
             self.assertTrue(receipt['ioFinishObserved'])
-            path = Path(temporary) / 'failure.dmp'; function = FakeWrite()
+            self.assertEqual({'11': 1, '12': 1, '13': 1}, receipt['callbackTypeCounts'])
+            self.assertTrue(receipt['nulDevice']['closed'])
+            self.assertFalse(receipt['nulDevice']['inheritableByCreateFileContract'])
+            self.assertFalse(receipt['ordinaryFileHandleFallback'])
+            self.kernel.CreateFileW.assert_called_once_with(r'\\.\NUL', 0x40000000, 3, None, 3, 0, None)
+            self.kernel.GetFileType.assert_called_once_with(0x1234)
+            self.kernel.CloseHandle.assert_called_once_with(0x1234)
+            path = Path(temporary) / 'failure.dmp'; function = self.writer()
             with path.open('xb') as output, self.assertRaises(RuntimeError) as caught:
                 quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=function), 1, 123, output, limit=16)
             self.assertEqual(0, path.stat().st_size)
             self.assertEqual('QuotaExceeded', caught.exception.quota['callbackError']['type'])
-            path = Path(temporary) / 'ignored.dmp'; function = FakeWrite(False)
+            path = Path(temporary) / 'ignored.dmp'; function = self.writer('ignored')
             with path.open('xb') as output, self.assertRaises(RuntimeError):
                 quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=function), 1, 123, output)
             self.assertEqual(0, path.stat().st_size)
+            self.assertEqual(3, self.kernel.CloseHandle.call_count)
+
+    def test_invalid_or_noncharacter_nul_handles_never_reach_minidump(self):
+        for handle in [None, 0, C.c_void_p(-1).value]:
+            with self.subTest(handle=handle):
+                self.kernel.CreateFileW.return_value = handle
+                self.kernel.CloseHandle.reset_mock()
+                function = MagicMock()
+                with self.assertRaisesRegex(RuntimeError, 'rejected the fixed NUL'):
+                    quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=function), 1, 123, TrackingOutput())
+                function.assert_not_called()
+                self.kernel.CloseHandle.assert_not_called()
+        self.kernel.CreateFileW.return_value = 0x1234
+        for kind in [0, 1, 3]:
+            with self.subTest(fileType=kind):
+                self.kernel.GetFileType.return_value = kind
+                self.kernel.CloseHandle.reset_mock()
+                function = MagicMock()
+                with self.assertRaisesRegex(RuntimeError, 'not FILE_TYPE_CHAR') as caught:
+                    quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=function), 1, 123, TrackingOutput())
+                function.assert_not_called()
+                self.kernel.CloseHandle.assert_called_once_with(0x1234)
+                self.assertEqual(kind, caught.exception.quota['nulDevice']['fileTypeObserved'])
+
+    def test_nul_api_acquisition_exception_keeps_original_bounded_quota(self):
+        primary = OSError('actual fixed-device API acquisition fixture failure')
+        with patch.object(quota, '_fixed_nul_api', side_effect=primary), self.assertRaises(OSError) as caught:
+            quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=MagicMock()), 1, 123, TrackingOutput())
+        self.assertIs(primary, caught.exception)
+        self.assertEqual('load-fixed-nul-api', primary.quota['writerStage'])
+        self.assertFalse(primary.quota['miniDumpApiCalled'])
+        self.assertEqual('OSError', primary.quota['writerException']['type'])
+        self.assertFalse(primary.quota['nulDevice']['closeAttempted'])
+        self.kernel.CloseHandle.assert_not_called()
+        self.assertLessEqual(len(quota.encode_json(primary.quota, quota.SELF_CHECK_METADATA)), quota.SELF_CHECK_METADATA)
+
+    def test_start_finish_without_positive_dump_extent_cannot_pass(self):
+        for mode in ['ignored', 'no-write', 'zero-write']:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'not-a-dump.dmp'
+                with path.open('xb') as output, self.assertRaises(RuntimeError) as caught:
+                    quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=self.writer(mode)), 1, 123, output)
+                self.assertEqual(0, path.stat().st_size)
+                self.assertEqual(0, caught.exception.quota['extentBytes'])
+                self.assertFalse(caught.exception.quota['ordinaryFileHandleFallback'])
+
+    def test_callback_type_diagnostics_have_fixed_cardinality_and_saturating_counts(self):
+        callbacks = quota.DumpIoCallbacks(quota.BoundedRandomAccessSink(TrackingOutput(), 64))
+        for kind in range(1000, 1000 + quota.CALLBACK_TYPE_LIMIT + 7):
+            self.assertEqual(1, callback_event(callbacks, kind)[0])
+        callbacks.callback_types[1000] = quota.CALLBACK_COUNT_LIMIT
+        self.assertEqual(1, callback_event(callbacks, 1000)[0])
+        receipt = callbacks.receipt()
+        self.assertEqual(quota.CALLBACK_TYPE_LIMIT, len(receipt['callbackTypeCounts']))
+        self.assertEqual(7, receipt['callbackTypeOverflowEvents'])
+        self.assertEqual(1, receipt['callbackCountOverflowEvents'])
+        self.assertEqual(quota.CALLBACK_COUNT_LIMIT, receipt['callbackTypeCounts']['1000'])
+
+    def test_api_exception_snapshot_and_original_quota_survive_device_close_failure(self):
+        primary = OSError('actual ctypes API fixture exception')
+        primary.winerror = -1073741816
+        events, state = [], {'error': 0}
+        def clear(value):
+            events.append('clear'); state['error'] = value
+        def snapshot():
+            events.append('snapshot'); return state['error']
+        class Write:
+            def __call__(self, *args):
+                events.append('api'); state['error'] = -2147024809
+                raise primary
+        original = quota.DumpIoCallbacks.receipt
+        def receipt(callbacks):
+            events.append('receipt'); state['error'] = 999
+            self.kernel.CloseHandle.assert_not_called()
+            return original(callbacks)
+        self.kernel.CloseHandle.return_value = 0
+        with patch.object(quota.C, 'set_last_error', clear, create=True), \
+             patch.object(quota.C, 'get_last_error', snapshot, create=True), \
+             patch.object(quota.DumpIoCallbacks, 'receipt', receipt), self.assertRaises(OSError) as caught:
+            quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=Write()), 1, 123, TrackingOutput())
+        self.assertIs(primary, caught.exception)
+        self.assertEqual(['clear', 'api', 'snapshot', 'receipt', 'snapshot'], events)
+        self.assertEqual(-2147024809, primary.quota['apiLastErrorObserved'])
+        self.assertEqual('0x80070057', primary.quota['apiLastErrorHex'])
+        self.assertEqual(-1073741816, primary.quota['apiException']['winerror']['raw'])
+        self.assertEqual('0xc0000008', primary.quota['apiException']['winerror']['hex'])
+        self.assertIsNone(primary.quota['miniDumpBooleanReturn'])
+        self.assertFalse(primary.quota['miniDumpReturnedNormally'])
+        self.assertIn('thread-local', primary.quota['apiLastErrorInterpretation'])
+        self.assertIn('no normal HRESULT return', primary.quota['apiLastErrorInterpretation'])
+        self.assertIn('nulDeviceCleanupFailure', primary.__dict__)
+        self.assertTrue(primary.quota['nulDevice']['closeAttempted'])
+        self.assertFalse(primary.quota['nulDevice']['closed'])
+        self.kernel.CloseHandle.assert_called_once_with(0x1234)
+
+    def test_device_close_failure_refuses_otherwise_successful_minidump(self):
+        self.kernel.CloseHandle.return_value = 0
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'quota.dmp'
+            with path.open('xb') as output, self.assertRaisesRegex(RuntimeError, 'device cleanup failed') as caught:
+                quota.write_minidump(SimpleNamespace(MiniDumpWriteDump=self.writer()), 1, 123, output)
+            self.assertTrue(caught.exception.quota['miniDumpBooleanReturn'])
+            self.assertEqual(32, caught.exception.quota['extentBytes'])
+            self.assertIn('closeError', caught.exception.quota['nulDevice'])
+            self.kernel.CloseHandle.assert_called_once_with(0x1234)
 
     def test_full_memory_or_invalid_pid_cannot_reach_dbghelp(self):
         function = MagicMock(); dbghelp = SimpleNamespace(MiniDumpWriteDump=function)
