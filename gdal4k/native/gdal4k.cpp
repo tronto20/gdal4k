@@ -147,7 +147,8 @@ struct gdal4k_binary_result {
     g4k::BinaryRaster buffers{};
     ~gdal4k_binary_result() { gdal4k_free(json); }
 };
-extern "C" int gdal4k_binary_version() { return 5; }
+// Version 6 retains the version-5 binary layouts and adds string schema subtypes.
+extern "C" int gdal4k_binary_version() { return 6; }
 extern "C" int gdal4k_http_input_version() { return g4k_http::available() ? 1 : 0; }
 extern "C" gdal4k_binary_result* gdal4k_execute_binary(gdal4k_context* context,const char* request,const unsigned char* input,int size,gdal4k_control* control) {
     try {

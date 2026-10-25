@@ -554,6 +554,32 @@ inline void mdtNoBoundedStrings(const std::shared_ptr<GDALMDArray>& array) {
     };
     check(check, array->GetDataType()); for (const auto& attr : array->GetAttributes()) check(check, attr->GetDataType());
 }
+inline void mdtNoNetCDFJsonSubtype(const MDTPlan& plan) {
+    const auto check = [](const auto& self, const GDALExtendedDataType& type) -> void {
+        require(type.GetClass() != GEDTC_STRING || type.GetSubType() != GEDTST_JSON,
+                "netCDF MD output cannot preserve the JSON string subtype; use MEM");
+        if (type.GetClass() == GEDTC_COMPOUND)
+            for (const auto& component : type.GetComponents()) self(self, component->GetType());
+    };
+    const auto attributes = [&](const auto& owner) {
+        for (const auto& attribute : owner->GetAttributes()) check(check, attribute->GetDataType());
+    };
+    if (plan.rootAttributes) attributes(plan.rootAttributes);
+    for (const auto& group : plan.groups) attributes(group.source);
+    for (const auto& array : plan.arrays) {
+        // A field view can select a numeric leaf from a compound containing JSON.
+        // Only its copied type and the source metadata that we preserve are relevant.
+        check(check, array.view->GetDataType()); attributes(array.source);
+        for (const auto& dimension : array.view->GetDimensions()) {
+            if (auto indexing = dimension->GetIndexingVariable()) {
+                check(check, indexing->GetDataType()); attributes(indexing);
+                // Match mdtVerifyPlan's direct indexing-variable scope. Do not
+                // recurse into its dimensions: an axis can index itself, and
+                // separate aliases may share a fullname without being the same object.
+            }
+        }
+    }
+}
 inline const MDTArrayPlan& mdtClassicPlan(const MDTPlan& plan) {
     const MDTArrayPlan* chosen = nullptr;
     for (const auto& group : plan.groups) require(group.destination == "/" && group.source->GetGroupNames().empty() && group.source->GetAttributes().empty(), "GTiff MD output cannot preserve group hierarchy or group attributes");
@@ -591,7 +617,10 @@ inline CPLJSONObject multiDimTranslateDataset(Runtime& runtime, GDALDatasetH han
     }
     auto plan = mdtPlan(options, source);
     const MDTArrayPlan* classic = driver == "GTiff" ? &mdtClassicPlan(plan) : nullptr;
-    if (driver == "netCDF") for (const auto& array : plan.arrays) mdtNoBoundedStrings(array.source);
+    if (driver == "netCDF") {
+        mdtNoNetCDFJsonSubtype(plan);
+        for (const auto& array : plan.arrays) mdtNoBoundedStrings(array.source);
+    }
     Directory files;
     std::string name, path;
     if (mode == 1) { name = args.GetString("name"); fileBasename(name); path = files.path + "/" + name; }

@@ -317,6 +317,31 @@ OS/Node 파일 또는 브라우저 `opfs:/` 경로이며, 실패·취소 후 부
 GDAL 중간 도형과 사전 검증 비용이 있으며 스트리밍·전체 메모리 상한을 보장하지 않습니다.
 검증 범위와 기능 진단은 [tile-index.md](verification/tile-index.md)에 기록합니다.
 
+### JSON 문자열 스키마
+
+`MDDataType.JsonText(maxLength = 0)`는 GDAL의 JSON 문자열 subtype을 표현합니다.
+배열의 `getExtendedDataType()`와 속성의 `getDataType()`으로 실제 스키마를 확인합니다.
+값은 기존 `MDValue.Text`를 사용하며 JSON을 파싱하거나 정규화하지 않습니다.
+공백·escaping·Unicode·큰 정수 텍스트를 그대로 전달하고, `MDValue.Text(null)`과
+문자열 `"null"`을 구분합니다. `maxLength`는 UTF-8 바이트 수이며 0은 무제한입니다.
+
+```kotlin
+val schema = MDDataType.JsonText()
+requireNotNull(group.createArray("document", emptyList(), schema)).use { array ->
+    array.writeValues(longArrayOf(), longArrayOf(),
+        listOf(MDValue.Text("""{"id":9007199254740993}""")))
+    check(array.getExtendedDataType() == schema)
+}
+```
+
+JSON 스키마 생성에는 protocol 6 엔진이 필요합니다. 구형 엔진에서는 중첩 compound를
+포함해 배열·속성 생성 요청을 보내기 전에 거부하며, 기존 `Text` 호출은 유지합니다.
+기존 `Text` 생성자·`copy`·`component1` 형태도 유지합니다. 다만 sealed `MDDataType`에
+하위 타입이 추가되므로 기존 하위 타입만 열거한 `when`을 재컴파일할 때는 `JsonText`나
+`else` 분기가 필요합니다. 전체 MEM 복사는 subtype을 보존합니다.
+고정 netCDF의 일반 문자열 쓰기는 이 태그를 보존하지
+않으므로 출력 생성 전에 명확히 거부합니다.
+
 ### 다차원 변환
 
 `Dataset.multiDimTranslate`는 고정 GDAL 3.12.4의 GDALMultiDimTranslate로 배열·그룹을
@@ -408,7 +433,7 @@ JNI·Native는 독립 control의 atomic 취소/진행률을 읽으며 GDAL nativ
 입력은 호출자 소유이며 이미 쓴 출력·cursor·metadata 변경은 rollback하지 않습니다. 직접 출력의 부분 파일도 호출자가 정리합니다. HTTP·파일 mount 단계의 전송 정책은 별개이며, native 진행률 자체가 전송 제한 시간이나 무조건적인 네트워크 중단을 제공하지는 않습니다.
 
 선택 scientific·Parquet·HTTP·PostgreSQL·combined 엔진은 [드라이버 프로필](gdal4k-engine/DRIVER-PROFILES.md)에서 별도 버전·로컬 Maven 아카이브로 빌드합니다. 기본 패키지와 타깃은 유지하며, 추가 드라이버 지원은 프로필별 실제 호스트 검증 범위에 한정합니다.
-`combined`는 같은 엔진과 runtime에서 HDF5/netCDF·Parquet·HTTP/TLS·PostGIS를 함께 검증합니다. Linux x64/glibc는 PR38, macOS ARM64는 PR40, Linux ARM64는 PR41에서 실제 소스·독립 배포본 소비자와 소유 서버 종료까지 검증·병합했습니다. Linux ARM64는 x64 교차 빌드와 실제 ARM64 JVM·Native 실행을 분리합니다. Windows x64 결합 프로필은 구현 중이며 실제 Windows CI·배포본·소비자 검증은 아직 남아 있습니다. [결합 검증 범위](verification/combined-drivers.md)를 참고하세요.
+`combined`는 같은 엔진과 runtime에서 HDF5/netCDF·Parquet·HTTP/TLS·PostGIS를 함께 검증합니다. Linux x64/glibc는 PR38, macOS ARM64는 PR40, Linux ARM64는 PR41, Windows x64는 PR42에서 실제 소스·독립 배포본 소비자와 소유 서버 종료까지 검증·병합했습니다. Linux ARM64는 x64 교차 빌드와 실제 ARM64 JVM·Native 실행을 분리합니다. Windows는 Schannel 신뢰·폐기 인증서 대조와 Winsock2 정책도 확인했습니다. [결합 검증 범위](verification/combined-drivers.md)를 참고하세요.
 
 ### OGR 컬럼 읽기
 

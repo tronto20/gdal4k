@@ -18,6 +18,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
     val supportsBinaryMD: Boolean get() = transport.supportsBinaryMD
     val supportsBinaryFiles: Boolean get() = transport.supportsBinaryFiles
     val supportsBinaryRaster: Boolean get() = transport.supportsBinaryRaster
+    val supportsMDJsonStringSubtype: Boolean get() = transport.supportsMDJsonStringSubtype
     val supportsHttpInputPolicy: Boolean get() = transport.supportsHttpInputPolicy
     private val mutex = Mutex()
     private var closed = false

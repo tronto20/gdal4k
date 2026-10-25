@@ -30,6 +30,95 @@ class AdvancedDatasetApiTest {
             assertFails { a.writeValues(longArrayOf(0),longArrayOf(1),listOf(MDValue.Text("🛰"))) }
         }
     } }
+    @Test fun jsonStringSchemasPreserveRawValuesAndRejectWritesAtomically() = runTest(timeout=120.seconds) { memory { _,group ->
+        val schema=MDDataType.JsonText()
+        val values=listOf(MDValue.Text(null),MDValue.Text("null"),
+            MDValue.Text(" \n\t" + """{"id":9007199254740993,"name":"영상 🛰","escaped":"quote\" \\ \n"}""" + "\t "),
+            MDValue.Text("""[1,true,null,{"雪":"🛰"}]"""),MDValue.Text("\"quoted \\uC601 scalar\""),
+            MDValue.Text("9007199254740993"),MDValue.Text("{ invalid JSON is still raw text }"),MDValue.Text(""))
+        requireNotNull(group.createDimension("json_n",values.size.toLong())).use { dimension ->
+            requireNotNull(group.createArray("json",listOf(dimension),schema)).use { array ->
+                assertEquals(schema,array.getExtendedDataType());assertEquals(GdalDataType.Unknown,array.getDataType())
+                assertTrue(array.writeValues(longArrayOf(0),longArrayOf(values.size.toLong()),values))
+                assertEquals(values,array.readValues(longArrayOf(0),longArrayOf(values.size.toLong())))
+                assertEquals(values.take(2),array.readValues(longArrayOf(0),longArrayOf(2))) // Missing cell differs from the literal "null".
+                assertFails { array.writeValues(longArrayOf(0),longArrayOf(2),values.take(1)) }
+                assertFails { array.writeValues(longArrayOf(0),longArrayOf(2),listOf(MDValue.Text("changed"),MDValue.Numeric(1))) }
+                assertFails { array.writeValues(longArrayOf(0),longArrayOf(2),listOf(MDValue.Text("changed"),MDValue.Text("bad\u0000text"))) }
+                assertFails { array.writeValues(longArrayOf(values.size.toLong()),longArrayOf(1),listOf(MDValue.Text("outside"))) }
+                assertEquals(schema,array.getExtendedDataType());assertEquals(values,array.readValues(longArrayOf(0),longArrayOf(values.size.toLong())))
+                val groupAttribute=requireNotNull(group.createAttribute("json",longArrayOf(values.size.toLong()),schema))
+                val arrayAttribute=requireNotNull(array.createAttribute("json",longArrayOf(values.size.toLong()),schema))
+                try { for(attribute in listOf(groupAttribute,arrayAttribute)) {
+                    assertEquals(schema,attribute.getDataType());assertTrue(attribute.writeValues(values));assertEquals(values,attribute.readValues())
+                    assertFails { attribute.writeValues(values.dropLast(1)) }
+                    assertFails { attribute.writeValues(listOf(MDValue.Numeric(1))+values.drop(1)) }
+                    assertFails { attribute.writeValues(listOf(MDValue.Text("bad\u0000text"))+values.drop(1)) }
+                    assertEquals(schema,attribute.getDataType());assertEquals(values,attribute.readValues())
+                } } finally { arrayAttribute.close();groupAttribute.close() }
+            }
+        }
+        requireNotNull(group.createDimension("short_json_n",2)).use { dimension ->
+            val bounded=MDDataType.JsonText(3);val original=listOf(MDValue.Text("雪"),MDValue.Text("7"))
+            requireNotNull(group.createArray("short_json",listOf(dimension),bounded)).use { array ->
+                assertEquals(bounded,array.getExtendedDataType());assertTrue(array.writeValues(longArrayOf(0),longArrayOf(2),original))
+                for (tooLong in listOf("🛰","null")) {
+                    assertFails { array.writeValues(longArrayOf(0),longArrayOf(2),listOf(MDValue.Text("a"),MDValue.Text(tooLong))) }
+                    assertEquals(original,array.readValues(longArrayOf(0),longArrayOf(2)));assertEquals(bounded,array.getExtendedDataType())
+                }
+            }
+        }
+    } }
+    @Test fun jsonAttributeAliasesAndParentLifetimeKeepTheirSchema() = runTest(timeout=120.seconds) { memory { _,root ->
+        val schema=MDDataType.JsonText();val original=listOf(MDValue.Text(""" {"id":9007199254740993,"label":"영상"} """))
+        requireNotNull(root.createGroup("json_owner")).use { owner ->
+            requireNotNull(root.createGroup("json_other")).use { other ->
+                requireNotNull(other.createAttribute("same",longArrayOf(),schema)).use { independent ->
+                    val independentValues=listOf(MDValue.Text("[\"independent\"]"))
+                    assertTrue(independent.writeValues(independentValues))
+                    requireNotNull(owner.createAttribute("same",longArrayOf(),schema)).use { attribute ->
+                        assertTrue(attribute.writeValues(original))
+                        requireNotNull(owner.getAttribute("same")).use { alias ->
+                            requireNotNull(root.openGroup("json_owner")).use { reopened ->
+                                requireNotNull(reopened.getAttribute("same")).use { reopenedAttribute ->
+                                    for (handle in listOf(attribute,alias,reopenedAttribute)) {
+                                        assertEquals(schema,handle.getDataType());assertEquals(original,handle.readValues())
+                                    }
+                                    assertTrue(owner.deleteAttribute("same"))
+                                    for (handle in listOf(attribute,alias,reopenedAttribute)) {
+                                        assertFails { handle.getDataType() };assertFails { handle.readValues() }
+                                    }
+                                    assertNull(reopened.getAttribute("same"))
+                                }
+                            }
+                        }
+                    }
+                    requireNotNull(owner.createArray("json_array",emptyList(),schema)).use { array ->
+                        assertTrue(array.writeValues(longArrayOf(),longArrayOf(),original))
+                        requireNotNull(owner.openArray("json_array")).use { reopened ->
+                            assertEquals(schema,reopened.getExtendedDataType());assertEquals(original,reopened.readValues(longArrayOf(),longArrayOf()))
+                            requireNotNull(array.createAttribute("same",longArrayOf(),schema)).use { attribute ->
+                                assertTrue(attribute.writeValues(original))
+                                requireNotNull(reopened.getAttribute("same")).use { alias ->
+                                    assertEquals(schema,alias.getDataType());assertEquals(original,alias.readValues())
+                                    assertTrue(array.deleteAttribute("same"));assertFails { attribute.readValues() };assertFails { alias.getDataType() }
+                                }
+                            }
+                        }
+                        requireNotNull(array.createAttribute("retained",longArrayOf(),schema)).use { retained ->
+                            assertTrue(retained.writeValues(original));array.close()
+                            assertFails { retained.getDataType() };assertFails { retained.readValues() }
+                        }
+                    }
+                    requireNotNull(owner.createAttribute("retained",longArrayOf(),schema)).use { retained ->
+                        assertTrue(retained.writeValues(original));owner.close()
+                        assertFails { retained.getDataType() };assertFails { retained.readValues() }
+                    }
+                    assertEquals(schema,independent.getDataType());assertEquals(independentValues,independent.readValues())
+                }
+            }
+        }
+    } }
     @Test fun numericPrecisionAndComplex() = runTest(timeout=120.seconds) { memory { _,g ->
         val types=listOf(GdalDataType.Byte to listOf("0","255"),GdalDataType.Int8 to listOf("-128","127"),GdalDataType.UInt16 to listOf("0","65535"),GdalDataType.Int16 to listOf("-32768","32767"),GdalDataType.UInt32 to listOf("0","4294967295"),GdalDataType.Int32 to listOf("-2147483648","2147483647"),GdalDataType.UInt64 to listOf("0","18446744073709551615"),GdalDataType.Int64 to listOf(Long.MIN_VALUE.toString(),Long.MAX_VALUE.toString()))
         val d=requireNotNull(g.createDimension("n",2))

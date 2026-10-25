@@ -90,10 +90,13 @@ class MultiDimTranslateApiTest {
                     }
                 }
             }
+            addJsonTree(source)
             converted = source.multiDimTranslate()
         } finally { source.close() }
         assertFails { source.getRootGroup() }
-        converted.use { result -> requireNotNull(result.getRootGroup()).use { root ->
+        converted.use { result ->
+            assertJsonTree(result)
+            requireNotNull(result.getRootGroup()).use { root ->
             requireNotNull(root.getAttribute("Conventions")).use { assertEquals(listOf(MDValue.Text("CF-1.8")), it.readValues()) }
             requireNotNull(root.getAttribute("exact_ids")).use { assertEquals(unsigned.takeLast(2), it.readValues()) }
             requireNotNull(root.openGroup("science")).use { group ->
@@ -124,6 +127,77 @@ class MultiDimTranslateApiTest {
             }
         } }
     }
+    private class JsonTreeFixture {
+        val type = MDDataType.JsonText()
+        val values = listOf(MDValue.Text(null), MDValue.Text("null"),
+            MDValue.Text(" \n" + """{"id":9007199254740993,"text":"영상 🛰","escaped":"\\ \n"}""" + "\t "))
+        val recordType = MDDataType.Compound("json_observation", listOf(MDComponent("id", MDDataType.Numeric(GdalDataType.UInt64)),
+            MDComponent("payload", MDDataType.Compound("json_payload", listOf(MDComponent("document", type), MDComponent("label", MDDataType.Text()))))))
+        private val ids = listOf("0", "9007199254740993", "18446744073709551615").map { MDValue.Numeric(it) }
+        private val labels = listOf(MDValue.Text(null), MDValue.Text(""), MDValue.Text("영상 🛰"))
+        val records = ids.mapIndexed { i, id -> MDValue.Record(listOf(id, MDValue.Record(listOf(values[i], labels[i])))) }
+        val plainRecordType = MDDataType.Compound("observation", listOf(MDComponent("id", MDDataType.Numeric(GdalDataType.UInt64)), MDComponent("label", MDDataType.Text())))
+        val plainRecord = MDValue.Record(listOf(ids[2], labels[2]))
+        val arrays: List<Triple<String, MDDataType, List<MDValue>>> = listOf(Triple("json", type, values), Triple("json_records", recordType, records))
+        val arrayNames = listOf("signed", "unsigned", "complex", "strings", "records", "json", "json_records")
+    }
+
+    // Keep the coroutine for the existing whole-tree scenario below the JVM method-size limit.
+    private suspend fun addJsonTree(source: Dataset) {
+        val fixture = JsonTreeFixture()
+        requireNotNull(source.getRootGroup()).use { root ->
+            requireNotNull(root.createAttribute("json_config", longArrayOf(3), fixture.type)).use {
+                assertEquals(fixture.type, it.getDataType()); assertTrue(it.writeValues(fixture.values)); assertEquals(fixture.values, it.readValues())
+            }
+            requireNotNull(root.openArray("n")).use { axis -> axis.getDimensions().single().use { dimension ->
+                requireNotNull(root.openGroup("science")).use { group ->
+                    requireNotNull(group.createAttribute("json_record", longArrayOf(), fixture.recordType)).use {
+                        assertEquals(fixture.recordType, it.getDataType()); assertTrue(it.writeValues(listOf(fixture.records[2]))); assertEquals(listOf(fixture.records[2]), it.readValues())
+                    }
+                    requireNotNull(group.openGroup("nested")).use { nested ->
+                        for ((name, type, input) in fixture.arrays) requireNotNull(nested.createArray(name, listOf(dimension), type)).use { array ->
+                            assertEquals(type, array.getExtendedDataType()); assertTrue(array.writeValues(longArrayOf(0), longArrayOf(3), input))
+                            assertEquals(type, array.getExtendedDataType()); assertEquals(input, values(array))
+                            textAttribute(array, "kind", name)
+                            requireNotNull(array.createAttribute("record", longArrayOf(), fixture.plainRecordType)).use { assertTrue(it.writeValues(listOf(fixture.plainRecord))) }
+                        }
+                        for (name in fixture.arrayNames) requireNotNull(nested.openArray(name)).use { array -> addJsonArrayMetadata(array, fixture) }
+                    }
+                }
+            } }
+        }
+    }
+
+    private suspend fun addJsonArrayMetadata(array: MDArray, fixture: JsonTreeFixture) {
+        requireNotNull(array.createAttribute("json_meta", longArrayOf(3), fixture.type)).use {
+            assertEquals(fixture.type, it.getDataType()); assertTrue(it.writeValues(fixture.values)); assertEquals(fixture.values, it.readValues())
+        }
+        requireNotNull(array.createAttribute("json_record", longArrayOf(), fixture.recordType)).use {
+            assertEquals(fixture.recordType, it.getDataType()); assertTrue(it.writeValues(listOf(fixture.records[2]))); assertEquals(listOf(fixture.records[2]), it.readValues())
+        }
+    }
+
+    private suspend fun assertJsonTree(result: Dataset) {
+        val fixture = JsonTreeFixture()
+        requireNotNull(result.getRootGroup()).use { root ->
+            requireNotNull(root.getAttribute("json_config")).use { assertEquals(fixture.type, it.getDataType()); assertEquals(fixture.values, it.readValues()) }
+            requireNotNull(root.openGroup("science")).use { group ->
+                requireNotNull(group.getAttribute("json_record")).use { assertEquals(fixture.recordType, it.getDataType()); assertEquals(listOf(fixture.records[2]), it.readValues()) }
+                requireNotNull(group.openGroup("nested")).use { nested ->
+                    for ((name, type, expected) in fixture.arrays) requireNotNull(nested.openArray(name)).use { array ->
+                        assertEquals(type, array.getExtendedDataType()); assertContentEquals(longArrayOf(3), shape(array)); assertEquals(expected, values(array))
+                        requireNotNull(array.getAttribute("kind")).use { assertEquals(listOf(MDValue.Text(name)), it.readValues()) }
+                        requireNotNull(array.getAttribute("record")).use { assertEquals(fixture.plainRecordType, it.getDataType()); assertEquals(listOf(fixture.plainRecord), it.readValues()) }
+                    }
+                    for (name in fixture.arrayNames) requireNotNull(nested.openArray(name)).use { array ->
+                        requireNotNull(array.getAttribute("json_meta")).use { assertEquals(fixture.type, it.getDataType()); assertEquals(fixture.values, it.readValues()) }
+                        requireNotNull(array.getAttribute("json_record")).use { assertEquals(fixture.recordType, it.getDataType()); assertEquals(listOf(fixture.records[2]), it.readValues()) }
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun textAttribute(array: MDArray, name: String, value: String) {
         requireNotNull(array.createAttribute(name, longArrayOf(), MDDataType.Text())).use { assertTrue(it.writeValues(listOf(MDValue.Text(value)))) }
     }

@@ -317,6 +317,102 @@ private object DriverProfileFixtures {
         }
     }
 
+    /** Optional NC4 refuses unsupported JSON schemas before creating any new output. */
+    private suspend fun scientificJsonSubtypeConversion(r: GdalRuntime, nc: Driver, name: String,
+                                                        existingPath: String, verifyExisting: suspend () -> Unit) {
+        val jsonType = MDDataType.JsonText()
+        val texts = listOf(MDValue.Text(" \n" + """{"id":9007199254740993,"name":"영상 🛰","escaped":"\\ \n"}""" + "\t "),
+            MDValue.Text("{ raw text is not parsed as JSON }"))
+        val recordType = MDDataType.Compound("json_record", listOf(MDComponent("payload",
+            MDDataType.Compound("nested", listOf(MDComponent("document", jsonType))))))
+        val expectedRefusal = "netCDF MD output cannot preserve the JSON string subtype; use MEM"
+        for (location in listOf("array", "group-attribute", "array-attribute", "compound", "nested-group-attribute")) {
+            val path = datasetOutputPath("$name-json-$location.nc")
+            assertFalse(driverProfileFixturePathExists(path), "Refusing to replace an existing fixture output")
+            val type = when (location) {
+                "array" -> jsonType
+                "compound" -> recordType
+                else -> MDDataType.Numeric(GdalDataType.Int32)
+            }
+            val data: List<MDValue> = when (location) {
+                "array" -> texts
+                "compound" -> texts.map { MDValue.Record(listOf(MDValue.Record(listOf(it)))) }
+                else -> listOf(MDValue.Numeric(7), MDValue.Numeric(11))
+            }
+            var operationFailure: Throwable? = null
+            try {
+                requireNotNull(r.getDriver("MEM")).use { driver ->
+                    requireNotNull(driver.createMultidimensional("")).use { source ->
+                        requireNotNull(source.getRootGroup()).use { group ->
+                            requireNotNull(group.createDimension("n", 2)).use { dimension ->
+                                requireNotNull(group.createArray("values", listOf(dimension), type)).use { array ->
+                                    assertTrue(array.writeValues(longArrayOf(0), longArrayOf(2), data))
+                                    if (location == "array-attribute") requireNotNull(array.createAttribute("json", longArrayOf(2), jsonType)).use {
+                                        assertEquals(jsonType, it.getDataType()); assertTrue(it.writeValues(texts))
+                                    }
+                                }
+                            }
+                            if (location == "group-attribute") requireNotNull(group.createAttribute("json", longArrayOf(2), jsonType)).use {
+                                assertEquals(jsonType, it.getDataType()); assertTrue(it.writeValues(texts))
+                            }
+                            if (location == "nested-group-attribute") requireNotNull(group.createGroup("json_metadata")).use { nested ->
+                                requireNotNull(nested.createAttribute("json", longArrayOf(2), jsonType)).use {
+                                    assertEquals(jsonType, it.getDataType()); assertTrue(it.writeValues(texts))
+                                }
+                            }
+                        }
+                        val verify: suspend (Dataset) -> Unit = { dataset -> requireNotNull(dataset.getRootGroup()).use { group ->
+                            // These are actual native GetSubType results, including the nested compound leaf.
+                            verifyArray(group, "values", type, longArrayOf(2), data)
+                            if (location == "group-attribute") requireNotNull(group.getAttribute("json")).use {
+                                assertEquals(jsonType, it.getDataType()); assertEquals(texts, it.readValues())
+                            }
+                            if (location == "array-attribute") requireNotNull(group.openArray("values")).use { array ->
+                                requireNotNull(array.getAttribute("json")).use {
+                                    assertEquals(jsonType, it.getDataType()); assertEquals(texts, it.readValues())
+                                }
+                            }
+                            if (location == "nested-group-attribute") requireNotNull(group.openGroup("json_metadata")).use { nested ->
+                                requireNotNull(nested.getAttribute("json")).use {
+                                    assertEquals(jsonType, it.getDataType()); assertEquals(texts, it.readValues())
+                                }
+                            }
+                        } }
+                        verify(source)
+                        val rejected = assertFailsWith<GdalException> {
+                            source.multiDimTranslateTo(path, driver = "netCDF", arguments = listOf("-co", "FORMAT=NC4"))
+                        }
+                        assertEquals(expectedRefusal, rejected.message)
+                        assertFalse(driverProfileFixturePathExists(path), "JSON preflight created an output for $location")
+                        verify(source)
+                        verifyExisting()
+                        val existingRefusal = assertFailsWith<GdalException> {
+                            source.multiDimTranslateTo(existingPath, driver = "netCDF", arguments = listOf("-co", "FORMAT=NC4"))
+                        }
+                        assertEquals(expectedRefusal, existingRefusal.message)
+                        assertFalse(driverProfileFixturePathExists(path))
+                        verifyExisting(); verify(source)
+                    }
+                }
+            } catch (failure: Throwable) {
+                operationFailure = failure
+                throw failure
+            } finally {
+                withContext(NonCancellable) {
+                    try {
+                        // Clean any unexpected new output on failure; preflight itself must create none.
+                        if (driverProfileFixturePathExists(path)) assertEquals(0, nc.delete(path))
+                        assertFalse(driverProfileFixturePathExists(path))
+                    } catch (cleanupFailure: Throwable) {
+                        val failure = operationFailure
+                        if (failure == null) throw cleanupFailure
+                        failure.addSuppressed(cleanupFailure)
+                    }
+                }
+            }
+        }
+    }
+
     /** Actual OS NC4 output in scientific and combined host profiles. */
     private suspend fun scientificConversion(r: GdalRuntime, name: String) {
         val signed = listOf(Long.MIN_VALUE.toString(), "-9007199254740993", "9007199254740993", Long.MAX_VALUE.toString()).map { MDValue.Numeric(it) }
@@ -383,6 +479,18 @@ private object DriverProfileFixtures {
                         requireNotNull(array.getAttribute("ids")).use { assertEquals(listOf(unsigned[1], unsigned[3]), it.readValues()) }
                     }
                 } }
+                scientificJsonSubtypeConversion(r, nc, name, path) {
+                    r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { existing ->
+                        requireNotNull(existing.getRootGroup()).use { group ->
+                            for ((name, type) in schema) verifyArray(group, name, type, longArrayOf(4), data.getValue(name))
+                            requireNotNull(group.getAttribute("marker")).use { assertEquals(listOf(MDValue.Text("MD conversion 영상")), it.readValues()) }
+                            requireNotNull(group.openArray("floating")).use { array ->
+                                assertEquals("K", array.getUnit()); assertEquals(0.5, array.getScale()); assertEquals(273.15, array.getOffset())
+                                requireNotNull(array.getAttribute("ids")).use { assertEquals(listOf(unsigned[1], unsigned[3]), it.readValues()) }
+                            }
+                        }
+                    }
+                }
             } catch (failure: Throwable) {
                 conversionFailure = failure
                 throw failure

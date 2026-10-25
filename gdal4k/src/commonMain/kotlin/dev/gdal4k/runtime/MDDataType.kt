@@ -7,6 +7,13 @@ sealed interface MDDataType {
     data class Text(val maxLength: Long = 0) : MDDataType {
         init { require(maxLength >= 0) }
     }
+    /**
+     * GDAL JSON string schema, carried as raw [MDValue.Text] values.
+     * Maximum UTF-8 byte length; zero means unlimited. Values are not parsed or normalized.
+     */
+    data class JsonText(val maxLength: Long = 0) : MDDataType {
+        init { require(maxLength >= 0) }
+    }
     data class Compound(val name: String, val components: List<MDComponent>) : MDDataType {
         init { require(name.isNotEmpty()); require(components.isNotEmpty()); require(components.map { it.name }.distinct().size == components.size) }
     }
