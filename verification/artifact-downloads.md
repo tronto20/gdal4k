@@ -1,7 +1,7 @@
 # Bounded audit downloads
 
-The primary and optional-profile jobs retain their original artifact names,
-contents and outputs for normal CI consumers. Large public evidence also has a
+The primary and optional-profile jobs retain their artifact names and portable
+payloads for normal CI consumers. Large public evidence also has a
 separate `audit-parts--` transport for clients with a 32 MiB download limit.
 This changes verification-file delivery, not Maven coordinates or engine content.
 
@@ -10,8 +10,44 @@ uploader and the audit collector. The collector removes duplicate paths, rejects
 links and private provider/credential paths, and compresses the selected files
 once into a ZIP with workspace-relative paths. Every selected file retains its
 size, SHA256 and CRC. This is a new container; its bytes are distinct from the
-original GitHub artifact ZIP. A Maven `.tar.gz` inside it retains its original
-bytes and can still be checked against the profile report's `archiveSha256`.
+original GitHub artifact ZIP. An inner `.tar.gz` or `.tar.xz` retains its exact
+compressed bytes; a profile archive can still be checked against the report's
+`archiveSha256`.
+
+Primary engine and assembled Maven transfers use XZ compression to reduce total
+bytes. The artifact names (`engine-*`, `gdal4k-maven`, `gdal4k-jvm-maven`) stay the
+same; their inner filenames now end in `.tar.xz`. This changes the CI transport
+container, including its compressed hash and the containing service ZIP hash.
+Maven coordinates, JAR/AAR/KLIB files, libraries, licenses and test executables
+are carried without modification. Optional-profile public Maven archives and
+the combined ARM64 transfer remain gzip in this rollout.
+
+`verification/ci.py` keeps gzip as its command-line default; the primary workflow
+selects `--archive-format xz`. Each producer and reader checks its Python XZ
+support before long builds. The tool-provisioning matrix checks both codecs on
+all supported hosts, including Windows ARM64 and Intel macOS; transport-helper
+and primary-workflow changes also trigger those checks. Staging records the
+actual compressed and decoded TAR SHA256 and byte lengths in the job output.
+The writer serializes the TAR once through a streaming compressor, without an
+intermediate raw TAR file.
+Historical artifacts and their recorded hashes are preserved.
+
+Use the shared reader for either format. Give it the exact expected logical
+archive names; it rejects missing, unexpected or duplicate gzip/XZ candidates,
+invalid codec data and unsafe member paths. For example:
+
+```sh
+python verification/archive_transport.py restore \
+  --directory verification/build/downloads --destination . \
+  --expected complete-maven
+```
+
+For an external tool that previously opened `complete-maven.tar.gz` directly,
+accept `.tar.xz` as well and continue checking the selected compressed file's
+actual digest. Legacy gzip downloads remain readable. Never substitute an XZ
+digest for an existing gzip digest or relabel a reconstructed ZIP as the original
+service ZIP. Compression savings are measured on the same decoded TAR stream;
+the download part size alone does not measure total storage or transfer savings.
 
 An audit ZIP below 24 MiB needs no additional export. Larger ZIPs are split into
 parts of at most 24 MiB minus 64 KiB, leaving room for the artifact service's ZIP

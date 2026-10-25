@@ -1,10 +1,10 @@
 name: Build tool provisioning
 on:
   pull_request:
-    paths: ['build-logic/**', '.github/workflows/build-tools.yml', 'settings.gradle.kts', 'build.gradle.kts', 'gdal4k-engine/build.gradle.kts', 'gdal4k-engine/tools/build-engine.py', 'gradle/wrapper/**', 'verification/check-toolchain-bootstrap.py', 'gdal4k-engine/tools/toolchains.py']
+    paths: ['build-logic/**', '.github/workflows/build-tools.yml', '.github/workflows/library-tests.yml', '.github/workflows/build-and-publish.yml', 'settings.gradle.kts', 'build.gradle.kts', 'gdal4k-engine/build.gradle.kts', 'gdal4k-engine/tools/build-engine.py', 'gradle/wrapper/**', 'verification/check-toolchain-bootstrap.py', 'verification/archive_transport.py', 'verification/test_archive_transport.py', 'verification/test_ci_stage.py', 'verification/ci.py', 'gdal4k-engine/tools/toolchains.py']
   push:
     branches: [main]
-    paths: ['build-logic/**', '.github/workflows/build-tools.yml', 'settings.gradle.kts', 'build.gradle.kts', 'gdal4k-engine/build.gradle.kts', 'gdal4k-engine/tools/build-engine.py', 'gradle/wrapper/**', 'verification/check-toolchain-bootstrap.py', 'gdal4k-engine/tools/toolchains.py']
+    paths: ['build-logic/**', '.github/workflows/build-tools.yml', '.github/workflows/library-tests.yml', '.github/workflows/build-and-publish.yml', 'settings.gradle.kts', 'build.gradle.kts', 'gdal4k-engine/build.gradle.kts', 'gdal4k-engine/tools/build-engine.py', 'gradle/wrapper/**', 'verification/check-toolchain-bootstrap.py', 'verification/archive_transport.py', 'verification/test_archive_transport.py', 'verification/test_ci_stage.py', 'verification/ci.py', 'gdal4k-engine/tools/toolchains.py']
   workflow_dispatch:
 permissions:
   contents: read
@@ -30,6 +30,8 @@ jobs:
         with: { distribution: temurin, java-version: "${{ matrix.host == 'windows-arm64' && '21' || '17' }}" }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check native gzip and XZ support on the prepared host
+        run: python verification/archive_transport.py check
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
@@ -77,6 +79,8 @@ jobs:
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.14' }
+      - name: Check native gzip and XZ support before compiler initialization
+        run: python verification/archive_transport.py check
       - name: Real Gradle prerequisites and compiler initialization from an empty store
         env:
           TARGET: ${{ matrix.target }}
