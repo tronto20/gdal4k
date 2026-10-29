@@ -44,12 +44,14 @@ def kt_result(typ,expr,parent):
         k=t[:-5];cv={'Double':'toDouble','Int':'toInt','Byte':'toInt().toByte','Short':'toInt().toShort','Float':'toFloat','Long':'toLong'}[k]
         out=f'{expr}.jsonArray.map {{ it.jsonPrimitive.content.{cv}() }}.to{t}()'
     elif t=='List<String>':out=f'{expr}.jsonArray.map {{ it.jsonPrimitive.content }}'
+    elif t=='List<ULong>':out=f'{expr}.jsonArray.map {{ it.jsonPrimitive.content.toULong() }}'
     elif t=='List<DoubleArray>':out=f'{expr}.jsonArray.map {{ p -> p.jsonArray.map {{ it.jsonPrimitive.content.toDouble() }}.toDoubleArray() }}'
     elif t=='RasterStatistics':out=f'{expr}.jsonArray.let {{ RasterStatistics(it[0].jsonPrimitive.content.toDouble(), it[1].jsonPrimitive.content.toDouble(), it[2].jsonPrimitive.content.toDouble(), it[3].jsonPrimitive.content.toDouble()) }}'
     elif t=='RasterHistogram':out=f'{expr}.jsonObject.let {{ RasterHistogram(it.getValue("minimum").jsonPrimitive.content.toDouble(), it.getValue("maximum").jsonPrimitive.content.toDouble(), it.getValue("counts").jsonArray.map {{ n -> n.jsonPrimitive.content.toLong() }}.toLongArray()) }}'
     elif t=='ColorEntry':out=f'{expr}.jsonArray.let {{ ColorEntry(it[0].jsonPrimitive.int, it[1].jsonPrimitive.int, it[2].jsonPrimitive.int, it[3].jsonPrimitive.int) }}'
     elif t=='MDDataType':out=f'decodeMDType({expr})'
     elif t=='MDValue':out=f'decodeMDValue({expr})'
+    elif t=='MDNumericMetadata':out=f'{expr}.jsonObject.let {{ MDNumericMetadata(it.getValue("value").jsonPrimitive.content.toDouble(), it.getValue("storageType").jsonPrimitive.int) }}'
     elif t=='FieldDomainBound':out=f'decodeDomainBound({expr})'
     elif t=='List<CodedFieldValue>':out=f'{expr}.jsonArray.map(::decodeCodedValue)'
     elif t=='List<MDValue>':out=f'{expr}.jsonArray.map(::decodeMDValue)'
@@ -149,6 +151,10 @@ special('Dimension','getIndexingVariable','return r.result(GDALDimensionGetIndex
 special('Dimension','setIndexingVariable','auto v=a["array"];return value(GDALDimensionSetIndexingVariable(h,v.GetType()==CPLJSONObject::Type::Null?nullptr:static_cast<GDALMDArrayH>(r.arg(v)))!=0);')
 special('MDArray','getDimensions','size_t n=0;auto dims=GDALMDArrayGetDimensions(h,&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);')
 special('MDArray','getDataType','auto type=GDALMDArrayGetDataType(h);auto numeric=GDALExtendedDataTypeGetClass(type)==GEDTC_NUMERIC?GDALExtendedDataTypeGetNumericDataType(type):GDT_Unknown;GDALExtendedDataTypeRelease(type);return value(numeric);')
+OWNED.add(('MDArray','getSpatialRef'))
+special('MDArray','getSpatialRef','CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(h);if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);')
+special('MDArray','getBlockSize','CPLErrorReset();size_t n=0;auto p=GDALMDArrayGetBlockSize(h,&n);struct FreeBlockSize{GUInt64* p;~FreeBlockSize(){CPLFree(p);}} cleanup{p};fileEnsure(CPLGetLastErrorType()<CE_Failure && (n==0||p),"Cannot obtain multidimensional block size");return numbers(p,n);')
+special('MDArray','getStructuralInfo','CPLErrorReset();auto p=GDALMDArrayGetStructuralInfo(h);fileEnsure(CPLGetLastErrorType()<CE_Failure,"Cannot obtain multidimensional structural information");CPLJSONArray out;for(size_t i=0;p&&p[i];++i)out.Add(p[i]);return value(out);')
 special('MDArray','read','return mdRaster(h,a,false);')
 special('MDArray','write','return mdRaster(h,a,true);')
 
@@ -163,6 +169,7 @@ special('MDArray','getUnit','return value(GDALMDArrayGetUnit(h));')
 special('MDArray','setUnit','auto unit=a["unit"].ToString();require(unit.find(\'\\0\')==std::string::npos,"NUL in multidimensional unit");return value(GDALMDArraySetUnit(h,unit.c_str())!=0);')
 for name in ['Scale','Offset']:
     special('MDArray','get'+name,f'int present=0;auto n=GDALMDArrayGet{name}(h,&present);return present?value(n):nullValue();')
+    special('MDArray','get'+name+'Ex',f'CPLErrorReset();int present=0;GDALDataType storage=GDT_Unknown;auto n=GDALMDArrayGet{name}Ex(h,&present,&storage);fileEnsure(CPLGetLastErrorType()<CE_Failure,"Cannot obtain multidimensional {name.lower()} metadata");if(!present)return nullValue();CPLJSONObject out;out.Add("value",value(n)["value"]);out.Add("storageType",static_cast<int>(storage));return value(out);')
     special('MDArray','set'+name,f'return value(GDALMDArraySet{name}(h,CPLAtof(a["{name.lower()}"].ToString().c_str()))!=0);')
 for op in ['readValues','writeValues']:
     special('MDArray',op,'return mdValues(h,a,'+str(op=='writeValues').lower()+');')
@@ -283,6 +290,7 @@ for name,fn in [('promoteTo3D','OSRPromoteTo3D'),('demoteTo2D','OSRDemoteTo2D')]
 special('CoordinateTransformation','transformPoint','double x=a["x"].ToDouble(),y=a["y"].ToDouble(),z=a["z"].ToDouble();require(OCTTransform(h,1,&x,&y,&z)!=0,"Coordinate transformation failed");return numbers({x,y,z});')
 special('CoordinateTransformation','transformPoints','return transformCoordinatePoints(static_cast<OGRCoordinateTransformationH>(h),a);')
 special('CoordinateTransformation','transformBounds','double x0,y0,x1,y1;require(OCTTransformBounds(h,a["xMin"].ToDouble(),a["yMin"].ToDouble(),a["xMax"].ToDouble(),a["yMax"].ToDouble(),&x0,&y0,&x1,&y1,a.GetInteger("densifyPoints"))!=0,"Bounds transformation failed");return numbers({x0,y0,x1,y1});')
+special('SpatialReference','getDataAxisToSRSAxisMapping','CPLErrorReset();int n=0;auto p=OSRGetDataAxisToSRSAxisMapping(h,&n);fileEnsure(CPLGetLastErrorType()<CE_Failure && n>=0 && (n==0||p),"Cannot obtain spatial reference axis mapping");return numbers(p,static_cast<size_t>(n));')
 special('Layer','getExtent','OGREnvelope e;if(OGR_L_GetExtent(h,&e,a.GetBool("force"))!=OGRERR_NONE)return nullValue();return numbers({e.MinX,e.MaxX,e.MinY,e.MaxY});')
 special('Feature','getFieldAsStringList','return strings(OGR_F_GetFieldAsStringList(h,a.GetInteger("index")));')
 for name,fn,typ in [('getFieldAsIntegerList','OGR_F_GetFieldAsIntegerList','int'),('getFieldAsDoubleList','OGR_F_GetFieldAsDoubleList','double'),('getFieldAsBinary','OGR_F_GetFieldAsBinary','GByte')]:special('Feature',name,f'int n=0;auto p={fn}(h,a.GetInteger("index"),&n);return numbers(p,n);')

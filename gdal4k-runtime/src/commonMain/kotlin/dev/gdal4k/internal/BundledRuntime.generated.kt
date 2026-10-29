@@ -302,6 +302,7 @@ internal class BundledSpatialReference(engine: RuntimeEngine, id: String, parent
     override suspend fun getAxisOrientation(targetKey: String, index: Int): Int { val result = invoke("SpatialReference", "getAxisOrientation_String_Int", mapOf("targetKey" to encode(targetKey), "index" to encode(index))); return result.jsonPrimitive.int }
     override suspend fun getAxisMappingStrategy(): Int { val result = invoke("SpatialReference", "getAxisMappingStrategy", mapOf()); return result.jsonPrimitive.int }
     override suspend fun setAxisMappingStrategy(strategy: Int): Unit { invoke("SpatialReference", "setAxisMappingStrategy_Int", mapOf("strategy" to encode(strategy))); return Unit }
+    override suspend fun getDataAxisToSRSAxisMapping(): IntArray { val result = invoke("SpatialReference", "getDataAxisToSRSAxisMapping", mapOf()); return result.jsonArray.map { it.jsonPrimitive.content.toInt() }.toIntArray() }
     override suspend fun setUTM(zone: Int, north: Int): Int { val result = invoke("SpatialReference", "setUTM_Int_Int", mapOf("zone" to encode(zone), "north" to encode(north))); return result.jsonPrimitive.int }
     override suspend fun getUTMZone(): Int { val result = invoke("SpatialReference", "getUTMZone", mapOf()); return result.jsonPrimitive.int }
     override suspend fun autoIdentifyEPSG(): Int { val result = invoke("SpatialReference", "autoIdentifyEPSG", mapOf()); return result.jsonPrimitive.int }
@@ -630,12 +631,17 @@ internal class BundledMDArray(engine: RuntimeEngine, id: String, parent: Runtime
     override suspend fun getName(): String { val result = invoke("MDArray", "getName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getFullName(): String { val result = invoke("MDArray", "getFullName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getDimensions(): List<Dimension> { val result = invoke("MDArray", "getDimensions", mapOf()); return result.jsonArray.map { requireNotNull(engine.wrapDimension(it, this)) } }
+    override suspend fun getSpatialRef(): SpatialReference? { val result = invoke("MDArray", "getSpatialRef", mapOf()); return engine.wrapSpatialReference(result, null) }
+    override suspend fun getBlockSize(): List<ULong> { val result = invoke("MDArray", "getBlockSize", mapOf()); return result.jsonArray.map { it.jsonPrimitive.content.toULong() } }
+    override suspend fun getStructuralInfo(): List<String> { val result = invoke("MDArray", "getStructuralInfo", mapOf()); return result.jsonArray.map { it.jsonPrimitive.content } }
     override suspend fun getNoDataValue(): MDValue? { val result = invoke("MDArray", "getNoDataValue", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> decodeMDValue(v) } }
     override suspend fun setNoDataValue(value: MDValue?): Boolean { val result = invoke("MDArray", "setNoDataValue_MDValue", mapOf("value" to encode(value))); return result.jsonPrimitive.boolean }
     override suspend fun getUnit(): String { val result = invoke("MDArray", "getUnit", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun setUnit(unit: String): Boolean { val result = invoke("MDArray", "setUnit_String", mapOf("unit" to encode(unit))); return result.jsonPrimitive.boolean }
     override suspend fun getScale(): Double? { val result = invoke("MDArray", "getScale", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> v.jsonPrimitive.content.toDouble() } }
     override suspend fun getOffset(): Double? { val result = invoke("MDArray", "getOffset", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> v.jsonPrimitive.content.toDouble() } }
+    override suspend fun getScaleEx(): MDNumericMetadata? { val result = invoke("MDArray", "getScaleEx", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> v.jsonObject.let { MDNumericMetadata(it.getValue("value").jsonPrimitive.content.toDouble(), it.getValue("storageType").jsonPrimitive.int) } } }
+    override suspend fun getOffsetEx(): MDNumericMetadata? { val result = invoke("MDArray", "getOffsetEx", mapOf()); return result.takeUnless { it is JsonNull }?.let { v -> v.jsonObject.let { MDNumericMetadata(it.getValue("value").jsonPrimitive.content.toDouble(), it.getValue("storageType").jsonPrimitive.int) } } }
     override suspend fun setScale(scale: Double): Boolean { val result = invoke("MDArray", "setScale_Double", mapOf("scale" to encode(scale))); return result.jsonPrimitive.boolean }
     override suspend fun setOffset(offset: Double): Boolean { val result = invoke("MDArray", "setOffset_Double", mapOf("offset" to encode(offset))); return result.jsonPrimitive.boolean }
     override suspend fun getDataType(): Int { val result = invoke("MDArray", "getDataType", mapOf()); return result.jsonPrimitive.int }

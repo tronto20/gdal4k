@@ -6,6 +6,14 @@ interface MDArray {
     suspend fun getName(): String
     suspend fun getFullName(): String
     suspend fun getDimensions(): List<Dimension>
+    /** Independent CRS copy, usable after this array closes; null means no CRS. Close the copy.
+     * Native failures throw instead of returning null.
+     */
+    suspend fun getSpatialRef(): SpatialReference?
+    /** Detached natural block sizes in dimension order. Zero means no hint; scalars return an empty list. */
+    suspend fun getBlockSize(): List<ULong>
+    /** Detached structural KEY=VALUE entries; empty when the driver provides no information. */
+    suspend fun getStructuralInfo(): List<String>
     /** Typed NoData, preserving exact integers and complex/string values; null means unset. */
     suspend fun getNoDataValue(): MDValue?
     /** null removes NoData. A non-null value must match the array's exact stored type. */
@@ -15,6 +23,10 @@ interface MDArray {
     /** null means no explicit scale/offset. Values are metadata, not applied to read/write. */
     suspend fun getScale(): Double?
     suspend fun getOffset(): Double?
+    /** Explicit scale and its storage type, or null when unset. Native failures throw. */
+    suspend fun getScaleEx(): MDNumericMetadata?
+    /** Explicit offset and its storage type, or null when unset. Native failures throw. */
+    suspend fun getOffsetEx(): MDNumericMetadata?
     suspend fun setScale(scale: Double): Boolean
     suspend fun setOffset(offset: Double): Boolean
     /** GDAL numeric type; non-numeric arrays return GdalDataType.Unknown. */
