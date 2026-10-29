@@ -121,6 +121,7 @@ private object DriverProfileFixtures {
             r.openDataset(path).use { assertContentEquals(doubleArrayOf(5.0, 6.0, 7.0, 8.0), it.readRaster()) }
         }
         scientificConversion(r, name)
+        scientificArrayMetadata(r, name)
     }
 
     private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
@@ -409,6 +410,52 @@ private object DriverProfileFixtures {
                         failure.addSuppressed(cleanupFailure)
                     }
                 }
+            }
+        }
+    }
+
+    /** Read exact metadata types and driver structure after the NC4 writer closes. */
+    private suspend fun scientificArrayMetadata(r: GdalRuntime, name: String) {
+        val cases = listOf(Triple("float_metadata", GdalDataType.Float32, 0.25 to -4.0),
+            Triple("double_metadata", GdalDataType.Float64, 0.0 to 1.0))
+        val samples = doubleArrayOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+        suspend fun verify(group: Group) {
+            for ((arrayName, storageType, values) in cases) requireNotNull(group.openArray(arrayName)).use { array ->
+                assertEquals(listOf(1uL, 2uL), array.getBlockSize())
+                assertTrue("COMPRESS=DEFLATE" in array.getStructuralInfo())
+                assertEquals(MDNumericMetadata(values.first, storageType), array.getScaleEx())
+                assertEquals(MDNumericMetadata(values.second, storageType), array.getOffsetEx())
+                assertEquals(values.first, array.getScale()); assertEquals(values.second, array.getOffset())
+                assertContentEquals(samples, array.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+            }
+            requireNotNull(group.openArray("unset")).use { array ->
+                assertNull(array.getScaleEx()); assertNull(array.getOffsetEx())
+            }
+        }
+        ownedFile(r, "netCDF", "$name-md-metadata.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 2)).use { y ->
+                        requireNotNull(group.createDimension("x", 3)).use { x ->
+                            for ((arrayName, storageType, values) in cases) {
+                                requireNotNull(group.createArray(arrayName, listOf(y, x), GdalDataType.Int16,
+                                    options = listOf("BLOCKSIZE=1,2", "COMPRESS=DEFLATE", "ZLEVEL=1"))).use { array ->
+                                    for ((attributeName, value) in listOf("scale_factor" to values.first, "add_offset" to values.second)) {
+                                        requireNotNull(array.createAttribute(attributeName, longArrayOf(), MDDataType.Numeric(storageType))).use { attribute ->
+                                            assertTrue(attribute.writeValues(listOf(MDValue.Numeric(value))))
+                                        }
+                                    }
+                                    assertTrue(array.write(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                                }
+                            }
+                            requireNotNull(group.createArray("unset", listOf(y, x), GdalDataType.Int16)).close()
+                        }
+                    }
+                    verify(group)
+                }
+            }
+            r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { verify(it) }
             }
         }
     }

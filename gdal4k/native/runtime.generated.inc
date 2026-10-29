@@ -839,6 +839,9 @@
     if(type=="SpatialReference" && method=="setAxisMappingStrategy_Int") {
         apply(OSRSetAxisMappingStrategy, Arg(r,h), Arg(r,a["strategy"])); return nullValue();
     }
+    if(type=="SpatialReference" && method=="getDataAxisToSRSAxisMapping") {
+        CPLErrorReset();int n=0;auto p=OSRGetDataAxisToSRSAxisMapping(h,&n);fileEnsure(CPLGetLastErrorType()<CE_Failure && n>=0 && (n==0||p),"Cannot obtain spatial reference axis mapping");return numbers(p,static_cast<size_t>(n));
+    }
     if(type=="SpatialReference" && method=="setUTM_Int_Int") {
         auto out=apply(OSRSetUTM, Arg(r,h), Arg(r,a["zone"]), Arg(r,a["north"]));return value(out);
     }
@@ -1703,6 +1706,15 @@
     if(type=="MDArray" && method=="getDimensions") {
         size_t n=0;auto dims=GDALMDArrayGetDimensions(static_cast<GDALMDArrayH>(h),&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);
     }
+    if(type=="MDArray" && method=="getSpatialRef") {
+        CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(static_cast<GDALMDArrayH>(h));if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);
+    }
+    if(type=="MDArray" && method=="getBlockSize") {
+        CPLErrorReset();size_t n=0;auto p=GDALMDArrayGetBlockSize(static_cast<GDALMDArrayH>(h),&n);struct FreeBlockSize{GUInt64* p;~FreeBlockSize(){CPLFree(p);}} cleanup{p};fileEnsure(CPLGetLastErrorType()<CE_Failure && (n==0||p),"Cannot obtain multidimensional block size");return numbers(p,n);
+    }
+    if(type=="MDArray" && method=="getStructuralInfo") {
+        CPLErrorReset();auto p=GDALMDArrayGetStructuralInfo(static_cast<GDALMDArrayH>(h));fileEnsure(CPLGetLastErrorType()<CE_Failure,"Cannot obtain multidimensional structural information");CPLJSONArray out;for(size_t i=0;p&&p[i];++i)out.Add(p[i]);return value(out);
+    }
     if(type=="MDArray" && method=="getNoDataValue") {
         return mdNoDataValue(static_cast<GDALMDArrayH>(h),a,false);
     }
@@ -1720,6 +1732,12 @@
     }
     if(type=="MDArray" && method=="getOffset") {
         int present=0;auto n=GDALMDArrayGetOffset(static_cast<GDALMDArrayH>(h),&present);return present?value(n):nullValue();
+    }
+    if(type=="MDArray" && method=="getScaleEx") {
+        CPLErrorReset();int present=0;GDALDataType storage=GDT_Unknown;auto n=GDALMDArrayGetScaleEx(static_cast<GDALMDArrayH>(h),&present,&storage);fileEnsure(CPLGetLastErrorType()<CE_Failure,"Cannot obtain multidimensional scale metadata");if(!present)return nullValue();CPLJSONObject out;out.Add("value",value(n)["value"]);out.Add("storageType",static_cast<int>(storage));return value(out);
+    }
+    if(type=="MDArray" && method=="getOffsetEx") {
+        CPLErrorReset();int present=0;GDALDataType storage=GDT_Unknown;auto n=GDALMDArrayGetOffsetEx(static_cast<GDALMDArrayH>(h),&present,&storage);fileEnsure(CPLGetLastErrorType()<CE_Failure,"Cannot obtain multidimensional offset metadata");if(!present)return nullValue();CPLJSONObject out;out.Add("value",value(n)["value"]);out.Add("storageType",static_cast<int>(storage));return value(out);
     }
     if(type=="MDArray" && method=="setScale_Double") {
         return value(GDALMDArraySetScale(static_cast<GDALMDArrayH>(h),CPLAtof(a["scale"].ToString().c_str()))!=0);

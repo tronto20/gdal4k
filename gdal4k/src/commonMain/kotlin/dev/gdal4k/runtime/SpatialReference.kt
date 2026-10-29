@@ -105,6 +105,9 @@ interface SpatialReference {
 
     suspend fun setAxisMappingStrategy(strategy: Int)
 
+    /** Detached mapping for each CRS axis: 1-based data-axis numbers, negative for sign reversal. */
+    suspend fun getDataAxisToSRSAxisMapping(): IntArray
+
     suspend fun setUTM(zone: Int, north: Int = 1): Int
 
     suspend fun getUTMZone(): Int

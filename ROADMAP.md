@@ -19,7 +19,8 @@ these are not missing APIs to reimplement.
 | 6 | Valid-data raster footprint | Merged in PR35: valid-mask/NoData polygons, holes, memory/direct outputs, actual source/published runtime and functional diagnostics; full exact-HEAD CI and tested HEAD main ancestry verified |
 | 7 | Raster tile index | Merged in PR36: explicit affine extent/location index, full current source/published runtime and diagnostics; exact-HEAD primary13/profiles7 and tested HEAD main ancestry verified |
 | 8 | Multidimensional conversion | Merged in PR37: checked GDALMultiDimTranslate selection/type/shape/metadata semantics, MEM/GTiff and scientific OS NC4 fixtures, actual source/published consumers and functional diagnostics; full exact-HEAD CI and tested HEAD main ancestry verified |
-| 9 | Multidimensional JSON string subtype | In progress: additive JsonText schema, protocol 6 negotiation, strict refusal and MEM/lifetime/independent-copy fixtures; local Linux v6 and precompiled Text client controls pass, fresh published/platform verification pending |
+| 9 | Multidimensional JSON string subtype | Merged in PR44: additive JsonText schema, protocol 6 negotiation, strict refusal and MEM/lifetime/independent-copy fixtures; all 34 required CI jobs and retained artifact evidence accepted on the tested head, with main ancestry and tree verified |
+| 10 | Multidimensional metadata getters | In progress: independent CRS, unsigned block sizes, structural information, scale/offset values with storage types, and signed SRS axis mapping; fresh source and published-platform verification required |
 
 These workstreams are milestones toward the broader [full GDAL support goal](GDAL_SUPPORT.md),
 not its completion definition. JVM on its four current OS/ABIs is the first support priority;

@@ -342,6 +342,24 @@ JSON 스키마 생성에는 protocol 6 엔진이 필요합니다. 구형 엔진�
 고정 netCDF의 일반 문자열 쓰기는 이 태그를 보존하지
 않으므로 출력 생성 전에 명확히 거부합니다.
 
+### 다차원 배열 메타데이터
+
+`MDArray.getSpatialRef()`는 독립 CRS 복사본을 반환합니다. 배열·데이터셋을 닫은 뒤에도
+사용할 수 있으며 반환값은 `use`로 닫습니다. CRS가 없으면 `null`입니다.
+`SpatialReference.getDataAxisToSRSAxisMapping()`으로 부호를 포함한 GDAL 축 매핑을
+확인할 수 있습니다.
+
+`getBlockSize()`는 차원 순서의 `List<ULong>`을 반환하며 0은 블록 크기 힌트가 없음을
+뜻합니다. `getStructuralInfo()`는 드라이버가 제공하는 `KEY=VALUE` 목록을 반환합니다.
+두 결과는 핸들을 닫은 뒤에도 사용할 수 있는 복사본입니다.
+
+`getScaleEx()`와 `getOffsetEx()`는 값과 저장 타입을 함께 담은
+`MDNumericMetadata(value, storageType)`를 반환합니다. 미설정이면 `null`이며,
+명시적으로 설정된 0이나 1과 구분합니다. `storageType`은 `GdalDataType` 코드이고
+드라이버가 타입을 보고하지 않으면 `Unknown`입니다. 값의 정밀도는 GDAL의 `Double`이며
+읽기·쓰기에 scale/offset을 자동 적용하지 않습니다. 기존 `getScale()`·`getOffset()`도
+계속 사용할 수 있습니다.
+
 ### 다차원 변환
 
 `Dataset.multiDimTranslate`는 고정 GDAL 3.12.4의 GDALMultiDimTranslate로 배열·그룹을
