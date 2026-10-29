@@ -13,11 +13,12 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     object : GdalTransport {
         private val binaryVersion = gdal4k_binary_version()
         override val supportsHttpInputPolicy = gdal4k_http_input_version() == 1
-        override val supportsBinaryRaster = binaryVersion in 1..5
-        override val supportsBinaryCoordinates = binaryVersion in 2..5
-        override val supportsBinaryColumns = binaryVersion in 3..5
-        override val supportsBinaryFiles = binaryVersion in 4..5
-        override val supportsBinaryMD = binaryVersion == 5
+        override val supportsBinaryRaster = binaryVersion in 1..6
+        override val supportsBinaryCoordinates = binaryVersion in 2..6
+        override val supportsBinaryColumns = binaryVersion in 3..6
+        override val supportsBinaryFiles = binaryVersion in 4..6
+        override val supportsBinaryMD = binaryVersion in 5..6
+        override val supportsMDJsonStringSubtype = binaryVersion == 6
         private fun binaryNow(request: String, input: ByteArray?, control: CPointer<gdal4k_control>?): GdalBinaryReply {
             fun execute(pointer: CPointer<UByteVar>?): GdalBinaryReply {
                 val result = gdal4k_execute_binary(handle, request, pointer, input?.size ?: 0, control)

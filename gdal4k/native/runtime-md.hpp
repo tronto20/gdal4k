@@ -33,10 +33,20 @@ struct MDType {
     }
 };
 inline size_t mdAligned(size_t n,size_t alignment){require(n<=SIZE_MAX-alignment,"Compound schema exceeds addressable memory");return (n+alignment-1)/alignment*alignment;}
+inline GDALExtendedDataTypeSubType mdStringSubType(const CPLJSONObject& schema) {
+    auto field=schema["subType"];
+    // An absent legacy field is distinct from an explicitly supplied JSON null.
+    if(!field.IsValid())return GEDTST_NONE;
+    auto kind=field.GetType();
+    require(kind==CPLJSONObject::Type::Integer||kind==CPLJSONObject::Type::Long,"String subtype must be an integer");
+    auto subType=field.ToLong(-1);
+    require(subType==GEDTST_NONE||subType==GEDTST_JSON,"Unsupported string subtype");
+    return static_cast<GDALExtendedDataTypeSubType>(subType);
+}
 inline std::unique_ptr<MDType> mdType(const CPLJSONObject& schema,unsigned depth=0) {
     require(depth<32,"Multidimensional schema nesting exceeds 32");auto kind=schema.GetString("kind");
     if(kind=="numeric") {auto t=schema.GetInteger("type");require(t>GDT_Unknown&&t<GDT_TypeCount,"Invalid GDAL numeric type");return std::make_unique<MDType>(GDALExtendedDataTypeCreate(static_cast<GDALDataType>(t)));}
-    if(kind=="text") {auto n=schema.GetLong("maxLength");require(n>=0&&static_cast<uint64_t>(n)<=SIZE_MAX,"Invalid string maximum length");return std::make_unique<MDType>(GDALExtendedDataTypeCreateString(static_cast<size_t>(n)));}
+    if(kind=="text") {auto subType=mdStringSubType(schema);auto n=schema.GetLong("maxLength");require(n>=0&&static_cast<uint64_t>(n)<=SIZE_MAX,"Invalid string maximum length");return std::make_unique<MDType>(GDALExtendedDataTypeCreateStringEx(static_cast<size_t>(n),subType));}
     require(kind=="compound","Unknown multidimensional schema");auto components=schema.GetArray("components");require(components.Size()>0,"Compound type must have components");
     std::vector<std::unique_ptr<MDType>> types;std::vector<GDALEDTComponentH> fields;size_t size=0,alignment=1;std::set<std::string> names;
     struct Cleanup {std::vector<GDALEDTComponentH>& fields;~Cleanup(){for(auto f:fields)GDALEDTComponentRelease(f);}} cleanup{fields};
@@ -51,7 +61,7 @@ inline std::unique_ptr<MDType> mdType(const CPLJSONObject& schema,unsigned depth
 inline CPLJSONObject mdSchema(const MDType& type) {
     CPLJSONObject out;
     if(type.kind()==GEDTC_NUMERIC){out.Add("kind","numeric");out.Add("type",GDALExtendedDataTypeGetNumericDataType(type.handle));}
-    else if(type.kind()==GEDTC_STRING){out.Add("kind","text");out.Add("maxLength",std::to_string(GDALExtendedDataTypeGetMaxStringLength(type.handle)));}
+    else if(type.kind()==GEDTC_STRING){auto subType=GDALExtendedDataTypeGetSubType(type.handle);require(subType==GEDTST_NONE||subType==GEDTST_JSON,"Unsupported native string subtype");out.Add("kind","text");out.Add("maxLength",std::to_string(GDALExtendedDataTypeGetMaxStringLength(type.handle)));out.Add("subType",static_cast<int>(subType));}
     else {out.Add("kind","compound");out.Add("name",GDALExtendedDataTypeGetName(type.handle));CPLJSONArray fields;for(size_t i=0;i<type.children.size();++i){CPLJSONObject f;f.Add("name",type.names[i]);f.Add("type",mdSchema(*type.children[i]));fields.Add(f);}out.Add("components",fields);}
     return out;
 }

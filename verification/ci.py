@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from jvm_binaries import JVM_BINARIES, host_binary
 from publication_versions import ANDROID_ENGINE, ENGINE_COORDINATES, ENGINE_TARGETS
@@ -24,6 +25,8 @@ PLATFORMS = {'macosArm64':'macos-arm64','linuxX64':'linux-amd64',
 COMMAND_TIMEOUT = None
 COMMAND_EVIDENCE = None
 WINDOWS_COLUMN_DIAGNOSTICS = False
+WINDOWS_NATIVE_DIAGNOSTICS = False
+NATIVE_DIAGNOSTIC_BUDGET = None
 
 def run(*args, env=None, windows_column_diagnostics=False, windows_column_dll_sha256=None):
     if COMMAND_TIMEOUT is not None:
@@ -57,6 +60,11 @@ def consumer(target, *options):
     # Let the consumer's finally blocks retain XML and restore hidden producer
     # paths before the outer command deadline terminates its Python process.
     diagnostic_options = ['--command-timeout-seconds', max(1, COMMAND_TIMEOUT - 60)] if COMMAND_TIMEOUT is not None else []
+    if COMMAND_TIMEOUT is not None:
+        reserve = min(15, COMMAND_TIMEOUT / 4)
+        diagnostic_options += ['--completion-deadline-monotonic', time.monotonic() + COMMAND_TIMEOUT - reserve]
+    if WINDOWS_NATIVE_DIAGNOSTICS and target == 'mingwX64':
+        diagnostic_options += ['--windows-native-consumer-diagnostics', '--native-diagnostic-budget-bytes', NATIVE_DIAGNOSTIC_BUDGET]
     run(sys.executable, ROOT/'verification/consumer.py', '--target', target, '--no-publish', '--repo', REPO, *diagnostic_options, *options)
 
 def stage(name, platforms=(), targets=(), include_root=False, include_tests=False, archive_format='gzip'):
@@ -87,6 +95,7 @@ def stage(name, platforms=(), targets=(), include_root=False, include_tests=Fals
 
 def main():
     global COMMAND_TIMEOUT, COMMAND_EVIDENCE, WINDOWS_COLUMN_DIAGNOSTICS
+    global WINDOWS_NATIVE_DIAGNOSTICS, NATIVE_DIAGNOSTIC_BUDGET
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('target', choices=[*PLATFORMS,'web','android-arm64-v8a','aggregate','linuxArm64-run'])
     p.add_argument('--build-engine-only',action='store_true',help='Build the native engine before starting a simulator or running Kotlin tests')
@@ -94,6 +103,10 @@ def main():
                    help='Bound each child command and retain output under verification/results/ci-commands-TARGET')
     p.add_argument('--windows-column-diagnostics', action='store_true',
                    help='Capture owned native/Java stacks and bound stalled source JVM column reads')
+    p.add_argument('--windows-native-consumer-diagnostics', action='store_true',
+                   help='Retain pre-run Native consumer identity and bounded owned-process stacks')
+    p.add_argument('--native-diagnostic-budget-bytes', type=int,
+                   help='Explicit total Native diagnostic ceiling, at most512MiB')
     p.add_argument('--archive-format', choices=['gzip', 'xz'], default='gzip',
                    help='Compression of staged CI transport archives (legacy default: gzip)')
     p.add_argument('--ios-device');a=p.parse_args();target=a.target
@@ -101,6 +114,15 @@ def main():
         if os.name != 'nt' or target != 'mingwX64' or a.build_engine_only or a.command_timeout_seconds is None:
             p.error('--windows-column-diagnostics requires a bounded Windows mingwX64 source-test command')
         WINDOWS_COLUMN_DIAGNOSTICS = True
+    if a.windows_native_consumer_diagnostics:
+        if os.name != 'nt' or target != 'mingwX64' or a.build_engine_only or a.command_timeout_seconds is None:
+            p.error('Native consumer diagnostics require a bounded Windows mingwX64 test command')
+        from native_consumer_diagnostics import valid_budget
+        try: NATIVE_DIAGNOSTIC_BUDGET = valid_budget(a.native_diagnostic_budget_bytes)
+        except ValueError as error: p.error(str(error))
+        WINDOWS_NATIVE_DIAGNOSTICS = True
+    elif a.native_diagnostic_budget_bytes is not None:
+        p.error('A Native diagnostic budget requires --windows-native-consumer-diagnostics')
     if a.command_timeout_seconds is not None:
         if a.command_timeout_seconds <= 0:p.error('--command-timeout-seconds must be positive')
         COMMAND_TIMEOUT = a.command_timeout_seconds

@@ -16,6 +16,11 @@ internal data class DriverProfileRuntimeFixture(
 
 internal expect fun driverProfileFixtureEnvironment(name: String): String?
 
+/** Test-only presence observer for this fixture's unique regular .nc output paths.
+ * Native follows links; it does not establish dangling-symlink absence.
+ */
+internal expect fun driverProfileFixturePathExists(path: String): Boolean
+
 // Capture one immutable endpoint set, including cleanup connections, for this process.
 internal val driverProfileRuntimeFixture: DriverProfileRuntimeFixture by lazy {
     if (!@RUNTIME_FIXTURES_REQUIRED@) {

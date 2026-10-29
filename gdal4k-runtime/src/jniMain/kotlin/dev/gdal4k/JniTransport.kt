@@ -29,11 +29,12 @@ internal actual suspend fun createTransport(options: GdalOptions): GdalTransport
     object : GdalTransport {
         private val binaryVersion = try { bridge.binaryVersion() } catch (_: UnsatisfiedLinkError) { 0 }
         override val supportsHttpInputPolicy = try { bridge.httpInputVersion() == 1 } catch (_: UnsatisfiedLinkError) { false }
-        override val supportsBinaryRaster = binaryVersion in 1..5
-        override val supportsBinaryCoordinates = binaryVersion in 2..5
-        override val supportsBinaryColumns = binaryVersion in 3..5
-        override val supportsBinaryFiles = binaryVersion in 4..5
-        override val supportsBinaryMD = binaryVersion == 5
+        override val supportsBinaryRaster = binaryVersion in 1..6
+        override val supportsBinaryCoordinates = binaryVersion in 2..6
+        override val supportsBinaryColumns = binaryVersion in 3..6
+        override val supportsBinaryFiles = binaryVersion in 4..6
+        override val supportsBinaryMD = binaryVersion in 5..6
+        override val supportsMDJsonStringSubtype = binaryVersion == 6
         private var closed = false
         private val inputs = JniInputs({ bridge.mount(handle, it) }, bridge::unmount)
         @Synchronized private fun callNow(request: String, attachment: Any?, control: Long = 0): String {

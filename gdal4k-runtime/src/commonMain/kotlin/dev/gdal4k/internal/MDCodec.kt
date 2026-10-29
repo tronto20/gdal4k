@@ -7,6 +7,10 @@ internal fun RuntimeHandle.encodeMDType(type: MDDataType): JsonElement = buildJs
     when (type) {
         is MDDataType.Numeric -> { put("kind", "numeric"); put("type", type.dataType) }
         is MDDataType.Text -> { put("kind", "text"); put("maxLength", encode(type.maxLength)) }
+        is MDDataType.JsonText -> {
+            check(engine.supportsMDJsonStringSubtype) { "JSON string subtype requires engine protocol 6" }
+            put("kind", "text"); put("maxLength", encode(type.maxLength)); put("subType", 1)
+        }
         is MDDataType.Compound -> {
             put("kind", "compound"); put("name", encode(type.name))
             put("components", JsonArray(type.components.map { c -> buildJsonObject {
@@ -18,7 +22,18 @@ internal fun RuntimeHandle.encodeMDType(type: MDDataType): JsonElement = buildJs
 internal fun decodeMDType(element: JsonElement): MDDataType = element.jsonObject.let { t ->
     when (t.getValue("kind").jsonPrimitive.content) {
         "numeric" -> MDDataType.Numeric(t.getValue("type").jsonPrimitive.int)
-        "text" -> MDDataType.Text(t.getValue("maxLength").jsonPrimitive.content.toLong())
+        "text" -> {
+            val length = t.getValue("maxLength").jsonPrimitive.content.toLong()
+            val subtype = t["subType"]?.let {
+                // intOrNull accepts exponent notation such as 1e0. The wire
+                // field is an actual JSON integer, matching CPL's native type check.
+                require(it is JsonPrimitive && !it.isString && it.content in listOf("0", "-0", "1")) {
+                    "Unsupported GDAL string subtype"
+                }
+                if (it.content == "1") 1 else 0
+            } ?: 0
+            if (subtype == 1) MDDataType.JsonText(length) else MDDataType.Text(length)
+        }
         "compound" -> MDDataType.Compound(t.getValue("name").jsonPrimitive.content, t.getValue("components").jsonArray.map { c ->
             c.jsonObject.let { MDComponent(it.getValue("name").jsonPrimitive.content, decodeMDType(it.getValue("type"))) }
         })

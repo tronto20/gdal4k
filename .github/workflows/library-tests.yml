@@ -30,6 +30,7 @@ jobs:
       - run: |
           python -m unittest discover -s verification -p test_publish.py
           python -m unittest discover -s verification -p test_consumer_evidence.py
+          python -m unittest discover -s verification -p test_consumer_retention_phases.py
           python -m unittest discover -s verification -p test_command_evidence.py
           python -m unittest discover -s verification -p test_embed_data.py
           python -m unittest discover -s verification -p test_arrow_ipc_toolchain.py
@@ -62,6 +63,9 @@ jobs:
           python -m unittest discover -s verification -p test_postgis_profile_report.py
           python -m unittest discover -s verification -p test_windows_process.py
           python -m unittest discover -s verification -p test_windows_native_stall.py
+          python -m unittest discover -s verification -p test_windows_owned_members.py
+          python -m unittest discover -s verification -p test_windows_dump_quota.py
+          python -m unittest discover -s verification -p test_native_consumer_diagnostics.py
           python -m unittest discover -s verification -p test_windows_pe.py
           python -m unittest discover -s verification -p test_windows_winsock_link.py
           python -m unittest discover -s verification -p test_http_fixture_windows.py
@@ -99,6 +103,23 @@ jobs:
           restore-keys: |
             engine-${{ matrix.target }}-${{ hashFiles('gdal4k-engine/ports/**', 'gdal4k-engine/engine/**', 'gdal4k-engine/tools/toolchains.py') }}-
             engine-${{ matrix.target }}-
+      - name: Prepare Windows helper test tools
+        if: matrix.target == 'mingwX64'
+        run: python -c "import sys; sys.path.insert(0, 'verification'); from ci import gradle; gradle(':gdal4k:compileKotlinMingwX64', 'prepareNativeBuildTools')"
+      - name: Check Windows verification helpers before GDAL build
+        if: matrix.target == 'mingwX64'
+        timeout-minutes: 180
+        run: |
+          python -m unittest discover -s verification -p test_embed_data.py
+          python -m unittest discover -s verification -p test_command_evidence.py
+          python -m unittest discover -s verification -p test_windows_process.py
+          python -m unittest discover -s verification -p test_windows_pe.py
+          python -m unittest discover -s verification -p test_windows_winsock_link.py
+          python -m unittest discover -s verification -p test_windows_native_stall.py
+          python -m unittest discover -s verification -p test_consumer_retention_phases.py
+          python -m unittest discover -s verification -p test_windows_owned_members.py
+          python -m unittest discover -s verification -p test_windows_dump_quota.py
+          python -m unittest discover -s verification -p test_native_consumer_diagnostics.py
       - name: Build GDAL and codecs
         run: python verification/ci.py '${{ matrix.target }}' --build-engine-only
       # First boot runs Apple's data migration before tests can start. Intel
@@ -117,14 +138,8 @@ jobs:
         timeout-minutes: ${{ matrix.target == 'mingwX64' && 180 || 240 }}
         run: |
           if [ '${{ matrix.target }}' = mingwX64 ]; then
-            python -m unittest discover -s verification -p test_embed_data.py
-            python -m unittest discover -s verification -p test_command_evidence.py
-            python -m unittest discover -s verification -p test_windows_process.py
-            python -m unittest discover -s verification -p test_windows_pe.py
-            python -m unittest discover -s verification -p test_windows_winsock_link.py
-            python -m unittest discover -s verification -p test_windows_native_stall.py
             python verification/winpthread_handoff_probe.py --output verification/results/ci-commands-mingwX64/winpthread-handoff --run
-            python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics --archive-format xz
+            python verification/ci.py mingwX64 --command-timeout-seconds 3600 --windows-column-diagnostics --windows-native-consumer-diagnostics --native-diagnostic-budget-bytes 536870912 --archive-format xz
           else
             python verification/ci.py '${{ matrix.target }}' --archive-format xz ${IOS_DEVICE:+--ios-device "$IOS_DEVICE"}
           fi

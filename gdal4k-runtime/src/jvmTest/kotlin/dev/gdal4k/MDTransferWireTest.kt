@@ -9,6 +9,82 @@ import kotlin.test.*
 class MDTransferWireTest {
     private fun request(type: String, id: String, method: String, parameters: String) =
         """{"op":"runtime","args":{"type":"$type","handle":"$id","method":"$method","parameters":$parameters}}"""
+    private suspend fun raw(transport: GdalTransport, type: String, id: String, method: String, parameters: String) =
+        Json.parseToJsonElement(transport.call(request(type, id, method, parameters))).jsonObject
+
+    @Test fun malformedStringSubtypesCannotAllocateArraysOrAttributes(): Unit = runBlocking {
+        val transport = createTransport(GdalOptions()); assertTrue(transport.supportsMDJsonStringSubtype)
+        val engine = RuntimeEngine(transport); val runtime = BundledGdalRuntime(engine)
+        try {
+            requireNotNull(runtime.getDriver("MEM")).use { driver ->
+                requireNotNull(driver.createMultidimensional("")).use { ds ->
+                    requireNotNull(ds.getRootGroup()).use { group ->
+                        requireNotNull(group.createArray("anchor", emptyList(), MDDataType.Text())).use { array ->
+                            requireNotNull(group.createAttribute("anchor", longArrayOf(), MDDataType.Text())).use { groupAttribute ->
+                                requireNotNull(array.createAttribute("anchor", longArrayOf(), MDDataType.Text())).use { arrayAttribute ->
+                                    val original = listOf(MDValue.Text(""" {"id":9007199254740993,"text":"雪\\n"} """))
+                                    assertTrue(array.writeValues(longArrayOf(), longArrayOf(), original))
+                                    assertTrue(groupAttribute.writeValues(original)); assertTrue(arrayAttribute.writeValues(original))
+                                    val groupId = (group as RuntimeHandle).runtimeId
+                                    val arrayId = (array as RuntimeHandle).runtimeId
+                                    val targets = listOf(
+                                        Triple("Group", groupId, "createArray_String_List_Dimension_MDDataType_List_String"),
+                                        Triple("Group", groupId, "createAttribute_String_LongArray_MDDataType_List_String"),
+                                        Triple("MDArray", arrayId, "createAttribute_String_LongArray_MDDataType_List_String"))
+                                    for (subType in listOf("null", "true", "false", "1.0", "0.0", "1.25", "1e0", "0e0", "1E0", "-0e1", "\"1\"", "\"0\"", "-1", "2", "2147483648", "{}", "[]")) {
+                                        val leaf = """{"kind":"text","maxLength":"0","subType":$subType}"""
+                                        // The valid earlier component allocates an owned type before the nested failure.
+                                        val nested = """{"kind":"compound","name":"outer","components":[{"name":"json","type":{"kind":"text","maxLength":"0","subType":1}},{"name":"nested","type":{"kind":"compound","name":"inner","components":[{"name":"invalid","type":$leaf}]}}]}"""
+                                        for (schema in listOf(leaf, nested)) for ((owner, id, method) in targets) {
+                                            val reply = raw(transport, owner, id, method,
+                                                """{"name":"invalid","dimensions":[],"dataType":$schema,"options":[]}""")
+                                            assertNotNull(reply["error"], "$owner.$method accepted subtype $subType")
+                                            assertTrue(reply["allocatedHandles"]?.jsonArray.orEmpty().isEmpty())
+                                            assertEquals(listOf("anchor"), group.getArrayNames())
+                                            assertNull(group.getAttribute("invalid")); assertNull(array.getAttribute("invalid"))
+                                            assertEquals(original, array.readValues(longArrayOf(), longArrayOf()))
+                                            assertEquals(original, groupAttribute.readValues()); assertEquals(original, arrayAttribute.readValues())
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } finally { engine.close() }
+    }
+
+    @Test fun nativeStringSchemasReportLegacyExplicitAndNestedSubtypes(): Unit = runBlocking {
+        val transport = createTransport(GdalOptions()); assertTrue(transport.supportsMDJsonStringSubtype)
+        val engine = RuntimeEngine(transport); val runtime = BundledGdalRuntime(engine)
+        try {
+            requireNotNull(runtime.getDriver("MEM")).use { driver ->
+                requireNotNull(driver.createMultidimensional("")).use { ds ->
+                    requireNotNull(ds.getRootGroup()).use { group ->
+                        val plain = """{"kind":"text","maxLength":"0","subType":0}"""
+                        val json = """{"kind":"text","maxLength":"32","subType":1}"""
+                        val nested = """{"kind":"compound","name":"outer","components":[{"name":"plain","type":$plain},{"name":"nested","type":{"kind":"compound","name":"inner","components":[{"name":"json","type":$json}]}}]}"""
+                        val schemas = listOf("""{"kind":"text","maxLength":"0"}""" to plain, plain to plain, json to json, nested to nested)
+                        for ((index, schemasForCase) in schemas.withIndex()) {
+                            val (schema, expected) = schemasForCase
+                            val created = raw(transport, "Group", (group as RuntimeHandle).runtimeId,
+                                "createArray_String_List_Dimension_MDDataType_List_String",
+                                """{"name":"schema$index","dimensions":[],"dataType":$schema,"options":[]}""")
+                            assertNull(created["error"])
+                            val id = created.getValue("result").jsonObject.getValue("value").jsonPrimitive.content
+                            try {
+                                val reply = raw(transport, "MDArray", id, "getExtendedDataType", "{}")
+                                assertNull(reply["error"])
+                                assertEquals(Json.parseToJsonElement(expected), reply.getValue("result").jsonObject.getValue("value"))
+                            } finally { assertNull(raw(transport, "Handle", id, "close", "{}")["error"]) }
+                        }
+                    }
+                }
+            }
+        } finally { engine.close() }
+    }
+
     @Test fun malformedNumericFramesCannotPartiallyOverwriteArrayOrAttribute(): Unit = runBlocking {
         val transport = createTransport(GdalOptions()); assertTrue(transport.supportsBinaryMD)
         val engine = RuntimeEngine(transport); val runtime = BundledGdalRuntime(engine)

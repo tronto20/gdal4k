@@ -19,8 +19,9 @@ these are not missing APIs to reimplement.
 | 6 | Valid-data raster footprint | Merged in PR35: valid-mask/NoData polygons, holes, memory/direct outputs, actual source/published runtime and functional diagnostics; full exact-HEAD CI and tested HEAD main ancestry verified |
 | 7 | Raster tile index | Merged in PR36: explicit affine extent/location index, full current source/published runtime and diagnostics; exact-HEAD primary13/profiles7 and tested HEAD main ancestry verified |
 | 8 | Multidimensional conversion | Merged in PR37: checked GDALMultiDimTranslate selection/type/shape/metadata semantics, MEM/GTiff and scientific OS NC4 fixtures, actual source/published consumers and functional diagnostics; full exact-HEAD CI and tested HEAD main ancestry verified |
+| 9 | Multidimensional JSON string subtype | In progress: additive JsonText schema, protocol 6 negotiation, strict refusal and MEM/lifetime/independent-copy fixtures; local Linux v6 and precompiled Text client controls pass, fresh published/platform verification pending |
 
-These eight workstreams are milestones toward the broader [full GDAL support goal](GDAL_SUPPORT.md),
+These workstreams are milestones toward the broader [full GDAL support goal](GDAL_SUPPORT.md),
 not its completion definition. JVM on its four current OS/ABIs is the first support priority;
 coverage on the other existing targets follows with actual platform execution evidence.
 Isolated optional driver profiles do not establish a combined JVM distribution or complete
@@ -29,8 +30,11 @@ GDAL API/driver support.
 The Linux x64 combined dependency profile was verified and merged in PR38, followed
 by macOS ARM64 in PR40 and Linux ARM64 in PR41 with actual source/published consumers
 and owned PostGIS cleanup. Linux ARM64 retains separate x64 cross-build and actual
-ARM64 execution phases. Windows x64 combined implementation is in progress; its
-producer/package/runtime acceptance and the remaining JVM API/driver matrix are open.
+ARM64 execution phases. Windows x64 combined was verified and merged in PR42,
+including source/published consumers, Schannel revocation, owned PostGIS cleanup
+and Winsock2 imports. PR43's lossless CI archive compression was verified and
+merged; its tested head is an ancestor of fetched main. The remaining JVM
+API/driver matrix stays open.
 
 Performance claims require identical-input/environment speed, cumulative allocation and OS peak
 RSS diagnostics with raw logs/hashes. Functional additions require correctness/error/lifetime
