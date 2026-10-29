@@ -1706,6 +1706,9 @@
     if(type=="MDArray" && method=="getDimensions") {
         size_t n=0;auto dims=GDALMDArrayGetDimensions(static_cast<GDALMDArrayH>(h),&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);
     }
+    if(type=="MDArray" && method=="transpose_IntArray") {
+        return mdTranspose(r,static_cast<GDALMDArrayH>(h),a,id);
+    }
     if(type=="MDArray" && method=="getSpatialRef") {
         CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(static_cast<GDALMDArrayH>(h));if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);
     }

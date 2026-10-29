@@ -186,6 +186,42 @@ inline CPLJSONObject mdBinaryGet(const MDType& type,const char* data,size_t coun
     }
     CPLJSONObject metadata,result;metadata.Add("binaryMDValues",true);metadata.Add("count",static_cast<int>(count));result.Add("value",metadata);return result;
 }
+inline CPLJSONObject mdTranspose(Runtime& runtime, GDALMDArrayH source,
+                                const CPLJSONObject& args, unsigned long long parent) {
+    auto mapping = args["newAxisToOldAxis"];
+    require(mapping.GetType() == CPLJSONObject::Type::Array, "Transpose requires an axis map");
+    std::vector<int> axes;
+    for (const auto& item : mapping.ToArray()) {
+        const auto kind = item.GetType();
+        require(kind == CPLJSONObject::Type::Integer || kind == CPLJSONObject::Type::Long,
+                "Transpose axes must be signed integers");
+        const auto axis = item.ToLong();
+        require(axis >= INT_MIN && axis <= INT_MAX, "Transpose axis exceeds Int range");
+        axes.push_back(static_cast<int>(axis));
+    }
+    require(runtime.next < std::numeric_limits<unsigned long long>::max(), "Runtime handle IDs exhausted");
+    CPLErrorReset();
+    // GDAL's C wrapper accesses the pointer only when the count is nonzero.
+    auto view = GDALMDArrayTranspose(source, axes.size(), axes.empty() ? nullptr : axes.data());
+    struct OwnedView {
+        Runtime& runtime;
+        GDALMDArrayH pointer;
+        unsigned long long firstHandle;
+        ~OwnedView() {
+            if (!pointer) return;
+            // result() may insert the entry before its JSON result is constructed.
+            // On a registration/encoding exception, detach it before releasing once.
+            auto entry = runtime.handles.find(runtime.next);
+            if (runtime.next > firstHandle && entry != runtime.handles.end() &&
+                entry->second.pointer == pointer) runtime.handles.erase(entry);
+            GDALMDArrayRelease(pointer);
+        }
+    } owned{runtime, view, runtime.next};
+    fileEnsure(view != nullptr && CPLGetLastErrorType() < CE_Failure, "Cannot transpose multidimensional array");
+    auto result = runtime.result(view, "MDArray", true, parent);
+    owned.pointer = nullptr;
+    return result;
+}
 inline CPLJSONObject createExtendedArray(Runtime& r,GDALGroupH group,const CPLJSONObject& a,unsigned long long id) {
     auto type=mdType(a.GetObj("dataType"));std::vector<GDALDimensionH> dims;for(auto d:a.GetArray("dimensions"))dims.push_back(static_cast<GDALDimensionH>(r.arg(d)));
     Strings opts(a.GetArray("options"));return r.result(GDALGroupCreateMDArray(group,a.GetString("name").c_str(),dims.size(),dims.data(),type->handle,opts.data()),"MDArray",true,id);

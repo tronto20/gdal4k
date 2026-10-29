@@ -122,6 +122,7 @@ private object DriverProfileFixtures {
         }
         scientificConversion(r, name)
         scientificArrayMetadata(r, name)
+        scientificArrayTranspose(r, name)
     }
 
     private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
@@ -456,6 +457,57 @@ private object DriverProfileFixtures {
             }
             r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
                 requireNotNull(dataset.getRootGroup()).use { verify(it) }
+            }
+        }
+    }
+
+    /** Reopened, compressed NC4 data retains typed metadata through a lazy transpose. */
+    private suspend fun scientificArrayTranspose(r: GdalRuntime, name: String) {
+        val samples = listOf(-9999, 0, 2, 4, 6, 8).map { MDValue.Numeric(it) }
+        val reordered = listOf(-9999, 4, 0, 6, 2, 8).map { MDValue.Numeric(it) }
+        ownedFile(r, "netCDF", "$name-md-transpose.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 2)).use { y ->
+                        requireNotNull(group.createDimension("x", 3)).use { x ->
+                            requireNotNull(group.createArray("values", listOf(y, x), GdalDataType.Int16,
+                                options = listOf("BLOCKSIZE=1,2", "COMPRESS=DEFLATE", "ZLEVEL=1"))).use { array ->
+                                assertTrue(array.setNoDataValue(MDValue.Numeric(-9999)))
+                                requireNotNull(array.createAttribute("scale_factor", longArrayOf(), MDDataType.Numeric(GdalDataType.Float32))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(0.5))))
+                                }
+                                requireNotNull(array.createAttribute("add_offset", longArrayOf(), MDDataType.Numeric(GdalDataType.Float64))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(10.0))))
+                                }
+                                assertTrue(array.writeValues(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                            }
+                        }
+                    }
+                }
+            }
+            // The writer has closed; this independent read-only dataset supplies the view.
+            r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.openArray("values")).use { array ->
+                        assertEquals(listOf(1uL, 2uL), array.getBlockSize())
+                        assertTrue("COMPRESS=DEFLATE" in array.getStructuralInfo())
+                        assertEquals(samples, array.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                        array.transpose(intArrayOf(1, 0)).use { view ->
+                            val sizes = mutableListOf<Long>()
+                            for (dimension in view.getDimensions()) dimension.use { sizes.add(it.getSize()) }
+                            assertContentEquals(longArrayOf(3, 2), sizes.toLongArray())
+                            assertEquals(MDDataType.Numeric(GdalDataType.Int16), view.getExtendedDataType())
+                            assertEquals(listOf(2uL, 1uL), view.getBlockSize())
+                            assertEquals(MDValue.Numeric(-9999), view.getNoDataValue())
+                            assertEquals(MDNumericMetadata(0.5, GdalDataType.Float32), view.getScaleEx())
+                            assertEquals(MDNumericMetadata(10.0, GdalDataType.Float64), view.getOffsetEx())
+                            assertEquals(reordered, view.readValues(longArrayOf(0, 0), longArrayOf(3, 2)))
+                            dataset.close()
+                            assertFails { view.getName() }
+                            assertFails { view.readValues(longArrayOf(0, 0), longArrayOf(3, 2)) }
+                        }
+                    }
+                }
             }
         }
     }

@@ -12,6 +12,7 @@ vcpkg_from_github(
         sqlite3.diff
         target-is-valid.patch
         separate-gpkg-arrow-handoff.patch
+        transpose-signed-srs-axis-mapping.patch
 )
 vcpkg_find_acquire_program(PYTHON3)
 vcpkg_execute_required_process(
