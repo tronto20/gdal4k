@@ -391,6 +391,65 @@ def inventory_summary(inventory):
 
 
 _LAST_SELF_CHECK = None
+_SELF_CHECK_READY_PREFIX = b'gdal4k-ready-v1:'
+_SELF_CHECK_READY_MAX_BYTES = 60
+
+
+def _self_check_ready_marker(pid, nonce):
+    if (type(pid) is not int or not 0 < pid <= 0xffffffff
+            or type(nonce) is not str or len(nonce) != 32
+            or any(c not in '0123456789abcdef' for c in nonce)):
+        raise ValueError('Invalid owned self-check readiness identity')
+    # At most60 bytes, including the largest Win32 PID and the final newline.
+    marker = _SELF_CHECK_READY_PREFIX + nonce.encode('ascii') + b':' + str(pid).encode('ascii') + b'\n'
+    if len(marker) > _SELF_CHECK_READY_MAX_BYTES:
+        raise ValueError('Owned self-check readiness marker exceeds its protocol bound')
+    return marker
+
+
+def _self_check_child_code(nonce):
+    _self_check_ready_marker(1, nonce)  # Validate before starting any process.
+    prefix = _SELF_CHECK_READY_PREFIX + nonce.encode('ascii') + b':'
+    return ('import os,sys,time\n'
+            f'marker={prefix!r} + str(os.getpid()).encode("ascii") + b"\\n"\n'
+            'fd=sys.stdout.fileno()\n'
+            'if os.write(fd,marker)!=len(marker): raise OSError("Incomplete readiness marker write")\n'
+            'os.close(fd)\n'
+            'time.sleep(30)\n')
+
+
+def _wait_self_check_ready(owned, nonce):
+    """Wait for this owned child's script, bounded by its enclosing20s Job gate.
+
+    Identity/Job checks alone can succeed before the newly resumed process has
+    initialized its loader and Python runtime. This pipe is private to the new
+    child. Read only the fixed-size marker and one EOF byte; the worker's existing
+    outer deadline kills its whole owned Job if a child does not finish writing.
+    """
+    marker = _self_check_ready_marker(owned.identity['pid'], nonce)
+    pipe = owned.process.stdout
+    if pipe is None:
+        raise RuntimeError('Owned self-check readiness pipe is missing')
+    received = bytearray()
+    while len(received) < len(marker):
+        if owned.process.poll() is not None:
+            raise RuntimeError('Owned self-check target exited before readiness')
+        chunk = pipe.read(len(marker) - len(received))
+        if not isinstance(chunk, bytes) or not chunk:
+            raise RuntimeError('Owned self-check readiness ended before its complete marker')
+        if len(chunk) > len(marker) - len(received):
+            raise RuntimeError('Owned self-check readiness exceeded its marker bound')
+        received.extend(chunk)
+        if received != marker[:len(received)]:
+            raise RuntimeError('Owned self-check readiness marker differs')
+    if pipe.read(1) != b'':
+        raise RuntimeError('Owned self-check readiness contains trailing data')
+    if owned.process.poll() is not None:
+        raise RuntimeError('Owned self-check target exited after readiness')
+    return dict(protocol='owned-private-pipe-v1', readyBeforeFirstDump=True,
+                targetPid=owned.identity['pid'], markerBytes=len(marker),
+                markerSha256=hashlib.sha256(marker).hexdigest(),
+                markerAndEofObserved=True, enclosingWorkerDeadlineCeilingSeconds=20)
 
 
 def check_dump_directory(path):
@@ -421,12 +480,14 @@ def _self_check_worker(directory):
     from windows_process import OwnedProcess, _api, private_directory, private_file, same_identity
     directory = Path(directory); private_directory(directory)
     api = _api()
-    owned = OwnedProcess([sys.executable, '-c', 'import time; time.sleep(30)'],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    nonce = os.urandom(16).hex()
+    owned = OwnedProcess([sys.executable, '-c', _self_check_child_code(nonce)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     handle = None
     paths = [directory / 'success.dmp', directory / 'quota-failure.dmp']
     primary = None
     try:
+        readiness = _wait_self_check_ready(owned, nonce)
         handle = api.check(api.k.OpenProcess(0x400 | 0x10 | 0x100000, False, owned.identity['pid']))
         if (api.process_id(handle) != owned.identity['pid'] or not api.in_job(handle, owned.job)
                 or api.exited(handle) or not same_identity(api.identity_from_handle(handle, owned.identity['pid']), owned.identity)):
@@ -452,6 +513,7 @@ def _self_check_worker(directory):
                     success=success, failure=failed, successfulDumpBytes=paths[0].stat().st_size,
                     successDumpDirectory=success_directory,
                     rejectedDumpBytes=paths[1].stat().st_size, callbackLayoutProjection=callback_layout(),
+                    targetReadiness=readiness,
                     compiledSdkAbiVerified=False, fullMemoryRequested=False)
     except BaseException as error:
         primary = error
@@ -466,6 +528,8 @@ def _self_check_worker(directory):
                                              message=str(error)[:512]))
         if handle:
             cleanup('close-read-handle', lambda: api.close(handle))
+        if owned.process.stdout is not None:
+            cleanup('close-readiness-pipe', owned.process.stdout.close)
         cleanup('terminate-owned-tree', owned.terminate_tree)
         cleanup('wait-owned-child', lambda: owned.process.wait(timeout=1))
         cleanup('close-owned-job', lambda: owned.close_before(time.monotonic() + 1))

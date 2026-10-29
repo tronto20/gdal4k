@@ -1,5 +1,6 @@
 """Portable writer-quota controls; actual Windows callback ABI is separate."""
 import ctypes as C
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -8,7 +9,9 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -408,6 +411,192 @@ class CallbackQuotaTests(unittest.TestCase):
         function.assert_not_called()
 
 
+class SelfCheckReadinessTests(unittest.TestCase):
+    """Portable protocol and mocked-worker controls, not Windows dump evidence."""
+    nonce = 'a5' * 16
+
+    @contextmanager
+    def worker(self, pipe, writer=None, before_write=None):
+        owned = MagicMock()
+        owned.identity = dict(pid=123, creationTime100ns=456, imagePath=r'C:\owned\python.exe')
+        owned.job = 777
+        owned.process.stdout = pipe
+        owned.process.poll.return_value = None
+        api = MagicMock()
+        api.k.OpenProcess.return_value = 101
+        api.check.side_effect = lambda value: value
+        api.process_id.return_value = 123
+        api.in_job.return_value = True
+        api.exited.return_value = False
+        api.identity_from_handle.return_value = owned.identity
+        def synthetic_dump(dbghelp, handle, pid, output, *, limit):
+            if before_write is not None: before_write()
+            if limit == 16:
+                error = RuntimeError('synthetic quota refusal')
+                error.quota = dict(callbackError=dict(type='QuotaExceeded'))
+                raise error
+            output.write(b'MDMP' + b'x' * 28)
+            return dict(syntheticPortableTest=True)
+        writer = MagicMock(side_effect=synthetic_dump if writer is None else writer)
+        with patch.object(quota, 'os', SimpleNamespace(name='nt', urandom=lambda size: b'\xa5' * size)), \
+             patch.object(windows, 'OwnedProcess', return_value=owned) as start, \
+             patch.object(windows, '_api', return_value=api), \
+             patch.object(windows, 'private_directory'), patch.object(windows, 'private_file'), \
+             patch.object(quota.C, 'WinDLL', create=True), \
+             patch.object(quota, 'write_minidump', writer), \
+             patch.object(quota, 'check_dump_directory', return_value={}):
+            yield owned, api, writer, start
+
+    def test_delayed_partial_marker_and_eof_gate_both_dump_attempts(self):
+        marker = quota._self_check_ready_marker(123, self.nonce)
+        waiting, release = threading.Event(), threading.Event()
+        class Pipe:
+            def __init__(self): self.calls = []; self.closed = self.eof = False
+            def read(self, count):
+                self.calls.append(count)
+                if len(self.calls) == 1: return marker[:7]
+                if len(self.calls) == 2:
+                    waiting.set()
+                    if not release.wait(2): raise TimeoutError('test did not release readiness remainder')
+                    return marker[7:]
+                self.eof = True
+                return b''
+            def close(self): self.closed = True
+        pipe = Pipe(); results = []; errors = []
+        with tempfile.TemporaryDirectory() as temporary, \
+             self.worker(pipe, before_write=lambda: self.assertTrue(pipe.eof)) as (owned, api, writer, start):
+            def run():
+                try: results.append(quota._self_check_worker(temporary))
+                except BaseException as error: errors.append(error)
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                self.assertTrue(waiting.wait(1))
+                writer.assert_not_called()
+                api.k.OpenProcess.assert_not_called()
+                release.set(); thread.join(2)
+                self.assertFalse(thread.is_alive())
+                self.assertFalse(errors, errors)
+                self.assertEqual(2, writer.call_count)
+                self.assertTrue(all(0 < count <= quota._SELF_CHECK_READY_MAX_BYTES for count in pipe.calls))
+                self.assertTrue(results[0]['targetReadiness']['readyBeforeFirstDump'])
+                self.assertTrue(results[0]['targetReadiness']['markerAndEofObserved'])
+                self.assertFalse(results[0]['compiledSdkAbiVerified'])
+                self.assertEqual(subprocess.PIPE, start.call_args.kwargs['stdout'])
+                owned.terminate_tree.assert_called_once()
+                owned.close_before.assert_called_once()
+                self.assertTrue(pipe.closed)
+            finally:
+                release.set(); thread.join(2)
+
+    def test_eof_wrong_nonce_wrong_pid_and_trailing_bytes_refuse_before_dump(self):
+        marker = quota._self_check_ready_marker(123, self.nonce)
+        for payload in [b'', marker[:-1], quota._self_check_ready_marker(123, 'b' * 32),
+                        quota._self_check_ready_marker(124, self.nonce), marker + b'extra']:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temporary:
+                pipe = io.BytesIO(payload)
+                with self.worker(pipe) as (owned, api, writer, _):
+                    with self.assertRaisesRegex(RuntimeError, 'readiness'):
+                        quota._self_check_worker(temporary)
+                    writer.assert_not_called(); api.k.OpenProcess.assert_not_called()
+                    self.assertTrue(pipe.closed)
+                    owned.terminate_tree.assert_called_once()
+                    owned.process.wait.assert_called_once_with(timeout=1)
+                    owned.close_before.assert_called_once()
+
+    def test_target_exit_before_or_after_marker_refuses_before_dump(self):
+        for polls in [[9], [None, 9]]:
+            with self.subTest(polls=polls), tempfile.TemporaryDirectory() as temporary:
+                pipe = io.BytesIO(quota._self_check_ready_marker(123, self.nonce))
+                with self.worker(pipe) as (owned, api, writer, _):
+                    owned.process.poll.side_effect = polls
+                    with self.assertRaisesRegex(RuntimeError, 'target exited'):
+                        quota._self_check_worker(temporary)
+                    writer.assert_not_called(); api.k.OpenProcess.assert_not_called()
+                    self.assertTrue(pipe.closed)
+
+    def test_marker_bound_includes_maximum_win32_pid(self):
+        marker = quota._self_check_ready_marker(0xffffffff, self.nonce)
+        self.assertEqual(60, len(marker))
+        self.assertEqual(60, quota._SELF_CHECK_READY_MAX_BYTES)
+        self.assertTrue(marker.endswith(b':4294967295\n'))
+        for pid in [0, -1, True, 0x100000000]:
+            with self.subTest(pid=pid), self.assertRaises(ValueError):
+                quota._self_check_ready_marker(pid, self.nonce)
+
+    def test_ready_marker_cannot_bypass_held_process_identity_checks(self):
+        for field in ['pid', 'creation', 'job', 'exited']:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                pipe = io.BytesIO(quota._self_check_ready_marker(123, self.nonce))
+                with self.worker(pipe) as (owned, api, writer, _):
+                    if field == 'pid': api.process_id.return_value = 124
+                    if field == 'creation': api.identity_from_handle.return_value = dict(owned.identity, creationTime100ns=999)
+                    if field == 'job': api.in_job.return_value = False
+                    if field == 'exited': api.exited.return_value = True
+                    with self.assertRaisesRegex(ValueError, 'not the held owned child'):
+                        quota._self_check_worker(temporary)
+                    writer.assert_not_called()
+                    api.close.assert_called_once_with(101)
+
+    def test_pipe_close_failure_preserves_original_writer_error_and_quota(self):
+        class Pipe(io.BytesIO):
+            def close(self):
+                super().close()
+                raise OSError('readiness pipe fixture close failure')
+        primary = RuntimeError('original dump failure'); primary.quota = dict(apiLastErrorHex='0x80070018')
+        def fail(*args, **kwargs): raise primary
+        with tempfile.TemporaryDirectory() as temporary:
+            pipe = Pipe(quota._self_check_ready_marker(123, self.nonce))
+            with self.worker(pipe, fail) as (owned, _, writer, _):
+                with self.assertRaises(RuntimeError) as caught: quota._self_check_worker(temporary)
+                self.assertIs(primary, caught.exception)
+                self.assertEqual('0x80070018', caught.exception.quota['apiLastErrorHex'])
+                self.assertEqual(['close-readiness-pipe'],
+                                 [row['stage'] for row in primary.selfCheckWorkerCleanupFailures])
+                self.assertTrue(pipe.closed); self.assertEqual(1, writer.call_count)
+                owned.terminate_tree.assert_called_once(); owned.close_before.assert_called_once()
+
+    def test_pipe_close_failure_refuses_otherwise_complete_check(self):
+        class Pipe(io.BytesIO):
+            def close(self):
+                super().close()
+                raise OSError('readiness pipe fixture close failure')
+        with tempfile.TemporaryDirectory() as temporary:
+            pipe = Pipe(quota._self_check_ready_marker(123, self.nonce))
+            with self.worker(pipe) as (owned, _, writer, _):
+                with self.assertRaisesRegex(RuntimeError, 'cleanup failed') as caught:
+                    quota._self_check_worker(temporary)
+                self.assertEqual(['close-readiness-pipe'],
+                                 [row['stage'] for row in caught.exception.selfCheckWorkerCleanupFailures])
+                self.assertTrue(pipe.closed); self.assertEqual(2, writer.call_count)
+                self.assertEqual([], list(Path(temporary).iterdir()))
+                owned.terminate_tree.assert_called_once(); owned.close_before.assert_called_once()
+
+    def test_actual_python_child_closes_os_pipe_after_exact_nonce_and_pid(self):
+        # Actual portable child/pipe protocol only; this does not invoke DbgHelp.
+        process = subprocess.Popen([sys.executable, '-c', quota._self_check_child_code(self.nonce)],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        owned = SimpleNamespace(process=process, identity=dict(pid=process.pid))
+        results = []; errors = []
+        def read():
+            try: results.append(quota._wait_self_check_ready(owned, self.nonce))
+            except BaseException as error: errors.append(error)
+        thread = threading.Thread(target=read, daemon=True)
+        try:
+            thread.start(); thread.join(5)
+            self.assertFalse(thread.is_alive(), 'Child marker must include actual OS pipe EOF before sleep')
+            self.assertFalse(errors, errors)
+            self.assertEqual(1, len(results))
+            self.assertTrue(results[0]['markerAndEofObserved'])
+            self.assertEqual(process.pid, results[0]['targetPid'])
+            self.assertIsNone(process.poll())
+            self.assertLessEqual(results[0]['markerBytes'], quota._SELF_CHECK_READY_MAX_BYTES)
+        finally:
+            if process.poll() is None: process.terminate()
+            process.wait(timeout=3)
+            thread.join(3); process.stdout.close()
+
+
 class MetadataQuotaTests(unittest.TestCase):
     def mocked_self_check(self, path, payload, returncode):
         owned = MagicMock()
@@ -478,6 +667,8 @@ class MetadataQuotaTests(unittest.TestCase):
         owned = MagicMock()
         owned.identity = dict(pid=123, creationTime100ns=456, imagePath=r'C:\owned\python.exe')
         owned.job = 777
+        owned.process.stdout = io.BytesIO(quota._self_check_ready_marker(123, 'a5' * 16))
+        owned.process.poll.return_value = None
         owned.terminate_tree.side_effect = OSError('terminate fixture failure')
         owned.process.wait.side_effect = subprocess.TimeoutExpired(['owned-child'], 1)
         owned.close_before.side_effect = OSError('close fixture failure')
@@ -489,7 +680,7 @@ class MetadataQuotaTests(unittest.TestCase):
         api.exited.return_value = False
         api.identity_from_handle.return_value = owned.identity
         api.close.side_effect = OSError('handle fixture failure')
-        with patch.object(quota, 'os', SimpleNamespace(name='nt')), \
+        with patch.object(quota, 'os', SimpleNamespace(name='nt', urandom=lambda size: b'\xa5' * size)), \
              patch.object(windows, 'OwnedProcess', return_value=owned), \
              patch.object(windows, '_api', return_value=api), \
              patch.object(windows, 'private_directory'), patch.object(windows, 'private_file'), \
@@ -699,6 +890,8 @@ class ActualWindowsCallbackQuotaTests(unittest.TestCase):
             self.assertTrue(value['actualWindowsOwnedChildSelfCheck'])
             self.assertTrue(value['success']['ioStartObserved'])
             self.assertTrue(value['success']['ioFinishObserved'])
+            self.assertTrue(value['targetReadiness']['readyBeforeFirstDump'])
+            self.assertTrue(value['targetReadiness']['markerAndEofObserved'])
             self.assertEqual('QuotaExceeded', value['failure']['callbackError']['type'])
             self.assertLessEqual(value['rejectedDumpBytes'], 16)
             self.assertFalse((path / 'success.dmp').exists())
