@@ -360,6 +360,32 @@ JSON 스키마 생성에는 protocol 6 엔진이 필요합니다. 구형 엔진�
 읽기·쓰기에 scale/offset을 자동 적용하지 않습니다. 기존 `getScale()`·`getOffset()`도
 계속 사용할 수 있습니다.
 
+### 다차원 배열 축 순서
+
+`MDArray.transpose(newAxisToOldAxis)`는 같은 데이터에 접근하는 지연 뷰를 반환합니다.
+출력 축마다 원본의 0부터 시작하는 축 번호를 지정하며, 원본 축은 각각 한 번씩
+포함해야 합니다. `-1`은 크기 1인 축을 추가하며 여러 번 사용할 수 있습니다.
+예를 들어 2×3 배열에 `[1, 0]`을 적용하면 3×2가 되고,
+`[-1, 1, 0, -1]`을 적용하면 1×3×2×1이 됩니다. 스칼라는 빈 매핑이나 `[-1]`을 받습니다.
+
+```kotlin
+array.transpose(intArrayOf(1, 0)).use { transposed ->
+    val values = transposed.readValues(longArrayOf(0, 0), longArrayOf(3, 2))
+}
+```
+
+뷰는 원본 배열의 수명에 종속됩니다. 뷰를 닫아도 원본과 다른 뷰는 사용할 수 있지만,
+원본 배열이나 상위 데이터셋을 닫으면 그 뷰도 사용할 수 없습니다. 원본이 쓰기를
+지원하면 뷰의 값 쓰기도 같은 원본에 반영됩니다. 정확한 정수·복소수·문자열 값에는
+`readValues`·`writeValues`를 사용하며, 기존 숫자 `read`·`write`는 Float64로 변환합니다.
+
+NoData·단위·scale/offset은 원본의 메타데이터를 읽으며, 설정은 원본 배열에서 수행합니다.
+블록 크기와 유효한 음수 CRS 축 매핑은 재배열된 축을 따르고, 추가한 축의 블록 크기는
+0입니다. `getSpatialRef()`가 반환한 CRS 복사본은 뷰를 닫은 뒤에도 사용할 수 있습니다.
+`transpose` 호출은 시작·완료 경계에서 취소를 확인하고, 완료 경계에서 확인된 취소나
+진행 관찰자 실패 시 새 뷰를 해제합니다. GDAL 호출 도중의 즉시 중단을 보장하지는 않습니다.
+검증 데이터와 실행 범위는 [mdarray-transpose.md](verification/mdarray-transpose.md)에 기록합니다.
+
 ### 다차원 변환
 
 `Dataset.multiDimTranslate`는 고정 GDAL 3.12.4의 GDALMultiDimTranslate로 배열·그룹을

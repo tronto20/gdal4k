@@ -6,6 +6,24 @@ interface MDArray {
     suspend fun getName(): String
     suspend fun getFullName(): String
     suspend fun getDimensions(): List<Dimension>
+    /**
+     * Lazy aliased view with the requested output dimension order.
+     *
+     * Each entry selects a zero-based source axis. Every source axis must appear exactly once;
+     * repeated -1 entries insert size-one axes. Other negative, duplicate, missing or out-of-range
+     * source axes fail. Scalars accept an empty map or maps containing only -1.
+     *
+     * The view and its descendants depend on this array and its ancestors. Closing the view does
+     * not close its source or siblings. Typed value I/O preserves the stored type and aliases the
+     * source when the underlying array permits writes; numeric read/write retain Float64 conversion.
+     * Metadata setters may be unsupported by a view even when its source supports them.
+     *
+     * CRS data-axis mappings follow the reordered axes, including valid negative mappings.
+     * A CRS copy returned by getSpatialRef remains independently owned.
+     * The map is snapshotted before queued engine work. Cancellation is checked at operation
+     * boundaries; this operation does not supply a native progress callback.
+     */
+    suspend fun transpose(newAxisToOldAxis: IntArray): MDArray
     /** Independent CRS copy, usable after this array closes; null means no CRS. Close the copy.
      * Native failures throw instead of returning null.
      */

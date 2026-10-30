@@ -29,7 +29,8 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val caller = currentCoroutineContext()
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
-        val cancellable = transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+        val ownedTranspose = type == "MDArray" && method == "transpose_IntArray"
+        val cancellable = ownedTranspose || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "footprint", "footprintTo", "tileIndex", "tileIndexTo", "multiDimTranslate", "multiDimTranslateFiles", "multiDimTranslateTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
@@ -67,7 +68,12 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
             if (cancelled != null) { if (cancelled !== transportFailure) cancelled.addSuppressed(transportFailure); throw cancelled }
             throw transportFailure
         }
-        val failure = control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
+        val failure = try {
+            control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
+        } catch (failure: Throwable) {
+            if (ownedTranspose) closeAllocated(response, failure)
+            throw failure
+        }
         if (failure != null) {
             closeAllocated(response, failure)
             throw failure
@@ -77,7 +83,18 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         // Decode under the same lock in the original cancellable context. Multiple queued
         // reads cannot accumulate one decoded staging buffer each while another read starts.
         try {
+            if (ownedTranspose) caller.ensureActive()
             val value = response.getValue("result").jsonObject.getValue("value")
+            if (ownedTranspose) {
+                // Validate before the generated wrapper can claim the owned result. The
+                // native registry encodes positive UInt64 IDs as canonical decimal strings.
+                val id = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val number = id?.toULongOrNull()
+                check(number != null && number > 0uL && number.toString() == id &&
+                    (response["allocatedHandles"] as? JsonArray)?.contains(value) == true) {
+                    "GDAL transpose returned an invalid owned handle"
+                }
+            }
             if (binary != null) binary.complete(value, binary.output)
             value
         } catch (failure: Throwable) {
@@ -89,7 +106,9 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
     }
     }
     private suspend fun closeAllocated(response: JsonObject, failure: Throwable) {
-        for (id in response["allocatedHandles"]?.jsonArray.orEmpty().asReversed()) {
+        val allocated = try { response["allocatedHandles"]?.jsonArray.orEmpty() }
+        catch (cleanup: Throwable) { failure.addSuppressed(cleanup); return }
+        for (id in allocated.asReversed()) {
             try {
                 val close = buildJsonObject {
                     put("op", "runtime")
