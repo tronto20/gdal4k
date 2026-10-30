@@ -115,7 +115,7 @@ class MDArrayUnscaledWireTest {
             }
             calls.reply = """{"error":{},"allocatedHandles":["42"]}"""
             val malformedError = assertFailsWith<IllegalArgumentException>(calls.reply) { source.getUnscaled() }
-            val notJsonPrimitive = "Element class kotlinx.serialization.json.JsonObject is not a JsonPrimitive"
+            val notJsonPrimitive = "Element ${JsonObject::class} is not a JsonPrimitive"
             assertEquals(notJsonPrimitive, malformedError.message, calls.reply)
             // Coroutine stacktrace recovery may copy the primary exception across withContext.
             val malformedPrimary = malformedError.cause?.let {
