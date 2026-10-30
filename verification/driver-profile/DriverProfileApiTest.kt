@@ -123,6 +123,7 @@ private object DriverProfileFixtures {
         scientificConversion(r, name)
         scientificArrayMetadata(r, name)
         scientificArrayTranspose(r, name)
+        scientificArrayUnscaled(r, name)
     }
 
     private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
@@ -506,6 +507,78 @@ private object DriverProfileFixtures {
                             assertFails { view.getName() }
                             assertFails { view.readValues(longArrayOf(0, 0), longArrayOf(3, 2)) }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Physical values from an independently reopened, compressed NC4 source. */
+    private suspend fun scientificArrayUnscaled(r: GdalRuntime, name: String) {
+        val samples = listOf(-9999, 0, 2, 4, 6, 8).map { MDValue.Numeric(it) }
+        ownedFile(r, "netCDF", "$name-md-unscaled.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 2)).use { y ->
+                        requireNotNull(group.createDimension("x", 3)).use { x ->
+                            requireNotNull(group.createArray("values", listOf(y, x), GdalDataType.Int16,
+                                options = listOf("BLOCKSIZE=1,2", "COMPRESS=DEFLATE", "ZLEVEL=1"))).use { array ->
+                                assertTrue(array.setNoDataValue(MDValue.Numeric(-9999)))
+                                assertTrue(array.setUnit("K"))
+                                requireNotNull(array.createAttribute("scale_factor", longArrayOf(), MDDataType.Numeric(GdalDataType.Float32))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(0.5))))
+                                }
+                                requireNotNull(array.createAttribute("add_offset", longArrayOf(), MDDataType.Numeric(GdalDataType.Float64))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(10.0))))
+                                }
+                                assertTrue(array.writeValues(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                            }
+                        }
+                    }
+                }
+            }
+            // The original writer is closed. No successful write is promised through this read-only source.
+            r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.openArray("values")).use { source ->
+                        assertEquals(MDDataType.Numeric(GdalDataType.Int16), source.getExtendedDataType())
+                        assertEquals(listOf(1uL, 2uL), source.getBlockSize())
+                        assertTrue("COMPRESS=DEFLATE" in source.getStructuralInfo())
+                        assertEquals(MDNumericMetadata(0.5, GdalDataType.Float32), source.getScaleEx())
+                        assertEquals(MDNumericMetadata(10.0, GdalDataType.Float64), source.getOffsetEx())
+                        assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                        source.getUnscaled().use { view ->
+                            val sizes = mutableListOf<Long>()
+                            for (dimension in view.getDimensions()) dimension.use { sizes.add(it.getSize()) }
+                            assertContentEquals(longArrayOf(2, 3), sizes.toLongArray())
+                            assertEquals(MDDataType.Numeric(GdalDataType.Float64), view.getExtendedDataType())
+                            assertEquals(listOf(1uL, 2uL), view.getBlockSize())
+                            assertEquals("K", view.getUnit())
+                            assertNull(view.getScaleEx()); assertNull(view.getOffsetEx())
+                            val physical = view.read(longArrayOf(0, 0), longArrayOf(2, 3))
+                            assertTrue(physical.first().isNaN())
+                            assertContentEquals(doubleArrayOf(10.0, 11.0, 12.0, 13.0, 14.0), physical.drop(1).toDoubleArray())
+                            assertTrue(view.setNoDataValue(MDValue.Numeric(-777)))
+                            assertContentEquals(doubleArrayOf(-777.0, 10.0, 11.0, 12.0, 13.0, 14.0),
+                                view.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+                            assertTrue(view.setNoDataValue(null)); assertNull(view.getNoDataValue())
+                            assertContentEquals(doubleArrayOf(-4989.5, 10.0, 11.0, 12.0, 13.0, 14.0),
+                                view.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+                            assertEquals(MDValue.Numeric(-9999), source.getNoDataValue())
+                            assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                            dataset.close()
+                            assertFails { view.getName() }
+                            assertFails { view.read(longArrayOf(0, 0), longArrayOf(2, 3)) }
+                        }
+                    }
+                }
+            }
+            r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.openArray("values")).use { source ->
+                        assertEquals(MDValue.Numeric(-9999), source.getNoDataValue())
+                        assertEquals("K", source.getUnit())
+                        assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
                     }
                 }
             }

@@ -152,6 +152,8 @@ special('Dimension','setIndexingVariable','auto v=a["array"];return value(GDALDi
 special('MDArray','getDimensions','size_t n=0;auto dims=GDALMDArrayGetDimensions(h,&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);')
 PARENT_OWNED.add(('MDArray','transpose'))
 special('MDArray','transpose','return mdTranspose(r,h,a,id);')
+PARENT_OWNED.add(('MDArray','getUnscaled'))
+special('MDArray','getUnscaled','return mdUnscaled(r,h,id);')
 special('MDArray','getDataType','auto type=GDALMDArrayGetDataType(h);auto numeric=GDALExtendedDataTypeGetClass(type)==GEDTC_NUMERIC?GDALExtendedDataTypeGetNumericDataType(type):GDT_Unknown;GDALExtendedDataTypeRelease(type);return value(numeric);')
 OWNED.add(('MDArray','getSpatialRef'))
 special('MDArray','getSpatialRef','CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(h);if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);')

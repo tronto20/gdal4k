@@ -1709,6 +1709,9 @@
     if(type=="MDArray" && method=="transpose_IntArray") {
         return mdTranspose(r,static_cast<GDALMDArrayH>(h),a,id);
     }
+    if(type=="MDArray" && method=="getUnscaled") {
+        return mdUnscaled(r,static_cast<GDALMDArrayH>(h),id);
+    }
     if(type=="MDArray" && method=="getSpatialRef") {
         CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(static_cast<GDALMDArrayH>(h));if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);
     }

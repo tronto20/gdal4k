@@ -24,6 +24,29 @@ interface MDArray {
      * boundaries; this operation does not supply a native progress callback.
      */
     suspend fun transpose(newAxisToOldAxis: IntArray): MDArray
+    /**
+     * Lazy numeric view that applies the source's scale and offset to each value.
+     *
+     * Nonidentity views capture those metadata values and expose Float64 or CFloat64 values;
+     * complex real and imaginary components each use component * scale + offset. Writes apply
+     * the inverse conversion when the source permits them. Binary64 arithmetic can round large
+     * integers, and zero or nonfinite metadata can produce NaN or infinite results.
+     *
+     * A nonidentity view initially has NaN NoData when its source has NoData. Remapping requires
+     * both view and current source NoData; clearing either disables it. Source presence is initially
+     * captured, so adding source NoData later does not by itself enable the original view's NoData.
+     * Exact Int64/UInt64 sentinel comparisons precede conversion, and missing writes restore the
+     * exact source value. Complex missingness follows the real component; a real NaN write is also
+     * missing while remapping is enabled. A finite view NoData may collide with a valid physical
+     * value. Clearing this view's NoData changes the view, not its source.
+     *
+     * Effective identity metadata (scale 1 and offset 0) returns another owned wrapper for the
+     * original numeric array, retaining its type and shared metadata. Nonnumeric arrays fail.
+     * Every returned wrapper depends on this array and its ancestors; closing it leaves its
+     * source and siblings usable. A CRS copy returned by getSpatialRef remains independent.
+     * Cancellation is checked at operation boundaries; there is no native progress callback.
+     */
+    suspend fun getUnscaled(): MDArray
     /** Independent CRS copy, usable after this array closes; null means no CRS. Close the copy.
      * Native failures throw instead of returning null.
      */
