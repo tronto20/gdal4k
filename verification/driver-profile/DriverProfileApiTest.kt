@@ -122,6 +122,7 @@ private object DriverProfileFixtures {
         }
         scientificConversion(r, name)
         scientificArrayMetadata(r, name)
+        scientificArraySetters(r, name)
         scientificArrayTranspose(r, name)
         scientificArrayUnscaled(r, name)
         scientificArrayViewMask(r, name)
@@ -466,6 +467,133 @@ private object DriverProfileFixtures {
         }
     }
 
+    /** Native setters are qualified by independently reopened NC4 metadata, not Boolean alone. */
+    private suspend fun scientificArraySetters(r: GdalRuntime, name: String) {
+        val read = DatasetOpenOptions(kind = DatasetKind.Multidimensional)
+        val update = DatasetOpenOptions(accessMode = DatasetAccessMode.Update, kind = DatasetKind.Multidimensional)
+        val samples = doubleArrayOf(1.0, -2.0, 3.0, 4.0, 5.0, -6.0)
+        val firstScale = 1.234567890123
+        val firstOffset = -9.876543210123
+        val secondScale = 2.345678901234
+        val secondOffset = -3.456789012345
+        suspend fun checkTyped(source: MDArray, scale: Double, offset: Double) {
+            assertEquals(MDNumericMetadata(scale.toFloat().toDouble(), GdalDataType.Float32), source.getScaleEx())
+            assertEquals(MDNumericMetadata(offset.toFloat().toDouble(), GdalDataType.Float32), source.getOffsetEx())
+            for (attributeName in listOf("scale_factor", "add_offset")) {
+                requireNotNull(source.getAttribute(attributeName)).use {
+                    assertEquals(MDDataType.Numeric(GdalDataType.Float32), it.getDataType())
+                }
+            }
+            assertEquals(MDDataType.Numeric(GdalDataType.Int16), source.getExtendedDataType())
+            assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+        }
+        ownedFile(r, "netCDF", "$name-md-setters.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 2, "HORIZONTAL_Y", "NORTH")).use { y ->
+                        requireNotNull(group.createDimension("x", 3, "HORIZONTAL_X", "EAST")).use { x ->
+                            for ((dimension, coordinates) in listOf(y to doubleArrayOf(1.5, 0.5),
+                                x to doubleArrayOf(0.5, 1.5, 2.5))) {
+                                requireNotNull(group.createArray(dimension.getName(), listOf(dimension), GdalDataType.Float64)).use { axis ->
+                                    assertTrue(axis.write(longArrayOf(0), longArrayOf(coordinates.size.toLong()), coordinates))
+                                }
+                            }
+                            requireNotNull(group.createArray("typed", listOf(y, x), GdalDataType.Int16)).use { source ->
+                                assertNull(source.getScaleEx()); assertNull(source.getOffsetEx())
+                                assertTrue(source.setScale(firstScale, GdalDataType.Float32))
+                                assertTrue(source.setOffset(firstOffset, GdalDataType.Float32))
+                                r.createSpatialReference().use { srs ->
+                                    assertEquals(0, srs.importFromEPSG(3857))
+                                    assertTrue(source.setSpatialRef(srs))
+                                }
+                                assertTrue(source.write(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                                checkTyped(source, firstScale, firstOffset)
+                            }
+                            requireNotNull(group.createArray("automatic", listOf(y, x), GdalDataType.Int16)).use { source ->
+                                assertTrue(source.setScale(0.25, GdalDataType.Unknown))
+                                assertTrue(source.setOffset(10.0, GdalDataType.Unknown))
+                                assertTrue(source.write(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                            }
+                            requireNotNull(group.createArray("declined", listOf(y, x), GdalDataType.Int16)).use { source ->
+                                assertTrue(source.write(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                                // Fresh NC4 attributes have no mapping for these valid GDAL half types.
+                                assertFalse(source.setScale(1.25, GdalDataType.Float16))
+                                assertFalse(source.setOffset(2.5, GdalDataType.CFloat16))
+                                assertNull(source.getScaleEx()); assertNull(source.getOffsetEx())
+                                assertNull(source.getAttribute("scale_factor")); assertNull(source.getAttribute("add_offset"))
+                                assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+                                assertTrue(source.setScale(0.5, GdalDataType.Float32))
+                                assertTrue(source.setOffset(2.0, GdalDataType.Float64))
+                                assertEquals(MDNumericMetadata(0.5, GdalDataType.Float32), source.getScaleEx())
+                                assertEquals(MDNumericMetadata(2.0, GdalDataType.Float64), source.getOffsetEx())
+                            }
+                        }
+                    }
+                }
+            }
+            suspend fun opened(options: DatasetOpenOptions, block: suspend (Group) -> Unit) {
+                r.openDataset(path, options).use { dataset ->
+                    requireNotNull(dataset.getRootGroup()).use { block(it) }
+                }
+            }
+            opened(read) { group ->
+                requireNotNull(group.openArray("typed")).use { source ->
+                    checkTyped(source, firstScale, firstOffset)
+                    requireNotNull(source.getSpatialRef()).use { srs ->
+                        assertEquals("3857", srs.getAuthorityCode("PROJCS"))
+                        // netCDF reconstructs positive axis indices from its dimension roles.
+                        assertContentEquals(intArrayOf(2, 1), srs.getDataAxisToSRSAxisMapping())
+                    }
+                    requireNotNull(source.getAttribute("grid_mapping")).close()
+                    // GDAL 3.12.4 ignores nc_del_att's readonly failure in its null-clear path.
+                    assertTrue(source.setSpatialRef(null))
+                    requireNotNull(source.getAttribute("grid_mapping")).close()
+                    requireNotNull(source.getSpatialRef()).use { assertEquals("3857", it.getAuthorityCode("PROJCS")) }
+                    assertFails { source.setScale(secondScale, GdalDataType.Float64) }
+                    checkTyped(source, firstScale, firstOffset)
+                }
+                requireNotNull(group.openArray("automatic")).use { source ->
+                    assertEquals(MDNumericMetadata(0.25, GdalDataType.Float64), source.getScaleEx())
+                    assertEquals(MDNumericMetadata(10.0, GdalDataType.Float64), source.getOffsetEx())
+                    for (attributeName in listOf("scale_factor", "add_offset")) requireNotNull(source.getAttribute(attributeName)).use {
+                        assertEquals(MDDataType.Numeric(GdalDataType.Float64), it.getDataType())
+                    }
+                    assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+                }
+                requireNotNull(group.openArray("declined")).use { source ->
+                    assertEquals(MDNumericMetadata(0.5, GdalDataType.Float32), source.getScaleEx())
+                    assertEquals(MDNumericMetadata(2.0, GdalDataType.Float64), source.getOffsetEx())
+                    assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(2, 3)))
+                }
+            }
+            opened(update) { group ->
+                requireNotNull(group.openArray("typed")).use { source ->
+                    // Requests do not recreate existing Float32 attributes.
+                    assertTrue(source.setScale(secondScale, GdalDataType.Float64))
+                    assertTrue(source.setOffset(secondOffset, GdalDataType.Unknown))
+                    checkTyped(source, secondScale, secondOffset)
+                }
+            }
+            opened(read) { group ->
+                requireNotNull(group.openArray("typed")).use { checkTyped(it, secondScale, secondOffset) }
+            }
+            opened(update) { group ->
+                requireNotNull(group.openArray("typed")).use { source ->
+                    assertTrue(source.setSpatialRef(null))
+                    assertNull(source.getAttribute("grid_mapping"))
+                    checkTyped(source, secondScale, secondOffset)
+                }
+            }
+            opened(read) { group ->
+                requireNotNull(group.openArray("typed")).use { source ->
+                    // Clearing removes this association, not every CF coordinate or SRS variable.
+                    assertNull(source.getAttribute("grid_mapping"))
+                    checkTyped(source, secondScale, secondOffset)
+                }
+            }
+        }
+    }
+
     /** Reopened, compressed NC4 data retains typed metadata through a lazy transpose. */
     private suspend fun scientificArrayTranspose(r: GdalRuntime, name: String) {
         val samples = listOf(-9999, 0, 2, 4, 6, 8).map { MDValue.Numeric(it) }
@@ -784,6 +912,10 @@ private object DriverProfileFixtures {
                 r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
                     requireNotNull(dataset.getRootGroup()).use { group ->
                         requireNotNull(group.openArray("signal")).use { source ->
+                            assertEquals(16uL, source.getTotalElementsCount())
+                            assertEquals(listOf(2uL, 2uL), source.getBlockSize())
+                            assertEquals(listOf(2uL, 2uL), source.getProcessingChunkSize(1uL))
+                            assertEquals(listOf(4uL, 4uL), source.getProcessingChunkSize(128uL))
                             val dimensions = source.getDimensions()
                             try {
                                 assertEquals(listOf("y", "x"), dimensions.map { it.getName() })

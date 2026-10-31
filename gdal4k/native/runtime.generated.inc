@@ -1706,6 +1706,12 @@
     if(type=="MDArray" && method=="getDimensions") {
         size_t n=0;auto dims=GDALMDArrayGetDimensions(static_cast<GDALMDArrayH>(h),&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);
     }
+    if(type=="MDArray" && method=="getTotalElementsCount") {
+        return mdTotalElementsCount(static_cast<GDALMDArrayH>(h));
+    }
+    if(type=="MDArray" && method=="getProcessingChunkSize_ULong") {
+        return mdProcessingChunkSize(static_cast<GDALMDArrayH>(h),a);
+    }
     if(type=="MDArray" && method=="getCoordinateVariables") {
         return mdCoordinateVariables(r,static_cast<GDALMDArrayH>(h),id);
     }
@@ -1732,6 +1738,9 @@
     }
     if(type=="MDArray" && method=="getSpatialRef") {
         CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(static_cast<GDALMDArrayH>(h));if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);
+    }
+    if(type=="MDArray" && method=="setSpatialRef_SpatialReference") {
+        return mdSetSpatialRef(r,static_cast<GDALMDArrayH>(h),a);
     }
     if(type=="MDArray" && method=="getBlockSize") {
         CPLErrorReset();size_t n=0;auto p=GDALMDArrayGetBlockSize(static_cast<GDALMDArrayH>(h),&n);struct FreeBlockSize{GUInt64* p;~FreeBlockSize(){CPLFree(p);}} cleanup{p};fileEnsure(CPLGetLastErrorType()<CE_Failure && (n==0||p),"Cannot obtain multidimensional block size");return numbers(p,n);
@@ -1768,6 +1777,12 @@
     }
     if(type=="MDArray" && method=="setOffset_Double") {
         return value(GDALMDArraySetOffset(static_cast<GDALMDArrayH>(h),CPLAtof(a["offset"].ToString().c_str()))!=0);
+    }
+    if(type=="MDArray" && method=="setScale_Double_Int") {
+        return mdSetNumericMetadata(static_cast<GDALMDArrayH>(h),a,true);
+    }
+    if(type=="MDArray" && method=="setOffset_Double_Int") {
+        return mdSetNumericMetadata(static_cast<GDALMDArrayH>(h),a,false);
     }
     if(type=="MDArray" && method=="getDataType") {
         auto type=GDALMDArrayGetDataType(static_cast<GDALMDArrayH>(h));auto numeric=GDALExtendedDataTypeGetClass(type)==GEDTC_NUMERIC?GDALExtendedDataTypeGetNumericDataType(type):GDT_Unknown;GDALExtendedDataTypeRelease(type);return value(numeric);

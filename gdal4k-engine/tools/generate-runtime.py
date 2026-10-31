@@ -153,6 +153,8 @@ PARENT_OWNED.add(('Dimension','getIndexingVariable'))
 special('Dimension','getIndexingVariable','return r.result(GDALDimensionGetIndexingVariable(h),"MDArray",true,id);')
 special('Dimension','setIndexingVariable','auto v=a["array"];return value(GDALDimensionSetIndexingVariable(h,v.GetType()==CPLJSONObject::Type::Null?nullptr:static_cast<GDALMDArrayH>(r.arg(v)))!=0);')
 special('MDArray','getDimensions','size_t n=0;auto dims=GDALMDArrayGetDimensions(h,&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);')
+special('MDArray','getTotalElementsCount','return mdTotalElementsCount(h);')
+special('MDArray','getProcessingChunkSize','return mdProcessingChunkSize(h,a);')
 PARENT_OWNED.add(('MDArray','getCoordinateVariables'))
 special('MDArray','getCoordinateVariables','return mdCoordinateVariables(r,h,id);')
 for method in ['getStatistics', 'computeStatistics']:
@@ -187,6 +189,10 @@ for name in ['Scale','Offset']:
     special('MDArray','get'+name,f'int present=0;auto n=GDALMDArrayGet{name}(h,&present);return present?value(n):nullValue();')
     special('MDArray','get'+name+'Ex',f'CPLErrorReset();int present=0;GDALDataType storage=GDT_Unknown;auto n=GDALMDArrayGet{name}Ex(h,&present,&storage);fileEnsure(CPLGetLastErrorType()<CE_Failure,"Cannot obtain multidimensional {name.lower()} metadata");if(!present)return nullValue();CPLJSONObject out;out.Add("value",value(n)["value"]);out.Add("storageType",static_cast<int>(storage));return value(out);')
     special('MDArray','set'+name,f'return value(GDALMDArraySet{name}(h,CPLAtof(a["{name.lower()}"].ToString().c_str()))!=0);')
+# Full signatures keep the legacy one-argument fallback above byte-equivalent.
+special('MDArray','setSpatialRef_SpatialReference','return mdSetSpatialRef(r,h,a);')
+special('MDArray','setScale_Double_Int','return mdSetNumericMetadata(h,a,true);')
+special('MDArray','setOffset_Double_Int','return mdSetNumericMetadata(h,a,false);')
 for op in ['readValues','writeValues']:
     special('MDArray',op,'return mdValues(h,a,'+str(op=='writeValues').lower()+');')
 for owner in ['Group','MDArray']:
@@ -396,6 +402,12 @@ for cls in TYPES:
             body='return columnRead()'
         elif cls=='MDArray' and name=='read':
             body='return mdReadRasterCall(start, count)'
+        elif cls=='MDArray' and name=='getTotalElementsCount':
+            body='val result = '+call+'; return decodeMDPlanningCount(result)'
+        elif cls=='MDArray' and name=='getProcessingChunkSize':
+            body='val result = '+call+'; return decodeMDPlanningChunks(result)'
+        elif cls=='MDArray' and name in ['setScale','setOffset'] and len(params)==2:
+            body='require(storageType in 0..16) { "Invalid multidimensional metadata storage type" }; val result = '+call+'; return result.jsonPrimitive.boolean'
         elif cls=='MDArray' and name=='getView':
             body='require(\'\\u0000\' !in viewExpr) { "NUL in multidimensional view expression" }; val result = '+call+'; return requireNotNull(engine.wrapMDArray(result, this))'
         elif cls=='MDArray' and name=='getMask':
