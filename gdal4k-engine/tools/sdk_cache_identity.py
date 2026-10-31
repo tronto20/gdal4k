@@ -18,7 +18,8 @@ FILE_LIMIT = 1024 ** 2
 MANIFEST_LIMIT = 2 * 1024 ** 2
 TOOL_LIMIT = 128 * 1024 ** 2
 MAX_FILES = 10000
-_FIELDS = ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+_FIELDS = ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_birthtime_ns')
+_WINDOWS_STAT = os.name == 'nt'
 
 
 def _need(value, message):
@@ -27,7 +28,7 @@ def _need(value, message):
 
 
 def _state(value):
-    return tuple(getattr(value, key) for key in _FIELDS)
+    return tuple(getattr(value, key, None) for key in _FIELDS)
 
 
 def _linked(path, value=None):
@@ -36,22 +37,55 @@ def _linked(path, value=None):
             getattr(Path(path), 'is_junction', lambda: False)())
 
 
-def _hash_file(path, maximum):
+def _changed_fields(left, right):
+    return [key for key in _FIELDS if getattr(left, key, None) != getattr(right, key, None)]
+
+
+def _path_handle_changes(path, before, opened):
+    changed = _changed_fields(before, opened)
+    if _WINDOWS_STAT:
+        # CPython 3.14.10 path stat adds 0111 for these suffixes; fstat has
+        # no filename. Keep every other permission/file-type bit exact.
+        execute = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        if (Path(path).suffix.lower() in ('.exe', '.bat', '.cmd', '.com') and
+                before.st_mode & execute == execute and opened.st_mode & execute == 0 and
+                before.st_mode & ~execute == opened.st_mode):
+            changed = [key for key in changed if key != 'st_mode']
+        # Windows path stat exposes birthtime as ctime, while fstat exposes
+        # ChangeTime. Join explicit birthtime and compare each API's raw
+        # ctime against its own snapshot after reading; never erase changes.
+        birth = getattr(before, 'st_birthtime_ns', None)
+        if (type(birth) is int and before.st_ctime_ns == birth and
+                getattr(opened, 'st_birthtime_ns', None) == birth):
+            changed = [key for key in changed if key != 'st_ctime_ns']
+    return changed
+
+
+def _unchanged(changed, phase, label):
+    safe = str(label).encode('unicode_escape').decode('ascii')[:240]
+    _need(not changed, 'SDK identity input changed ' + phase + ': ' + safe +
+          ' (' + ','.join(changed) + ')')
+
+
+def _hash_file(path, maximum, label=None):
     path = Path(path)
+    label = path.name if label is None else label
     before = path.lstat()
     _need(stat.S_ISREG(before.st_mode) and not _linked(path, before), 'SDK identity requires a regular input: ' + str(path))
     _need(0 <= before.st_size <= maximum, 'SDK identity input exceeds its bound: ' + str(path))
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NOATIME', 0) | getattr(os, 'O_NONBLOCK', 0)
     fd = os.open(path, flags)
     with os.fdopen(fd, 'rb') as source:
-        _need(_state(os.fstat(source.fileno())) == _state(before), 'SDK identity input changed before read')
+        opened = os.fstat(source.fileno())
+        _unchanged(_path_handle_changes(path, before, opened), 'before read', label)
         size, digest = 0, hashlib.sha256()
         while data := source.read(65536):
             size += len(data)
             _need(size <= maximum, 'SDK identity input grew past its bound')
             digest.update(data)
-        _need(size == before.st_size and _state(os.fstat(source.fileno())) == _state(before) ==
-              _state(path.lstat()), 'SDK identity input changed during read')
+        _need(size == before.st_size, 'SDK identity input size changed during read: ' + str(label))
+        _unchanged(_changed_fields(before, path.lstat()), 'at path during read', label)
+        _unchanged(_changed_fields(opened, os.fstat(source.fileno())), 'at descriptor during read', label)
     return {'bytes': size, 'sha256': digest.hexdigest()}
 
 
@@ -63,7 +97,7 @@ class _Inventory:
     def file(self, path, name):
         _need(type(name) is str and name and '\\' not in name and not name.startswith('/') and
               '..' not in name.split('/'), 'SDK identity name is not canonical')
-        value = _hash_file(path, FILE_LIMIT)
+        value = _hash_file(path, FILE_LIMIT, name)
         self.bytes += value['bytes']
         self.files += 1
         _need(self.bytes <= SOURCE_LIMIT and self.files <= MAX_FILES, 'SDK identity source budget exceeded')
@@ -98,9 +132,12 @@ def _tool_pins(path):
           before.st_size <= FILE_LIMIT, 'SDK tool pins must be a bounded regular file')
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NOATIME', 0)
     with os.fdopen(os.open(path, flags), 'rb') as source:
+        opened = os.fstat(source.fileno())
+        _unchanged(_path_handle_changes(path, before, opened), 'before tool-pin read', path.name)
         data = source.read(FILE_LIMIT + 1)
-        _need(len(data) == before.st_size and _state(os.fstat(source.fileno())) ==
-              _state(before) == _state(path.lstat()), 'SDK tool pins changed during read')
+        _need(len(data) == before.st_size, 'SDK tool pins size changed during read')
+        _unchanged(_changed_fields(before, path.lstat()), 'at path during tool-pin read', path.name)
+        _unchanged(_changed_fields(opened, os.fstat(source.fileno())), 'at descriptor during tool-pin read', path.name)
     result = {}
     for line in data.decode('utf-8').splitlines():
         line = line.strip()

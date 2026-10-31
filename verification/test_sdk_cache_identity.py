@@ -339,5 +339,114 @@ class SdkCacheIdentityTest(unittest.TestCase):
                 item.rebind()
 
 
+class StatIdentityTest(unittest.TestCase):
+    def snapshot(self, **changes):
+        fields = dict(st_dev=11, st_ino=22, st_mode=0o100666, st_size=8,
+                      st_mtime_ns=1000, st_ctime_ns=2000, st_birthtime_ns=100)
+        fields.update(changes)
+        return SimpleNamespace(**fields)
+
+    def test_documented_windows_execute_and_ctime_representations(self):
+        for suffix in ('.exe', '.BAT', '.cmd', '.COM'):
+            for mode in (0o100666, 0o100444):
+                path = self.snapshot(st_mode=mode | 0o111, st_ctime_ns=100)
+                opened = self.snapshot(st_mode=mode)
+                with self.subTest(suffix=suffix, mode=mode), patch.object(cache, '_WINDOWS_STAT', True):
+                    self.assertEqual([], cache._path_handle_changes(Path('input' + suffix), path, opened))
+                self.assertIn('st_ctime_ns', cache._changed_fields(path, opened))
+
+    def test_windows_join_keeps_device_inode_size_mtime_and_birthtime(self):
+        path = self.snapshot(st_mode=0o100777, st_ctime_ns=100)
+        for field in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_birthtime_ns'):
+            changed = self.snapshot(**{field: getattr(self.snapshot(), field) + 1})
+            with self.subTest(field=field), patch.object(cache, '_WINDOWS_STAT', True):
+                self.assertIn(field, cache._path_handle_changes(Path('input.cmd'), path, changed))
+        with patch.object(cache, '_WINDOWS_STAT', True):
+            self.assertIn('st_mode', cache._path_handle_changes(Path('input.cmd'), path, self.snapshot(st_mode=0o100444)))
+
+    def test_execute_normalization_is_windows_and_suffix_specific(self):
+        path = self.snapshot(st_mode=0o100777)
+        with patch.object(cache, '_WINDOWS_STAT', False):
+            self.assertIn('st_mode', cache._path_handle_changes(Path('input.exe'), path, self.snapshot()))
+        with patch.object(cache, '_WINDOWS_STAT', True):
+            self.assertIn('st_mode', cache._path_handle_changes(Path('input.txt'), path, self.snapshot()))
+            self.assertIn('st_mode', cache._path_handle_changes(Path('input.exe'), self.snapshot(st_mode=0o100766), self.snapshot()))
+
+    def test_ctime_normalization_requires_matching_explicit_birthtime(self):
+        path = self.snapshot(st_ctime_ns=100)
+        for opened in (self.snapshot(st_birthtime_ns=101), self.snapshot(st_birthtime_ns=None)):
+            with patch.object(cache, '_WINDOWS_STAT', True):
+                self.assertIn('st_ctime_ns', cache._path_handle_changes(Path('input.txt'), path, opened))
+        with patch.object(cache, '_WINDOWS_STAT', True):
+            self.assertIn('st_ctime_ns', cache._path_handle_changes(Path('input.txt'), self.snapshot(st_ctime_ns=101), self.snapshot()))
+        self.assertIn('st_ctime_ns', cache._changed_fields(self.snapshot(), self.snapshot(st_ctime_ns=2001)))
+        self.assertIn('st_birthtime_ns', cache._changed_fields(self.snapshot(), self.snapshot(st_birthtime_ns=101)))
+
+    def test_hash_stream_accepts_documented_windows_cross_api_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'input.CMD'; path.write_bytes(b'original')
+            actual = path.lstat()
+            fields = {key: getattr(actual, key, None) for key in cache._FIELDS}
+            before = SimpleNamespace(**{**fields, 'st_mode': actual.st_mode | 0o111, 'st_ctime_ns': 100, 'st_birthtime_ns': 100})
+            opened = SimpleNamespace(**{**fields, 'st_ctime_ns': 200, 'st_birthtime_ns': 100})
+            with patch.object(cache, '_WINDOWS_STAT', True), patch.object(Path, 'lstat', return_value=before), patch.object(cache.os, 'fstat', return_value=opened):
+                self.assertEqual({'bytes': 8, 'sha256': digest(b'original')}, cache._hash_file(path, 8, 'vcpkg/scripts/input.CMD'))
+
+    def test_tool_pins_accepts_documented_windows_ctime_representation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'versions.properties'
+            path.write_bytes(b'cmake.version=3.31.6\nvcpkg.revision=source\n')
+            fields = {key: getattr(path.lstat(), key, None) for key in cache._FIELDS}
+            before = SimpleNamespace(**{**fields, 'st_ctime_ns': 100, 'st_birthtime_ns': 100})
+            opened = SimpleNamespace(**{**fields, 'st_ctime_ns': 200, 'st_birthtime_ns': 100})
+            with patch.object(cache, '_WINDOWS_STAT', True), patch.object(Path, 'lstat', return_value=before), patch.object(cache.os, 'fstat', return_value=opened):
+                self.assertEqual({'cmake.version': '3.31.6'}, cache._tool_pins(path))
+
+    def test_tool_pins_rejects_descriptor_change_with_unchanged_path_birthtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'versions.properties'; path.write_bytes(b'pin=old\n')
+            fields = {key: getattr(path.lstat(), key, None) for key in cache._FIELDS}
+            before = SimpleNamespace(**{**fields, 'st_ctime_ns': 100, 'st_birthtime_ns': 100})
+            opened = SimpleNamespace(**{**fields, 'st_ctime_ns': 200, 'st_birthtime_ns': 100})
+            after = SimpleNamespace(**{**fields, 'st_ctime_ns': 201, 'st_birthtime_ns': 100})
+            with patch.object(cache, '_WINDOWS_STAT', True), patch.object(Path, 'lstat', return_value=before), patch.object(cache.os, 'fstat', side_effect=[opened, after]), self.assertRaisesRegex(RuntimeError, r'at descriptor.*st_ctime_ns'):
+                cache._tool_pins(path)
+
+    def assert_stream_change_rejected(self, replace, tool_pins=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'input'; path.write_bytes(b'pin=old\n' if tool_pins else b'original')
+            before = path.stat(); original_open = cache.os.fdopen
+            @contextlib.contextmanager
+            def changed_open(fd, mode):
+                with original_open(fd, mode) as stream:
+                    class Changing:
+                        changed = False
+                        def fileno(self): return stream.fileno()
+                        def read(self, size):
+                            data = stream.read(size)
+                            if not self.changed:
+                                self.changed = True
+                                if replace:
+                                    replacement = path.with_name('replacement'); replacement.write_bytes(b'changed!')
+                                    os.replace(replacement, path)
+                                else:
+                                    path.write_bytes(b'pin=new\n' if tool_pins else b'changed!')
+                                    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000))
+                            return data
+                    yield Changing()
+            with patch.object(cache.os, 'fdopen', changed_open), self.assertRaisesRegex(RuntimeError, r'input .*st_(ino|mtime_ns|ctime_ns)'):
+                if tool_pins: cache._tool_pins(path)
+                else: cache._hash_file(path, 8, 'vcpkg/scripts/input')
+
+    def test_content_mutation_during_stream_is_rejected(self):
+        self.assert_stream_change_rejected(False)
+
+    def test_path_replacement_during_stream_is_rejected(self):
+        self.assert_stream_change_rejected(True)
+
+    def test_tool_pins_content_mutation_is_rejected(self):
+        self.assert_stream_change_rejected(False, tool_pins=True)
+
+
 if __name__ == '__main__':
     unittest.main()
