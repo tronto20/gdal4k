@@ -154,6 +154,9 @@ PARENT_OWNED.add(('MDArray','transpose'))
 special('MDArray','transpose','return mdTranspose(r,h,a,id);')
 PARENT_OWNED.add(('MDArray','getUnscaled'))
 special('MDArray','getUnscaled','return mdUnscaled(r,h,id);')
+for method in ['getView', 'getMask']:
+    PARENT_OWNED.add(('MDArray',method))
+    special('MDArray',method,'return mdViewOrMask(r,h,a,id,'+str(method=='getMask').lower()+');')
 special('MDArray','getDataType','auto type=GDALMDArrayGetDataType(h);auto numeric=GDALExtendedDataTypeGetClass(type)==GEDTC_NUMERIC?GDALExtendedDataTypeGetNumericDataType(type):GDT_Unknown;GDALExtendedDataTypeRelease(type);return value(numeric);')
 OWNED.add(('MDArray','getSpatialRef'))
 special('MDArray','getSpatialRef','CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(h);if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);')
@@ -384,6 +387,10 @@ for cls in TYPES:
             body='return columnRead()'
         elif cls=='MDArray' and name=='read':
             body='return mdReadRasterCall(start, count)'
+        elif cls=='MDArray' and name=='getView':
+            body='require(\'\\u0000\' !in viewExpr) { "NUL in multidimensional view expression" }; val result = '+call+'; return requireNotNull(engine.wrapMDArray(result, this))'
+        elif cls=='MDArray' and name=='getMask':
+            body='require(options.none { \'\\u0000\' in it }) { "NUL in multidimensional mask option" }; val result = '+call+'; return requireNotNull(engine.wrapMDArray(result, this))'
         elif cls=='MDArray' and name=='write':
             body='return mdWriteRasterCall(start, count, values)'
         elif cls in ['MDArray','Attribute'] and name=='readValues':

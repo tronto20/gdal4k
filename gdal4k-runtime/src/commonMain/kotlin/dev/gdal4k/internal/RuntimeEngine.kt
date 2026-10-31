@@ -29,7 +29,8 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val caller = currentCoroutineContext()
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
-        val ownedMDView = type == "MDArray" && (method == "transpose_IntArray" || method == "getUnscaled")
+        val ownedMDView = type == "MDArray" && (method == "transpose_IntArray" || method == "getUnscaled" ||
+            method == "getView_String" || method == "getMask_List_String")
         val cancellable = ownedMDView || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "footprint", "footprintTo", "tileIndex", "tileIndexTo", "multiDimTranslate", "multiDimTranslateFiles", "multiDimTranslateTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",

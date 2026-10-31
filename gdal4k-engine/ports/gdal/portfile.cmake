@@ -14,6 +14,7 @@ vcpkg_from_github(
         separate-gpkg-arrow-handoff.patch
         transpose-signed-srs-axis-mapping.patch
         unscaled-nodata-and-write-type.patch
+        mdarray-view-mask-safety-and-exact-metadata.patch
 )
 vcpkg_find_acquire_program(PYTHON3)
 vcpkg_execute_required_process(

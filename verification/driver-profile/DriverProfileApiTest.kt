@@ -124,6 +124,7 @@ private object DriverProfileFixtures {
         scientificArrayMetadata(r, name)
         scientificArrayTranspose(r, name)
         scientificArrayUnscaled(r, name)
+        scientificArrayViewMask(r, name)
     }
 
     private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
@@ -579,6 +580,102 @@ private object DriverProfileFixtures {
                         assertEquals(MDValue.Numeric(-9999), source.getNoDataValue())
                         assertEquals("K", source.getUnit())
                         assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                    }
+                }
+            }
+        }
+    }
+
+    /** Reopened read-only NC4 slices and masks use stored units and exact integer criteria. */
+    private suspend fun scientificArrayViewMask(r: GdalRuntime, name: String) {
+        val samples = listOf(-9999, 0, 2, 4, 6, 8).map { MDValue.Numeric(it) }
+        val exact = listOf(Triple("signed", GdalDataType.Int64,
+            listOf("-9007199254740993", "-9007199254740992")),
+            Triple("unsigned", GdalDataType.UInt64,
+                listOf("18446744073709551615", "18446744073709551614")))
+        ownedFile(r, "netCDF", "$name-md-view-mask.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 2)).use { y ->
+                        requireNotNull(group.createDimension("x", 3)).use { x ->
+                            requireNotNull(group.createArray("values", listOf(y, x), GdalDataType.Int16,
+                                options = listOf("BLOCKSIZE=1,2", "COMPRESS=DEFLATE", "ZLEVEL=1"))).use { array ->
+                                assertTrue(array.setNoDataValue(MDValue.Numeric(-9999)))
+                                requireNotNull(array.createAttribute("scale_factor", longArrayOf(), MDDataType.Numeric(GdalDataType.Float32))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(0.5))))
+                                }
+                                requireNotNull(array.createAttribute("add_offset", longArrayOf(), MDDataType.Numeric(GdalDataType.Float64))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(10.0))))
+                                }
+                                requireNotNull(array.createAttribute("valid_range", longArrayOf(2), MDDataType.Numeric(GdalDataType.Int16))).use {
+                                    assertTrue(it.writeValues(listOf(MDValue.Numeric(0), MDValue.Numeric(6))))
+                                }
+                                assertTrue(array.writeValues(longArrayOf(0, 0), longArrayOf(2, 3), samples))
+                            }
+                            for ((label, type, texts) in exact) {
+                                requireNotNull(group.createArray("exact_$label", listOf(y), type)).use { array ->
+                                    assertTrue(array.setNoDataValue(MDValue.Numeric(texts[0])))
+                                    assertTrue(array.writeValues(longArrayOf(0), longArrayOf(2), texts.map { MDValue.Numeric(it) }))
+                                }
+                                requireNotNull(group.createArray("scalar_$label", emptyList(), type)).use { array ->
+                                    assertTrue(array.setNoDataValue(MDValue.Numeric(texts[0])))
+                                    assertTrue(array.writeValues(longArrayOf(), longArrayOf(), listOf(MDValue.Numeric(texts[0]))))
+                                }
+                                requireNotNull(group.createArray("cf_$label", listOf(x), type)).use { array ->
+                                    val raw = listOf("9007199254740992", "9007199254740993", "9007199254740994").map { MDValue.Numeric(it) }
+                                    requireNotNull(array.createAttribute("valid_range", longArrayOf(2), MDDataType.Numeric(type))).use {
+                                        assertTrue(it.writeValues(raw.drop(1)))
+                                    }
+                                    requireNotNull(array.createAttribute("missing_value", longArrayOf(), MDDataType.Numeric(type))).use {
+                                        assertTrue(it.writeValues(listOf(raw[1])))
+                                    }
+                                    assertTrue(array.writeValues(longArrayOf(0), longArrayOf(3), raw))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // All writers have closed before this independent read-only open.
+            r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    for ((label, type, texts) in exact) {
+                        requireNotNull(group.openArray("exact_$label")).use { source ->
+                            assertEquals(MDDataType.Numeric(type), source.getExtendedDataType())
+                            assertEquals(texts.map { MDValue.Numeric(it) }, source.readValues(longArrayOf(0), longArrayOf(2)))
+                            assertEquals(MDValue.Numeric(texts[0]), source.getNoDataValue())
+                            source.getMask().use { assertEquals(listOf(MDValue.Numeric(0), MDValue.Numeric(1)),
+                                it.readValues(longArrayOf(0), longArrayOf(2))) }
+                        }
+                        requireNotNull(group.openArray("scalar_$label")).use { source -> source.getMask().use {
+                            assertEquals(listOf(MDValue.Numeric(0)), it.readValues(longArrayOf(), longArrayOf()))
+                        } }
+                        requireNotNull(group.openArray("cf_$label")).use { source -> source.getMask().use {
+                            assertEquals(listOf(MDValue.Numeric(0), MDValue.Numeric(0), MDValue.Numeric(1)),
+                                it.readValues(longArrayOf(0), longArrayOf(3)))
+                        } }
+                    }
+                    requireNotNull(group.openArray("values")).use { source ->
+                        assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                        assertEquals(MDNumericMetadata(0.5, GdalDataType.Float32), source.getScaleEx())
+                        assertEquals(MDNumericMetadata(10.0, GdalDataType.Float64), source.getOffsetEx())
+                        source.getView("[::-1,::2]").use { slice ->
+                            assertEquals(listOf(4, 8, -9999, 2).map { MDValue.Numeric(it) },
+                                slice.readValues(longArrayOf(0, 0), longArrayOf(2, 2)))
+                            slice.getMask().use { mask ->
+                                val expected = listOf(1, 0, 0, 1).map { MDValue.Numeric(it) }
+                                assertEquals(MDDataType.Numeric(GdalDataType.Byte), mask.getExtendedDataType())
+                                assertEquals(expected, mask.readValues(longArrayOf(0, 0), longArrayOf(2, 2)))
+                                source.getMask().use { whole -> whole.getView("[::-1,::2]").use {
+                                    assertEquals(expected, it.readValues(longArrayOf(0, 0), longArrayOf(2, 2)))
+                                } }
+                                assertFailsWith<GdalException> { mask.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(1))) }
+                                assertFailsWith<GdalException> { slice.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(7))) }
+                                assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                                dataset.close()
+                                assertFails { slice.getName() }; assertFails { mask.getName() }
+                            }
+                        }
                     }
                 }
             }

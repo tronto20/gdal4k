@@ -1712,6 +1712,12 @@
     if(type=="MDArray" && method=="getUnscaled") {
         return mdUnscaled(r,static_cast<GDALMDArrayH>(h),id);
     }
+    if(type=="MDArray" && method=="getView_String") {
+        return mdViewOrMask(r,static_cast<GDALMDArrayH>(h),a,id,false);
+    }
+    if(type=="MDArray" && method=="getMask_List_String") {
+        return mdViewOrMask(r,static_cast<GDALMDArrayH>(h),a,id,true);
+    }
     if(type=="MDArray" && method=="getSpatialRef") {
         CPLErrorReset();auto s=GDALMDArrayGetSpatialRef(static_cast<GDALMDArrayH>(h));if(CPLGetLastErrorType()>=CE_Failure){if(s)OSRRelease(s);fileEnsure(false,"Cannot obtain multidimensional spatial reference");}return r.result(s,"SpatialReference",true,0);
     }
