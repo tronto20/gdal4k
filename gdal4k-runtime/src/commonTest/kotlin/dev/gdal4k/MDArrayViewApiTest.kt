@@ -144,7 +144,7 @@ class MDArrayViewApiTest {
                 assertTrue(source.writeValues(longArrayOf(0), longArrayOf(2), raw))
                 source.getView("[1]['id']").use { field ->
                     assertEquals(values("18446744073709551611"), field.readValues(longArrayOf(), longArrayOf()))
-                    assertFailsWith<GdalException> { field.writeValues(longArrayOf(), longArrayOf(), values("3")) }
+                    assertFalse(field.writeValues(longArrayOf(), longArrayOf(), values("3")))
                 }
                 source.getView("[\"detail\"]['z'][::-1]").use { field ->
                     assertEquals(complex, field.getExtendedDataType())
@@ -183,7 +183,9 @@ class MDArrayViewApiTest {
                             requireNotNull(view.getSpatialRef()).use { assertContentEquals(expected, it.getDataAxisToSRSAxisMapping()) }
                             assertContentEquals(doubleArrayOf(3.0, 2.0, 1.0, 6.0, 5.0, 4.0),
                                 view.read(longArrayOf(0, 0, 0), longArrayOf(2, 1, 3)))
-                            assertFailsWith<GdalException> { view.write(longArrayOf(0, 0, 0), longArrayOf(1, 1, 1), doubleArrayOf(8.0)) }
+                            assertFalse(view.write(longArrayOf(0, 0, 0), longArrayOf(1, 1, 1), doubleArrayOf(8.0)))
+                            assertContentEquals(doubleArrayOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+                                source.read(longArrayOf(0, 0), longArrayOf(2, 3)))
                         }
                         source.getView("[newaxis,0,:]").use { view ->
                             val expected = if (name == "negative") intArrayOf(-2, 0) else intArrayOf(0, 0)

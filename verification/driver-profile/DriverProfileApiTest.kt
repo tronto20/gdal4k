@@ -669,8 +669,8 @@ private object DriverProfileFixtures {
                                 source.getMask().use { whole -> whole.getView("[::-1,::2]").use {
                                     assertEquals(expected, it.readValues(longArrayOf(0, 0), longArrayOf(2, 2)))
                                 } }
-                                assertFailsWith<GdalException> { mask.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(1))) }
-                                assertFailsWith<GdalException> { slice.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(7))) }
+                                assertFalse(mask.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(1))))
+                                assertFalse(slice.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(7))))
                                 assertEquals(samples, source.readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
                                 dataset.close()
                                 assertFails { slice.getName() }; assertFails { mask.getName() }

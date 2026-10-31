@@ -12,7 +12,8 @@ Basic slices retain the stored schema and write through when the source permits
 writes. Typed I/O preserves Int64/UInt64, both complex components, nullable text,
 JSON-string subtypes and compound fields. Field extraction reads the selected
 component; its native implementation has no partial-field write operation.
-Field writes fail without a successful parent write. Metadata getters follow
+Unsupported field writes return `false`, following the existing Boolean write
+contract, and leave the parent data unchanged. Metadata getters follow
 the source, while setters can be unsupported. Inserted axes have zero block
 hints. Signed CRS mappings retain their source sign; removed or unmapped axes
 map to zero. Reversing a range does not add a new CRS-direction policy.
@@ -24,6 +25,8 @@ The two-element `valid_range` overrides separate minimum/maximum attributes.
 CF attributes are captured when the mask is constructed. Source samples remain
 live, and each read captures the current raw NoData once into owned native
 bytes. Removing or changing raw NoData affects an existing mask's next read.
+Mask writes return `false` and leave the source data unchanged. Invalid view or
+mask construction still throws; write rejection does not imply an exception.
 
 `UNMASK_FLAGS=meaning1,meaning2` selects CF flag meanings. Requested flags match
 by OR; all active missing/range conditions still apply. Flags support integer
@@ -81,7 +84,8 @@ The scientific/combined driver template closes a compressed NC4 writer before
 an independent read-only reopen. Raw Int16 slice/mask composition verifies stored
 units and unchanged metadata/data. Additional NC4 Int64/UInt64 arrays and scalars
 check exact sentinel neighbors and typed CF64 range/missing criteria. Positive
-alias writes use MEM; read-only NC4 slice and mask writes must fail. The explicit
+alias writes use MEM; read-only NC4 slice and mask writes must return `false`
+and preserve the source values. The explicit
 published-consumer copy list includes both new common API test classes.
 
 This is source implementation and fixture preparation. No C17 engine build,

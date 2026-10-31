@@ -54,7 +54,9 @@ class MDArrayMaskApiTest {
                     assertEquals(flags(0, 0, 0, 0, 1, 1, 0, 0), mask.readValues(longArrayOf(0), longArrayOf(8)))
                     assertContentEquals(doubleArrayOf(0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0),
                         mask.read(longArrayOf(0), longArrayOf(8)))
-                    assertFailsWith<GdalException> { mask.writeValues(longArrayOf(0), longArrayOf(1), flags(1)) }
+                    val beforeRejectedWrite = source.readValues(longArrayOf(0), longArrayOf(8))
+                    assertFalse(mask.writeValues(longArrayOf(0), longArrayOf(1), flags(1)))
+                    assertEquals(beforeRejectedWrite, source.readValues(longArrayOf(0), longArrayOf(8)))
                 }
             }
             array(group, "live", MDDataType.Numeric(GdalDataType.Int16), longArrayOf(2)) { source ->
