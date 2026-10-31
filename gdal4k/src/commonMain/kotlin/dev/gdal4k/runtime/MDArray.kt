@@ -7,6 +7,22 @@ interface MDArray {
     suspend fun getFullName(): String
     suspend fun getDimensions(): List<Dimension>
     /**
+     * Detached native unsigned element count, without reading samples. Scalars contain one value.
+     * A dimension product exceeding UInt64 returns the native zero sentinel, without an error;
+     * zero therefore does not universally mean an empty array. A count is not an allocation limit.
+     */
+    suspend fun getTotalElementsCount(): ULong
+    /**
+     * Detached native processing shape, in elements per axis; scalars return an empty list.
+     *
+     * The byte budget is advisory: a natural block may exceed it. Zero requests no expansion,
+     * not a default budget. The budget must fit native size_t (32 bits on current web engines).
+     * Planning uses stored element size; variable-length text/compound payloads are not included
+     * in a peak-memory bound. Shapes may differ between native pointer widths. No samples are read.
+     * Cancellation is checked at operation boundaries; there is no native progress callback.
+     */
+    suspend fun getProcessingChunkSize(maxChunkMemory: ULong): List<ULong>
+    /**
      * Current driver-defined auxiliary coordinate arrays, in native order.
      *
      * These are distinct from each Dimension's indexing variable. Repeated references remain
@@ -146,6 +162,18 @@ interface MDArray {
      * Native failures throw instead of returning null.
      */
     suspend fun getSpatialRef(): SpatialReference?
+    /**
+     * Assign or request clearing the driver's CRS metadata, without transforming samples.
+     *
+     * The input remains caller-owned and must stay open until this call finishes. MEM/VRT copy
+     * it; file drivers may serialize it and reconstruct axis mappings differently. Existing CRS
+     * copies returned by getSpatialRef remain independent after assignment or clearing.
+     *
+     * Returns the native acceptance result and throws surfaced native failures. Success alone
+     * does not prove durable assignment or clearing; reopen/read back when persistence matters.
+     * Cancellation is checked at operation boundaries and does not roll back native changes.
+     */
+    suspend fun setSpatialRef(spatialRef: SpatialReference?): Boolean
     /** Detached natural block sizes in dimension order. Zero means no hint; scalars return an empty list. */
     suspend fun getBlockSize(): List<ULong>
     /** Detached structural KEY=VALUE entries; empty when the driver provides no information. */
@@ -165,6 +193,16 @@ interface MDArray {
     suspend fun getOffsetEx(): MDNumericMetadata?
     suspend fun setScale(scale: Double): Boolean
     suspend fun setOffset(offset: Double): Boolean
+    /**
+     * Set scale metadata with a requested backing-attribute type, without changing raw samples.
+     * Unknown lets the driver choose. Drivers can ignore the request or retain an existing
+     * attribute's type; getScaleEx reports the actual metadata. The value still has Double
+     * precision. Returns native acceptance, throws surfaced failures, and does not promise
+     * persistence or rollback on cancellation. There is no native progress callback.
+     */
+    suspend fun setScale(scale: Double, storageType: Int): Boolean
+    /** Same driver-native storage request and mutation rules as the typed scale overload. */
+    suspend fun setOffset(offset: Double, storageType: Int): Boolean
     /** GDAL numeric type; non-numeric arrays return GdalDataType.Unknown. */
     suspend fun getDataType(): Int
     /** Numeric slices are converted to Float64, in row-major dimension order.

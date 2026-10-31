@@ -1,0 +1,369 @@
+name: Bounded artifact audit
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: bounded-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  bounded-audit:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/mdarray-planning-setters-audit-20261031'
+    name: bounded-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GDAL_AUDIT_HEAD: ${{ github.event.pull_request.head.sha }}
+      AUDIT_CONTAINER: bounded-audit-${{ github.run_id }}-${{ github.run_attempt }}
+      AUDIT_STATE: /workspace/shared/gdal4k-remote-audit/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact feature source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: producer
+      - name: Checkout immutable reviewed audit kit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 9a03c9b2113083964195db201325058fcebfdec2
+          fetch-depth: 1
+          persist-credentials: false
+          path: audit-kit
+      - name: Verify every kit byte before bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path("audit-kit").resolve()
+          assert subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"]).decode().strip()=="9a03c9b2113083964195db201325058fcebfdec2"
+          raw=(root/"kit.json").read_bytes();assert hashlib.sha256(raw).hexdigest()=="dbee5d6aa15b1034a62e278b96c07ef7a8c337d45591ef237ca5adac1aa90a63"
+          data=json.loads(raw)
+          for row in data["files"]+data["hostFiles"]:
+              relative=pathlib.PurePosixPath(row["gitPath"])
+              assert not relative.is_absolute() and ".." not in relative.parts
+              path=root/relative;assert path.resolve().is_relative_to(root) and not path.is_symlink()
+              body=path.read_bytes();assert len(body)==row["bytes"] and hashlib.sha256(body).hexdigest()==row["sha256"]
+          PY
+      - name: Install only the existing locked artifact SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix audit-kit/worker/upload-proof-parts --ignore-scripts --no-audit --no-fund
+      - name: Create one owned finite audit container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull docker.io/library/python@sha256:034c3e9d991f148d14c32ff8350286b91420baca7757d37819c7a9cc771317a0
+          docker create --name "$AUDIT_CONTAINER" --platform linux/amd64 --user 0 --memory=8g --memory-swap=8g --shm-size=3g \
+            -e GITHUB_TOKEN -e GITHUB_REPOSITORY -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e GITHUB_JOB -e GITHUB_SHA -e GDAL_AUDIT_HEAD \
+            docker.io/library/python@sha256:034c3e9d991f148d14c32ff8350286b91420baca7757d37819c7a9cc771317a0 sleep infinity
+          docker start "$AUDIT_CONTAINER"
+          docker exec "$AUDIT_CONTAINER" mkdir -p /checkout/producer /checkout/kit
+          docker cp producer/. "$AUDIT_CONTAINER":/checkout/producer
+          docker cp audit-kit/. "$AUDIT_CONTAINER":/checkout/kit
+          docker exec "$AUDIT_CONTAINER" chown -R --no-dereference 0:0 -- /checkout/producer /checkout/kit
+          docker exec "$AUDIT_CONTAINER" git -C /checkout/kit rev-parse HEAD
+          docker exec "$AUDIT_CONTAINER" git --version
+          CID=$(docker inspect --format "{{.Id}}" "$AUDIT_CONTAINER")
+          IMAGE_ID=$(docker inspect --format "{{.Image}}" "$AUDIT_CONTAINER")
+          docker exec -e GDAL_AUDIT_CONTAINER_ID="$CID" -e GDAL_AUDIT_IMAGE_ID="$IMAGE_ID" "$AUDIT_CONTAINER" \
+            python3 -B /checkout/kit/worker/remote_worker.py init --kit /checkout/kit \
+            --kit-commit 9a03c9b2113083964195db201325058fcebfdec2 --manifest-sha256 dbee5d6aa15b1034a62e278b96c07ef7a8c337d45591ef237ca5adac1aa90a63 \
+            --source-checkout /checkout/producer --state-root "$AUDIT_STATE"
+      - name: Retain bounded initialization failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/init"
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/init/." "proofs/init"
+      - name: Upload initialization failure
+        if: failure()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/init
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-init
+          retention-days: '90'
+      - name: Root-approved prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage prepare --wait-seconds 18000
+      - name: Retain prepare proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/prepare"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/prepare/." "proofs/prepare"
+      - name: Upload prepare bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/prepare
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-prepare
+          retention-days: '90'
+      - name: Root-approved headerPrepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage headerPrepare --wait-seconds 18000
+      - name: Retain headerPrepare proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/headerPrepare"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/headerPrepare/." "proofs/headerPrepare"
+      - name: Upload headerPrepare bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/headerPrepare
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-headerPrepare
+          retention-days: '90'
+      - name: Root-approved header
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage header --wait-seconds 18000
+      - name: Retain header proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/header"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/header/." "proofs/header"
+      - name: Upload header bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/header
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-header
+          retention-days: '90'
+      - name: Root-approved body
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage body --wait-seconds 18000
+      - name: Retain body proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/body"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/body/." "proofs/body"
+      - name: Upload body bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/body
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-body
+          retention-days: '90'
+      - name: Root-approved sourceBindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage sourceBindings --wait-seconds 18000
+      - name: Retain sourceBindings proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/sourceBindings"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/sourceBindings/." "proofs/sourceBindings"
+      - name: Upload sourceBindings bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/sourceBindings
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-sourceBindings
+          retention-days: '90'
+      - name: Root-approved maven
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage maven --wait-seconds 18000
+      - name: Retain maven proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/maven"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/maven/." "proofs/maven"
+      - name: Upload maven bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/maven
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-maven
+          retention-days: '90'
+      - name: Root-approved mavenAliasIndependent
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage mavenAliasIndependent --wait-seconds 18000
+      - name: Retain mavenAliasIndependent proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/mavenAliasIndependent"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/mavenAliasIndependent/." "proofs/mavenAliasIndependent"
+      - name: Upload mavenAliasIndependent bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/mavenAliasIndependent
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-mavenAliasIndependent
+          retention-days: '90'
+      - name: Root-approved defaultArm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage defaultArm64 --wait-seconds 18000
+      - name: Retain defaultArm64 proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/defaultArm64"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/defaultArm64/." "proofs/defaultArm64"
+      - name: Upload defaultArm64 bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/defaultArm64
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-defaultArm64
+          retention-days: '90'
+      - name: Root-approved combinedArm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage combinedArm64 --wait-seconds 18000
+      - name: Retain combinedArm64 proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/combinedArm64"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/combinedArm64/." "proofs/combinedArm64"
+      - name: Upload combinedArm64 bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/combinedArm64
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-combinedArm64
+          retention-days: '90'
+      - name: Root-approved windowsReadiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage windowsReadiness --wait-seconds 18000
+      - name: Retain windowsReadiness proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/windowsReadiness"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/windowsReadiness/." "proofs/windowsReadiness"
+      - name: Upload windowsReadiness bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/windowsReadiness
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-windowsReadiness
+          retention-days: '90'
+      - name: Root-approved platformScopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage platformScopes --wait-seconds 18000
+      - name: Retain platformScopes proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/platformScopes"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/platformScopes/." "proofs/platformScopes"
+      - name: Upload platformScopes bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/platformScopes
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-platformScopes
+          retention-days: '90'
+      - name: Root-approved aggregateCurrent
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage aggregateCurrent --wait-seconds 18000
+      - name: Retain aggregateCurrent proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/aggregateCurrent"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/aggregateCurrent/." "proofs/aggregateCurrent"
+      - name: Upload aggregateCurrent bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/aggregateCurrent
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-aggregateCurrent
+          retention-days: '90'
+      - name: Root-approved finalAcceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec "$AUDIT_CONTAINER" python3 -B /checkout/kit/worker/remote_worker.py step \
+            --state-root "$AUDIT_STATE" --stage finalAcceptance --wait-seconds 18000
+      - name: Retain finalAcceptance proof parts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "proofs/finalAcceptance"
+          python3 -c 'import os;v=os.statvfs(".");assert v.f_bavail*v.f_frsize>=2*1024**3+256*1024**2'
+          docker cp "$AUDIT_CONTAINER:$AUDIT_STATE/exports/finalAcceptance/." "proofs/finalAcceptance"
+      - name: Upload finalAcceptance bounded files
+        if: always()
+        uses: ./audit-kit/worker/upload-proof-parts
+        with:
+          path: proofs/finalAcceptance
+          name-prefix: audit-${{ github.run_id }}-${{ github.run_attempt }}-finalAcceptance
+          retention-days: '90'
+      - name: Remove only this job container
+        if: always()
+        shell: bash
+        run: docker rm -f "$AUDIT_CONTAINER" || true
