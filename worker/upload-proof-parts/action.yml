@@ -1,0 +1,12 @@
+name: Upload bounded audit proof parts
+description: Upload each indexed metadata part as a separate immutable artifact
+inputs:
+  path:
+    required: true
+  name-prefix:
+    required: true
+  retention-days:
+    default: '90'
+runs:
+  using: node24
+  main: upload.cjs
