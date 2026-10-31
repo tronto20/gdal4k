@@ -284,6 +284,7 @@ class MDArrayResampledApiTest {
         val path = "/vsimem/$datasetOutputPrefix-md-resampled-signed.vrt"
         val cases = listOf(Triple("negative_x", "2,-3", "2,-1"), Triple("negative_y", "-2,3", "-2,1"))
         val values = DoubleArray(32) { i -> 100.0 * (i / 16) + i % 16 + 1.0 }
+        val allBands = RasterIOOptions(bands = intArrayOf(1, 2))
         val xml = buildString {
             append("""<VRTDataset><Group name="/"><Dimension name="time" size="2"/><Dimension name="y" size="4" indexingVariable="y"/><Dimension name="x" size="4" indexingVariable="x"/>""")
             append("""<Array name="y"><DataType>Float64</DataType><DimensionRef ref="/y"/><RegularlySpacedValues start="3.5" increment="-1"/></Array>""")
@@ -327,9 +328,11 @@ class MDArrayResampledApiTest {
                                     requireNotNull(raster.getSpatialRef()).use { crs ->
                                         assertContentEquals(expectedRasterMapping, crs.getDataAxisToSRSAxisMapping())
                                     }
-                                    // Empty band selection is the public all-band, band-sequential contract.
-                                    assertEquals(0, raster.writeRaster(values))
-                                    assertContentEquals(values, raster.readRaster())
+                                    // Use buffered Dataset RasterIO; readRaster() without a buffer reads band 1.
+                                    assertEquals(0, raster.writeRaster(values, allBands))
+                                    val readBack = DoubleArray(values.size)
+                                    assertEquals(0, raster.readRaster(readBack, allBands))
+                                    assertContentEquals(values, readBack)
                                     val files = raster.warp("EPSG:3857", name = "$name-resampled-reference.tif", arguments = listOf("-r", "near"))
                                     runtime.openDataset(files).use { reference ->
                                         assertEquals(2, reference.getRasterCount())
@@ -344,7 +347,9 @@ class MDArrayResampledApiTest {
                                             finally { target.close() }
                                         view.use { result ->
                                             assertContentEquals(count, shape(result))
-                                            assertContentEquals(reference.readRaster(), result.read(longArrayOf(0, 0, 0), count))
+                                            val expected = DoubleArray(2 * height * width)
+                                            assertEquals(0, reference.readRaster(expected, allBands))
+                                            assertContentEquals(expected, result.read(longArrayOf(0, 0, 0), count))
                                             val dimensions = result.getDimensions()
                                             try {
                                                 assertEquals(listOf("time", "dimY", "dimX"), dimensions.map { it.getName() })
@@ -396,22 +401,38 @@ class MDArrayResampledApiTest {
                         srs.setAxisMappingStrategy(0); assertEquals(0, raster.setSpatialRef(srs))
                     }
                     assertEquals(0, raster.writeRaster(samples))
-                    val expected = raster.warp("EPSG:3857", name = "resampled-reference.tif", arguments = listOf("-r", "near"))
-                    runtime.openDataset(expected).use { reference ->
-                        raster.multiDimTranslate("-array", "band=1").use { multidimensional ->
-                            requireNotNull(multidimensional.getRootGroup()).use { group ->
-                                requireNotNull(group.openArray("Band1")).use { source ->
-                                    requireNotNull(source.getSpatialRef()).use { assertTrue(it.isGeographic()) }
-                                    val target = runtime.createSpatialReference("EPSG:3857")
-                                    val mapping = target.getDataAxisToSRSAxisMapping()
-                                    val view = try { source.getResampled(listOf(null, null), targetSRS = target) }
-                                        finally { target.close() }
-                                    view.use {
-                                        val sizes = longArrayOf(reference.getRasterYSize().toLong(), reference.getRasterXSize().toLong())
-                                        assertContentEquals(sizes, shape(it))
-                                        assertContentEquals(reference.readRaster(), it.read(longArrayOf(0, 0), sizes))
-                                        detached = requireNotNull(it.getSpatialRef())
-                                        assertContentEquals(mapping, requireNotNull(detached).getDataAxisToSRSAxisMapping())
+                    val persisted = raster.translate(name = "resampled-source.tif", arguments = emptyList())
+                    runtime.openDataset(persisted).use { fileBacked ->
+                        assertEquals(1, fileBacked.getRasterCount())
+                        assertEquals(4, fileBacked.getRasterXSize()); assertEquals(4, fileBacked.getRasterYSize())
+                        assertContentEquals(doubleArrayOf(0.0, 1.0, 0.0, 4.0, 0.0, -1.0), fileBacked.getGeoTransform())
+                        requireNotNull(fileBacked.getRasterBand(1)).use { assertEquals(GdalDataType.Float64, it.getRasterDataType()) }
+                        assertContentEquals(samples, fileBacked.readRaster(1))
+                        requireNotNull(fileBacked.getSpatialRef()).use {
+                            assertTrue(it.isGeographic()); assertEquals("4326", it.getAuthorityCode(""))
+                        }
+                        val expected = fileBacked.warp("EPSG:3857", name = "resampled-reference.tif", arguments = listOf("-r", "near"))
+                        runtime.openDataset(expected).use { reference ->
+                            fileBacked.multiDimTranslate("-array", "band=1").use { multidimensional ->
+                                requireNotNull(multidimensional.getRootGroup()).use { group ->
+                                    requireNotNull(group.openArray("Band1")).use { source ->
+                                        assertContentEquals(longArrayOf(4, 4), shape(source))
+                                        assertEquals(MDDataType.Numeric(GdalDataType.Float64), source.getExtendedDataType())
+                                        assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(4, 4)))
+                                        requireNotNull(source.getSpatialRef()).use {
+                                            assertTrue(it.isGeographic()); assertEquals("4326", it.getAuthorityCode(""))
+                                        }
+                                        val target = runtime.createSpatialReference("EPSG:3857")
+                                        val mapping = target.getDataAxisToSRSAxisMapping()
+                                        val view = try { source.getResampled(listOf(null, null), targetSRS = target) }
+                                            finally { target.close() }
+                                        view.use {
+                                            val sizes = longArrayOf(reference.getRasterYSize().toLong(), reference.getRasterXSize().toLong())
+                                            assertContentEquals(sizes, shape(it))
+                                            assertContentEquals(reference.readRaster(1), it.read(longArrayOf(0, 0), sizes))
+                                            detached = requireNotNull(it.getSpatialRef())
+                                            assertContentEquals(mapping, requireNotNull(detached).getDataAxisToSRSAxisMapping())
+                                        }
                                     }
                                 }
                             }
