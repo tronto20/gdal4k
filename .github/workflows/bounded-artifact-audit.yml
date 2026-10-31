@@ -67,6 +67,9 @@ jobs:
           docker exec "$AUDIT_CONTAINER" mkdir -p /checkout/producer /checkout/kit
           docker cp producer/. "$AUDIT_CONTAINER":/checkout/producer
           docker cp audit-kit/. "$AUDIT_CONTAINER":/checkout/kit
+          docker exec "$AUDIT_CONTAINER" chown -R --no-dereference 0:0 -- /checkout/producer /checkout/kit
+          docker exec "$AUDIT_CONTAINER" git -C /checkout/kit rev-parse HEAD
+          docker exec "$AUDIT_CONTAINER" git --version
           CID=$(docker inspect --format "{{.Id}}" "$AUDIT_CONTAINER")
           IMAGE_ID=$(docker inspect --format "{{.Image}}" "$AUDIT_CONTAINER")
           docker exec -e GDAL_AUDIT_CONTAINER_ID="$CID" -e GDAL_AUDIT_IMAGE_ID="$IMAGE_ID" "$AUDIT_CONTAINER" \
