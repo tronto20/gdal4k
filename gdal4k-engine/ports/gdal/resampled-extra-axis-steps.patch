@@ -1,0 +1,14 @@
+--- a/gcore/gdalmultidim.cpp
++++ b/gcore/gdalmultidim.cpp
+@@ -8548,7 +8548,10 @@
+             if ((--stack[dimIdx].nIters) == 0)
+                 break;
+             flushCaches[0] = true;
+-            ++m_poParentDS->m_anOffset[bYXBandOrder ? 2 : dimIdx];
++            // Read() validated every selected coordinate. Unsigned addition
++            // applies signed steps without narrowing offsets or negating INT64_MIN.
++            m_poParentDS->m_anOffset[bYXBandOrder ? 2 : dimIdx] +=
++                static_cast<GUInt64>(arrayStep[dimIdx]);
+             stack[dimIdx].dst_ptr += stack[dimIdx].dst_inc_offset;
+         }
+     }

@@ -125,6 +125,9 @@ private object DriverProfileFixtures {
         scientificArrayTranspose(r, name)
         scientificArrayUnscaled(r, name)
         scientificArrayViewMask(r, name)
+        scientificArrayCoordinateVariables(r, name)
+        scientificArrayStatistics(r, name)
+        scientificArrayResampled(r, name)
     }
 
     private suspend fun hdf5Copy(r: GdalRuntime): Dataset =
@@ -678,6 +681,232 @@ private object DriverProfileFixtures {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /** Coordinate associations persist in a closed and independently reopened NC4 file. */
+    private suspend fun scientificArrayCoordinateVariables(r: GdalRuntime, name: String) {
+        val signed = listOf("-9007199254740993", "9007199254740993").map { MDValue.Numeric(it) }
+        val unsigned = listOf("9007199254740993", "18446744073709551615").map { MDValue.Numeric(it) }
+        val longitude = listOf("0.25", "0.5", "0.75", "1.25", "1.5", "1.75").map { MDValue.Numeric(it) }
+        val latitude = listOf("-0.25", "-0.5", "-0.75", "-1.25", "-1.5", "-1.75").map { MDValue.Numeric(it) }
+        ownedFile(r, "netCDF", "$name-md-coordinate-variables.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("scanline", 2)).use { scanline ->
+                        requireNotNull(group.createDimension("pixel", 3)).use { pixel ->
+                            suspend fun put(name: String, dimensions: List<Dimension>, type: Int,
+                                            shape: LongArray, values: List<MDValue>) {
+                                requireNotNull(group.createArray(name, dimensions, type)).use {
+                                    assertTrue(it.writeValues(LongArray(shape.size), shape, values))
+                                }
+                            }
+                            put("longitude", listOf(scanline, pixel), GdalDataType.Float64, longArrayOf(2, 3), longitude)
+                            put("latitude", listOf(scanline, pixel), GdalDataType.Float64, longArrayOf(2, 3), latitude)
+                            put("signed", listOf(scanline), GdalDataType.Int64, longArrayOf(2), signed)
+                            put("unsigned", listOf(scanline), GdalDataType.UInt64, longArrayOf(2), unsigned)
+                            requireNotNull(group.createArray("signal", listOf(scanline, pixel), GdalDataType.Int16)).use { source ->
+                                assertTrue(source.writeValues(longArrayOf(0, 0), longArrayOf(2, 3), (1..6).map { MDValue.Numeric(it) }))
+                                requireNotNull(source.createAttribute("coordinates", longArrayOf(), MDDataType.Text())).use {
+                                    // netCDF accepts comma or space separators; MEM does not share that parser.
+                                    assertTrue(it.writeValues(listOf(MDValue.Text("unsigned, latitude longitude, signed latitude"))))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // All writer handles and the underlying file have closed before this read-only open.
+            r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.openArray("signal")).use { source ->
+                        val coordinates = source.getCoordinateVariables()
+                        try {
+                            assertEquals(listOf("unsigned", "latitude", "longitude", "signed", "latitude"), coordinates.map { it.getName() })
+                            val expected = listOf(
+                                Triple(GdalDataType.UInt64, longArrayOf(2), unsigned),
+                                Triple(GdalDataType.Float64, longArrayOf(2, 3), latitude),
+                                Triple(GdalDataType.Float64, longArrayOf(2, 3), longitude),
+                                Triple(GdalDataType.Int64, longArrayOf(2), signed),
+                                Triple(GdalDataType.Float64, longArrayOf(2, 3), latitude))
+                            for ((array, wanted) in coordinates.zip(expected)) {
+                                assertEquals(MDDataType.Numeric(wanted.first), array.getExtendedDataType())
+                                val shape = mutableListOf<Long>()
+                                for (dimension in array.getDimensions()) dimension.use { shape.add(it.getSize()) }
+                                assertContentEquals(wanted.second, shape.toLongArray())
+                                assertEquals(wanted.third, array.readValues(LongArray(wanted.second.size), wanted.second))
+                            }
+                            coordinates[1].close(); coordinates[1].close()
+                            assertEquals(latitude, coordinates[4].readValues(longArrayOf(0, 0), longArrayOf(2, 3)))
+                            assertEquals("signal", source.getName())
+                            dataset.close()
+                            for (coordinate in coordinates) assertFailsWith<IllegalStateException> { coordinate.getName() }
+                            assertFailsWith<IllegalStateException> { source.getCoordinateVariables() }
+                        } finally {
+                            withContext(NonCancellable) { for (coordinate in coordinates.asReversed()) coordinate.close() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Fresh views from an independently reopened tiny NC4 source with actual coordinate arrays. */
+    private suspend fun scientificArrayResampled(r: GdalRuntime, name: String) {
+        val samples = DoubleArray(16) { it + 1.0 }
+        val expectedNearest = doubleArrayOf(6.0, 8.0, 14.0, 16.0)
+        val expectedAverage = doubleArrayOf(3.5, 5.5, 11.5, 13.5)
+        ownedFile(r, "netCDF", "$name-md-resampled.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 4, "HORIZONTAL_Y", "NORTH")).use { y ->
+                        requireNotNull(group.createDimension("x", 4, "HORIZONTAL_X", "EAST")).use { x ->
+                            for ((dimension, coordinates) in listOf(y to doubleArrayOf(3.5, 2.5, 1.5, 0.5),
+                                x to doubleArrayOf(0.5, 1.5, 2.5, 3.5))) {
+                                // netCDF discovers its indexing variable by matching dimension/array names.
+                                requireNotNull(group.createArray(dimension.getName(), listOf(dimension), GdalDataType.Float64)).use { axis ->
+                                    assertTrue(axis.write(longArrayOf(0), longArrayOf(4), coordinates))
+                                }
+                            }
+                            requireNotNull(group.createArray("signal", listOf(y, x), GdalDataType.Float64,
+                                options = listOf("BLOCKSIZE=2,2", "COMPRESS=DEFLATE", "ZLEVEL=1"))).use { array ->
+                                // Define _FillValue before the first data write, as required by netCDF.
+                                assertTrue(array.setNoDataValue(MDValue.Numeric(-9999)))
+                                assertTrue(array.write(longArrayOf(0, 0), longArrayOf(4, 4), samples))
+                            }
+                        }
+                    }
+                }
+            }
+            // Every writer handle is closed. Each open constructs and releases independent views.
+            repeat(2) {
+                r.openDataset(path, DatasetOpenOptions(kind = DatasetKind.Multidimensional)).use { dataset ->
+                    requireNotNull(dataset.getRootGroup()).use { group ->
+                        requireNotNull(group.openArray("signal")).use { source ->
+                            val dimensions = source.getDimensions()
+                            try {
+                                assertEquals(listOf("y", "x"), dimensions.map { it.getName() })
+                                for ((dimension, expected) in dimensions.zip(listOf(doubleArrayOf(3.5, 2.5, 1.5, 0.5),
+                                    doubleArrayOf(0.5, 1.5, 2.5, 3.5)))) {
+                                    requireNotNull(dimension.getIndexingVariable()).use { axis ->
+                                        assertContentEquals(expected, axis.read(longArrayOf(0), longArrayOf(4)))
+                                    }
+                                }
+                            } finally { for (dimension in dimensions.asReversed()) dimension.close() }
+                            source.getResampled(listOf(null, null)).use { automatic ->
+                                assertEquals(MDDataType.Numeric(GdalDataType.Float64), automatic.getExtendedDataType())
+                                assertEquals(MDValue.Numeric(-9999), automatic.getNoDataValue())
+                                assertContentEquals(samples, automatic.read(longArrayOf(0, 0), longArrayOf(4, 4)))
+                            }
+                            requireNotNull(r.getDriver("MEM")).use { memoryDriver ->
+                                requireNotNull(memoryDriver.createMultidimensional("")).use { targets ->
+                                    requireNotNull(targets.getRootGroup()).use { targetGroup ->
+                                        requireNotNull(targetGroup.createDimension("target_y", 2)).use { y ->
+                                            requireNotNull(targetGroup.createDimension("target_x", 2)).use { x ->
+                                                for ((algorithm, expected) in listOf(RasterResampling.Nearest to expectedNearest,
+                                                    RasterResampling.Average to expectedAverage)) {
+                                                    source.getResampled(listOf(y, x), algorithm).use { view ->
+                                                        assertEquals(MDDataType.Numeric(GdalDataType.Float64), view.getExtendedDataType())
+                                                        val outputDimensions = view.getDimensions()
+                                                        try {
+                                                            assertEquals(listOf("dimY", "dimX"), outputDimensions.map { it.getName() })
+                                                            assertEquals(listOf(2L, 2L), outputDimensions.map { it.getSize() })
+                                                            for ((dimension, expectedAxis) in outputDimensions.zip(listOf(
+                                                                doubleArrayOf(3.0, 1.0), doubleArrayOf(1.0, 3.0)))) {
+                                                                requireNotNull(dimension.getIndexingVariable()).use { axis ->
+                                                                    assertContentEquals(expectedAxis, axis.read(longArrayOf(0), longArrayOf(2)))
+                                                                }
+                                                            }
+                                                        } finally { for (dimension in outputDimensions.asReversed()) dimension.close() }
+                                                        assertContentEquals(expected, view.read(longArrayOf(0, 0), longArrayOf(2, 2)))
+                                                        assertFalse(view.write(longArrayOf(0, 0), longArrayOf(1, 1), doubleArrayOf(99.0)))
+                                                        assertFalse(view.writeValues(longArrayOf(0, 0), longArrayOf(1, 1), listOf(MDValue.Numeric(99))))
+                                                        assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(4, 4)))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Tiny independently owned NC4/PAM cache and explicit metadata-update contract. */
+    private suspend fun scientificArrayStatistics(r: GdalRuntime, name: String) {
+        val read = DatasetOpenOptions(kind = DatasetKind.Multidimensional)
+        val update = DatasetOpenOptions(accessMode = DatasetAccessMode.Update, kind = DatasetKind.Multidimensional)
+        val expected = MDStatistics(1.0, 5.0, 3.0, kotlin.math.sqrt(2.0), 5uL)
+        suspend fun check(stats: MDStatistics?) {
+            val value = assertNotNull(stats)
+            assertEquals(expected.minimum, value.minimum); assertEquals(expected.maximum, value.maximum)
+            assertEquals(expected.mean, value.mean); assertEquals(expected.standardDeviation, value.standardDeviation, 1e-12)
+            assertEquals(expected.validCount, value.validCount)
+        }
+        ownedFile(r, "netCDF", "$name-md-statistics.nc") { driver, path ->
+            requireNotNull(driver.createMultidimensional(path, options = listOf("FORMAT=NC4"))).use { dataset ->
+                requireNotNull(dataset.getRootGroup()).use { group ->
+                    requireNotNull(group.createDimension("y", 2)).use { y ->
+                        requireNotNull(group.createDimension("x", 3)).use { x ->
+                            requireNotNull(group.createArray("values", listOf(y, x), GdalDataType.Float64)).use { array ->
+                                assertTrue(array.setNoDataValue(MDValue.Numeric(6)))
+                                assertTrue(array.write(longArrayOf(0, 0), longArrayOf(2, 3), doubleArrayOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)))
+                            }
+                        }
+                    }
+                }
+            }
+            suspend fun array(options: DatasetOpenOptions = read, block: suspend (Dataset, MDArray) -> Unit) {
+                r.openDataset(path, options).use { dataset ->
+                    requireNotNull(dataset.getRootGroup()).use { group ->
+                        requireNotNull(group.openArray("values")).use { block(dataset, it) }
+                    }
+                }
+            }
+            array { _, source ->
+                assertNull(source.getStatistics())
+                check(source.getStatistics(force = true))
+                assertNull(source.getAttribute("actual_range"))
+                source.getView("[1,1]").use {
+                    assertNull(it.getStatistics())
+                    assertEquals(MDStatistics(5.0, 5.0, 5.0, 0.0, 1uL), it.getStatistics(force = true))
+                }
+            }
+            // No writer/source/view handles remain: these lookups read the persisted PAM cache.
+            array { dataset, source ->
+                check(source.getStatistics())
+                source.getView("[1,1]").use { assertEquals(MDStatistics(5.0, 5.0, 5.0, 0.0, 1uL), it.getStatistics()) }
+                dataset.clearStatistics(); assertNull(source.getStatistics())
+            }
+            array { _, source ->
+                assertNull(source.getStatistics())
+                check(source.computeStatistics(approximate = true))
+                assertNull(source.getStatistics())
+                check(source.getStatistics(approximate = true))
+            }
+            array { dataset, source ->
+                assertNull(source.getStatistics()); check(source.getStatistics(approximate = true))
+                dataset.clearStatistics(); assertNull(source.getStatistics(approximate = true))
+            }
+            array(update) { _, source ->
+                assertNull(source.getStatistics())
+                check(source.computeStatistics())
+                assertNull(source.getAttribute("actual_range"))
+                check(source.computeStatistics(approximate = true, options = listOf("UPDATE_METADATA=YES")))
+                assertNull(source.getAttribute("actual_range"))
+                check(source.computeStatistics(options = listOf("UPDATE_METADATA=YES")))
+            }
+            array { _, source ->
+                check(source.getStatistics())
+                requireNotNull(source.getAttribute("actual_range")).use {
+                    assertEquals(listOf(MDValue.Numeric(1), MDValue.Numeric(5)), it.readValues())
+                }
+                assertContentEquals(doubleArrayOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0), source.read(longArrayOf(0, 0), longArrayOf(2, 3)))
             }
         }
     }

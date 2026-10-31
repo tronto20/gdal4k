@@ -97,6 +97,11 @@ def engine_files(root):
     if data.get('target') != TARGET or data.get('gdal') != '3.12.4' or data.get('jxl') is not True:
         raise ValueError('Wrong current ARM engine manifest')
     files = {manifest}
+    for name in ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json'):
+        metadata = owned(build, f'engine/{TARGET}/{name}')
+        if not metadata.is_file():
+            raise ValueError('Missing current ARM SDK input metadata')
+        files.add(metadata)
     for name, digest in data['artifacts'].items():
         path = owned(build, name)
         if not path.is_file() or sha(path) != digest:

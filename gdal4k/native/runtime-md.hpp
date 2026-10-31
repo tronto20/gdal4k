@@ -186,6 +186,71 @@ inline CPLJSONObject mdBinaryGet(const MDType& type,const char* data,size_t coun
     }
     CPLJSONObject metadata,result;metadata.Add("binaryMDValues",true);metadata.Add("count",static_cast<int>(count));result.Add("value",metadata);return result;
 }
+inline CPLJSONObject mdCoordinateVariables(Runtime& runtime, GDALMDArrayH source,
+                                          unsigned long long parent) {
+    CPLErrorReset();
+    size_t count = 0;
+    auto arrays = GDALMDArrayGetCoordinateVariables(source, &count);
+    struct OwnedCoordinates {
+        Runtime& runtime;
+        GDALMDArrayH* pointers;
+        size_t count;
+        unsigned long long firstHandle;
+        unsigned long long parent;
+        bool transferred = false;
+        ~OwnedCoordinates() {
+            if (!pointers) return;
+            if (transferred) {
+                // Each C wrapper now belongs to its own Runtime entry.
+                CPLFree(pointers);
+                return;
+            }
+            // result() can insert an entry before constructing its JSON value.
+            // Detach only this batch's exact ID/pointer bindings, without closing
+            // or freeing them; the original array list below still owns all of them.
+            auto entry = runtime.handles.upper_bound(firstHandle);
+            while (entry != runtime.handles.end() && entry->first <= runtime.next) {
+                const auto index = entry->first - firstHandle - 1;
+                const auto& item = entry->second;
+                if (index < count && item.pointer == pointers[static_cast<size_t>(index)] &&
+                    item.type == "MDArray" && item.owned && item.parent == parent) {
+                    entry = runtime.handles.erase(entry);
+                } else {
+                    ++entry;
+                }
+            }
+            // Keep next monotonic even when registration or JSON construction failed.
+            GDALReleaseArrays(pointers, count);
+        }
+    } owned{runtime, arrays, count, runtime.next, parent};
+    fileEnsure(CPLGetLastErrorType() < CE_Failure,
+               "Cannot obtain multidimensional coordinate variables");
+    // CPLMalloc(0) may return nullptr or an allocation. Both represent an empty list.
+    require(count == 0 || arrays != nullptr, "Invalid coordinate variable array list");
+    require(count <= static_cast<size_t>(INT_MAX), "Coordinate variable list exceeds bridge limit");
+    require(count <= std::numeric_limits<unsigned long long>::max() - runtime.next,
+            "Runtime handle IDs exhausted");
+    for (size_t i = 0; i < count; ++i) {
+        require(arrays[i] != nullptr, "Null multidimensional coordinate variable");
+    }
+    CPLJSONArray values;
+    for (size_t i = 0; i < count; ++i) {
+        auto registered = runtime.result(arrays[i], "MDArray", true, parent);
+        const auto child = registered["value"];
+        require(child.GetType() == CPLJSONObject::Type::String &&
+                    child.ToString() == std::to_string(runtime.next),
+                "Cannot encode coordinate variable handle");
+        values.Add(child);
+        require(values.Size() == static_cast<int>(i + 1), "Cannot encode coordinate variable list");
+    }
+    auto result = value(values);
+    const auto encoded = result["value"];
+    require(encoded.GetType() == CPLJSONObject::Type::Array &&
+                encoded.ToArray().Size() == static_cast<int>(count),
+            "Cannot encode coordinate variable result");
+    owned.transferred = true;
+    return result;
+}
 inline CPLJSONObject mdTranspose(Runtime& runtime, GDALMDArrayH source,
                                 const CPLJSONObject& args, unsigned long long parent) {
     auto mapping = args["newAxisToOldAxis"];
@@ -261,6 +326,69 @@ inline std::string mdViewString(const CPLJSONObject& input, const char* message)
     }
     return text;
 }
+inline void* mdResampledHandle(Runtime& runtime, const CPLJSONObject& input, const char* type) {
+    require(input.GetType() == CPLJSONObject::Type::Object, "Resampled input must be a handle object");
+    require(mdViewString(input["type"], "Handle type must be a string") == type,
+            "Resampled input has the wrong handle type");
+    const auto encoded = mdViewString(input["handle"], "Handle ID must be a string");
+    unsigned long long id = 0;
+    const auto parsed = std::from_chars(encoded.data(), encoded.data() + encoded.size(), id);
+    require(parsed.ec == std::errc() && parsed.ptr == encoded.data() + encoded.size() &&
+                id > 0 && std::to_string(id) == encoded,
+            "Resampled input has an invalid handle ID");
+    return runtime.get(id, type);
+}
+inline CPLJSONObject mdResampled(Runtime& runtime, GDALMDArrayH source,
+                                const CPLJSONObject& args, unsigned long long parent) {
+    const auto input = args["newDimensions"];
+    require(input.GetType() == CPLJSONObject::Type::Array, "Resampled dimensions must be an array");
+    const auto rank = GDALMDArrayGetDimensionCount(source);
+    require(rank >= 2 && rank <= static_cast<size_t>(INT_MAX) &&
+                input.ToArray().Size() == static_cast<int>(rank),
+            "Resampled dimensions must match source rank (at least two)");
+    std::vector<GDALDimensionH> dimensions;
+    dimensions.reserve(rank);
+    for (const auto& item : input.ToArray()) {
+        dimensions.push_back(item.GetType() == CPLJSONObject::Type::Null ? nullptr :
+            static_cast<GDALDimensionH>(mdResampledHandle(runtime, item, "Dimension")));
+    }
+    const auto algorithm = args["resampling"];
+    require(algorithm.GetType() == CPLJSONObject::Type::Integer ||
+                algorithm.GetType() == CPLJSONObject::Type::Long,
+            "Resampling algorithm must be an integer");
+    const auto code = algorithm.ToLong();
+    require((code >= 0 && code <= 6) || code == 14, "Unsupported multidimensional resampling algorithm");
+    const auto target = args["targetSRS"];
+    auto srs = target.GetType() == CPLJSONObject::Type::Null ? nullptr :
+        static_cast<OGRSpatialReferenceH>(mdResampledHandle(runtime, target, "SpatialReference"));
+    const auto inputOptions = args["options"];
+    require(inputOptions.GetType() == CPLJSONObject::Type::Array, "Resampled options must be an array");
+    for (const auto& option : inputOptions.ToArray()) {
+        mdViewString(option, "Resampled options must be strings");
+    }
+    Strings options(inputOptions.ToArray());
+    require(runtime.next < std::numeric_limits<unsigned long long>::max(), "Runtime handle IDs exhausted");
+    CPLErrorReset();
+    auto view = GDALMDArrayGetResampled(source, dimensions.size(), dimensions.data(),
+        static_cast<GDALRIOResampleAlg>(code), srs, options.data());
+    struct OwnedView {
+        Runtime& runtime;
+        GDALMDArrayH pointer;
+        unsigned long long firstHandle;
+        ~OwnedView() {
+            if (!pointer) return;
+            auto entry = runtime.handles.find(runtime.next);
+            if (runtime.next > firstHandle && entry != runtime.handles.end() &&
+                entry->second.pointer == pointer) runtime.handles.erase(entry);
+            GDALMDArrayRelease(pointer);
+        }
+    } owned{runtime, view, runtime.next};
+    fileEnsure(view != nullptr && CPLGetLastErrorType() < CE_Failure,
+               "Cannot obtain resampled multidimensional array");
+    auto result = runtime.result(view, "MDArray", true, parent);
+    owned.pointer = nullptr;
+    return result;
+}
 inline CPLJSONObject mdViewOrMask(Runtime& runtime, GDALMDArrayH source,
                                  const CPLJSONObject& args, unsigned long long parent, bool mask) {
     const auto input = args[mask ? "options" : "viewExpr"];
@@ -294,6 +422,48 @@ inline CPLJSONObject mdViewOrMask(Runtime& runtime, GDALMDArrayH source,
     auto result = runtime.result(view, "MDArray", true, parent);
     owned.pointer = nullptr;
     return result;
+}
+inline CPLJSONObject mdStatistics(GDALMDArrayH source, const CPLJSONObject& args, bool compute) {
+    require(args["approximate"].GetType() == CPLJSONObject::Type::Boolean,
+            "Statistics approximate must be a boolean");
+    const bool approximate = args.GetBool("approximate");
+    CPLJSONArray inputOptions;
+    bool force = false;
+    if (compute) {
+        const auto input = args["options"];
+        require(input.GetType() == CPLJSONObject::Type::Array, "Statistics options must be an array");
+        inputOptions = input.ToArray();
+        for (const auto& option : inputOptions) {
+            mdViewString(option, "Statistics options must be strings");
+        }
+    } else {
+        require(args["force"].GetType() == CPLJSONObject::Type::Boolean,
+                "Statistics force must be a boolean");
+        force = args.GetBool("force");
+    }
+    Strings options(inputOptions);
+    double moments[4] = {};
+    GUInt64 validCount = 0;
+    CPLErrorReset();
+    if (compute) {
+        fileEnsure(GDALMDArrayComputeStatisticsEx(source, nullptr, approximate,
+                       moments, moments + 1, moments + 2, moments + 3, &validCount,
+                       progress, activeProgress, options.data()) != 0,
+                   "Cannot compute multidimensional statistics");
+    } else {
+        const auto code = GDALMDArrayGetStatistics(source, nullptr, approximate, force,
+            moments, moments + 1, moments + 2, moments + 3, &validCount, progress, activeProgress);
+        // This explicit status means nothing was done. Output slots are not a result.
+        if (!force && code == CE_Warning) return nullValue();
+        fileEnsure(code == CE_None, "Cannot obtain multidimensional statistics");
+    }
+    CPLJSONObject result;
+    result.Add("minimum", value(moments[0])["value"]);
+    result.Add("maximum", value(moments[1])["value"]);
+    result.Add("mean", value(moments[2])["value"]);
+    result.Add("standardDeviation", value(moments[3])["value"]);
+    result.Add("validCount", std::to_string(validCount));
+    return value(result);
 }
 inline CPLJSONObject createExtendedArray(Runtime& r,GDALGroupH group,const CPLJSONObject& a,unsigned long long id) {
     auto type=mdType(a.GetObj("dataType"));std::vector<GDALDimensionH> dims;for(auto d:a.GetArray("dimensions"))dims.push_back(static_cast<GDALDimensionH>(r.arg(d)));

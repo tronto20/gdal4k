@@ -88,6 +88,9 @@ class TransferTest(unittest.TestCase):
                 path = build/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
             arm.save(build/'engine/linux-arm64/manifest.json', dict(target='linux-arm64', gdal='3.12.4', jxl=True,
                      artifacts={name:hashlib.sha256(data).hexdigest() for name,data in paths.items()}))
+            for name in ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json'):
+                arm.save(build / 'engine/linux-arm64' / name,
+                         dict(unitTransportOnly=True, context=tree.relative_to(root).as_posix(), name=name))
         files = {'gdal4k-runtime/build/bin/linuxArm64/debugTest/test.kexe': bytes(binary),
                  'verification/results/published-consumer-linuxArm64/bin/linuxArm64/debugTest/test.kexe': bytes(binary),
                  'verification/build/consumer-maven/dev/tronto/gdal4k/unit/0/unit.pom': b'<unit/>',
@@ -126,9 +129,35 @@ class TransferTest(unittest.TestCase):
             self.assertEqual(0o755,binary.stat().st_mode&0o777)
             self.assertTrue(json.loads((snapshot/'verification/results/published-consumer-linuxArm64/result.json').read_text())['compiled_only'])
             self.assertFalse((snapshot/'gdal4k-engine/build/engine/linux-arm64/installed').exists())
+            for tree in [runtime, snapshot]:
+                engine = tree / 'gdal4k-engine/build/engine/linux-arm64'
+                payload = json.loads((engine / 'manifest.json').read_text())
+                self.assertEqual(['engine/linux-arm64/libgdal4k.a'], list(payload['artifacts']))
+                for name in ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json'):
+                    self.assertTrue(json.loads((engine / name).read_text())['unitTransportOnly'])
+                    self.assertIn((engine / name).relative_to(runtime).as_posix(), restored['files'])
             self.assertEqual(archive.stat().st_size,json.loads(archive.with_suffix('.gz.json').read_text())['bytes'])
             with self.assertRaisesRegex(ValueError,'existing destination'):
                 arm.restore_transfer(runtime,archive)
+
+    def test_missing_or_linked_sdk_metadata_rejected_by_engine_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            engine = root / 'gdal4k-engine/build/engine/linux-arm64'
+            engine.mkdir(parents=True)
+            arm.save(engine / 'manifest.json', dict(target='linux-arm64', gdal='3.12.4', jxl=True, artifacts={}))
+            names = ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json')
+            for name in names: (engine / name).write_text('{}')
+            for name in names:
+                metadata = engine / name
+                metadata.unlink()
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'SDK input metadata'):
+                    arm.engine_files(root)
+                try: metadata.symlink_to(engine / 'manifest.json')
+                except OSError: self.skipTest('File symlinks are unavailable')
+                with self.assertRaisesRegex(ValueError, 'symlink'):
+                    arm.engine_files(root)
+                metadata.unlink(); metadata.write_text('{}')
 
     def test_hash_tamper_and_symlink_member_rejected_before_any_output_write(self):
         with tempfile.TemporaryDirectory() as temporary:

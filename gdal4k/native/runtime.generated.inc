@@ -1706,8 +1706,20 @@
     if(type=="MDArray" && method=="getDimensions") {
         size_t n=0;auto dims=GDALMDArrayGetDimensions(static_cast<GDALMDArrayH>(h),&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);
     }
+    if(type=="MDArray" && method=="getCoordinateVariables") {
+        return mdCoordinateVariables(r,static_cast<GDALMDArrayH>(h),id);
+    }
+    if(type=="MDArray" && method=="getStatistics_Boolean_Boolean") {
+        return mdStatistics(static_cast<GDALMDArrayH>(h),a,false);
+    }
+    if(type=="MDArray" && method=="computeStatistics_Boolean_List_String") {
+        return mdStatistics(static_cast<GDALMDArrayH>(h),a,true);
+    }
     if(type=="MDArray" && method=="transpose_IntArray") {
         return mdTranspose(r,static_cast<GDALMDArrayH>(h),a,id);
+    }
+    if(type=="MDArray" && method=="getResampled_List_Dimension_RasterResampling_SpatialReference_List_String") {
+        return mdResampled(r,static_cast<GDALMDArrayH>(h),a,id);
     }
     if(type=="MDArray" && method=="getUnscaled") {
         return mdUnscaled(r,static_cast<GDALMDArrayH>(h),id);

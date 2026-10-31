@@ -15,6 +15,8 @@ vcpkg_from_github(
         transpose-signed-srs-axis-mapping.patch
         unscaled-nodata-and-write-type.patch
         mdarray-view-mask-safety-and-exact-metadata.patch
+        resampled-extra-axis-steps.patch
+        resampled-signed-srs-axis-mapping.patch
 )
 vcpkg_find_acquire_program(PYTHON3)
 vcpkg_execute_required_process(
