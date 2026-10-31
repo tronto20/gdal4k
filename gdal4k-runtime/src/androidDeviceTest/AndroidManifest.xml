@@ -1,8 +1,0 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
-        <provider
-            android:name="dev.gdal4k.UriFixtureProvider"
-            android:authorities="dev.gdal4k.uri-fixture"
-            android:exported="true" />
-    </application>
-</manifest>
