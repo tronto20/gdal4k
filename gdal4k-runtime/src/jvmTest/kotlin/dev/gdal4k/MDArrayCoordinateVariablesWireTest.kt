@@ -210,8 +210,11 @@ class MDArrayCoordinateVariablesWireTest {
             calls.closeFailures += listOf("42", "43")
             val failure = assertFailsWith<GdalException> { source.getCoordinateVariables() }
             assertEquals("primary failure", failure.message)
+            // Coroutine stacktrace recovery may wrap the original primary exception.
+            val primary = (failure.cause as? GdalException) ?: failure
+            assertEquals("primary failure", primary.message)
             assertEquals(listOf("43", "42"), calls.closed)
-            assertEquals(listOf("cleanup:43", "cleanup:42"), failure.suppressedExceptions.map { it.message })
+            assertEquals(listOf("cleanup:43", "cleanup:42"), primary.suppressedExceptions.map { it.message })
             assertEquals("array:7", source.getName())
         } finally { engine.close() }
     }

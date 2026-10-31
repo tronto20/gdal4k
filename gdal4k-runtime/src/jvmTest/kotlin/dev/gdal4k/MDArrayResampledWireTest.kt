@@ -214,7 +214,11 @@ class MDArrayResampledWireTest {
             val source = BundledMDArray(engine, "7", null)
             calls.reply = """{"error":"native primary","allocatedHandles":["7","42"]}"""; calls.closeFailures += "42"
             val native = assertFailsWith<GdalException> { source.getResampled(listOf(null, null)) }
-            assertEquals("native primary", native.message); assertEquals("cleanup:42", native.suppressedExceptions.single().message)
+            assertEquals("native primary", native.message)
+            // Coroutine stacktrace recovery may wrap the original primary exception.
+            val primary = (native.cause as? GdalException) ?: native
+            assertEquals("native primary", primary.message)
+            assertEquals("cleanup:42", primary.suppressedExceptions.single().message)
             assertEquals(listOf("42"), calls.closed); calls.closed.clear()
             calls.reply = """{"result":{"value":"43"},"allocatedHandles":["43"]}"""; calls.closeFailures += "43"
             val expected = IllegalStateException("observer primary")
