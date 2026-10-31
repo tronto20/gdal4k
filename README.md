@@ -386,6 +386,21 @@ NoData·단위·scale/offset은 원본의 메타데이터를 읽으며, 설정�
 진행 관찰자 실패 시 새 뷰를 해제합니다. GDAL 호출 도중의 즉시 중단을 보장하지는 않습니다.
 검증 데이터와 실행 범위는 [mdarray-transpose.md](verification/mdarray-transpose.md)에 기록합니다.
 
+### 다차원 슬라이스와 유효성 마스크
+
+`array.getView("[::-1,::2]")`는 원본을 역순·간격으로 선택하는 지연 뷰입니다.
+정수 인덱스, `start:stop:step`, `...`, `newaxis`와 인용한 복합 필드 이름을 지원합니다.
+기본 슬라이스 쓰기는 쓰기 가능한 원본에 반영되며, 필드 추출 쓰기는 지원하지 않습니다.
+빈 결과 범위는 실패하고 스칼라 결과에는 빈 start/count 배열을 사용합니다.
+
+`array.getMask()`는 숫자 원본의 NoData·NaN과 CF 유효 범위를 결합한 읽기 전용
+Byte 뷰를 반환합니다. 값은 무효 `0`, 유효 `1`이며, Int64/UInt64 판정은 정수 정밀도를
+유지합니다. CF 조건은 뷰 생성 시 캡처하고 원본 값과 NoData는 다음 읽기에 반영합니다.
+`getMask(listOf("UNMASK_FLAGS=land,water"))`로 CF 플래그를 선택할 수 있습니다.
+복소수 판정은 실수 성분만 사용하며, unscaled 뷰의 CF 범위를 물리 단위로 자동 변환하지
+않습니다. 두 뷰 모두 원본 수명에 종속되고 취소는 호출 경계에서 확인합니다.
+구현과 검증 범위는 [mdarray-view-mask.md](verification/mdarray-view-mask.md)에 기록합니다.
+
 ### 다차원 변환
 
 `Dataset.multiDimTranslate`는 고정 GDAL 3.12.4의 GDALMultiDimTranslate로 배열·그룹을

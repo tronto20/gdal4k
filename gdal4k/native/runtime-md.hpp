@@ -247,6 +247,54 @@ inline CPLJSONObject mdUnscaled(Runtime& runtime, GDALMDArrayH source,
     owned.pointer = nullptr;
     return result;
 }
+inline std::string mdViewString(const CPLJSONObject& input, const char* message) {
+    require(input.GetType() == CPLJSONObject::Type::String, message);
+    const auto text = std::string(input.ToString());
+    require(text.find('\0') == std::string::npos, "NUL in multidimensional view argument");
+    // Check the JSON representation too: some JSON string accessors expose a
+    // C string and would truncate an embedded NUL before the check above.
+    const auto encoded = input.Format(CPLJSONObject::PrettyFormat::Plain);
+    for (size_t i = 0; i < encoded.size(); ++i) {
+        if (encoded[i] != '\\') continue;
+        ++i;
+        require(encoded.compare(i, 5, "u0000") != 0, "NUL in multidimensional view argument");
+    }
+    return text;
+}
+inline CPLJSONObject mdViewOrMask(Runtime& runtime, GDALMDArrayH source,
+                                 const CPLJSONObject& args, unsigned long long parent, bool mask) {
+    const auto input = args[mask ? "options" : "viewExpr"];
+    if (mask) {
+        require(input.GetType() == CPLJSONObject::Type::Array, "Mask options must be an array");
+        for (const auto& item : input.ToArray()) {
+            mdViewString(item, "Mask options must be strings");
+        }
+    } else {
+        mdViewString(input, "View expression must be a string");
+    }
+    require(runtime.next < std::numeric_limits<unsigned long long>::max(), "Runtime handle IDs exhausted");
+    Strings options(mask ? input.ToArray() : CPLJSONArray());
+    const auto expression = mask ? std::string() : std::string(input.ToString());
+    CPLErrorReset();
+    auto view = mask ? GDALMDArrayGetMask(source, options.data()) : GDALMDArrayGetView(source, expression.c_str());
+    struct OwnedView {
+        Runtime& runtime;
+        GDALMDArrayH pointer;
+        unsigned long long firstHandle;
+        ~OwnedView() {
+            if (!pointer) return;
+            auto entry = runtime.handles.find(runtime.next);
+            if (runtime.next > firstHandle && entry != runtime.handles.end() &&
+                entry->second.pointer == pointer) runtime.handles.erase(entry);
+            GDALMDArrayRelease(pointer);
+        }
+    } owned{runtime, view, runtime.next};
+    fileEnsure(view != nullptr && CPLGetLastErrorType() < CE_Failure,
+               mask ? "Cannot obtain multidimensional mask" : "Cannot obtain multidimensional view");
+    auto result = runtime.result(view, "MDArray", true, parent);
+    owned.pointer = nullptr;
+    return result;
+}
 inline CPLJSONObject createExtendedArray(Runtime& r,GDALGroupH group,const CPLJSONObject& a,unsigned long long id) {
     auto type=mdType(a.GetObj("dataType"));std::vector<GDALDimensionH> dims;for(auto d:a.GetArray("dimensions"))dims.push_back(static_cast<GDALDimensionH>(r.arg(d)));
     Strings opts(a.GetArray("options"));return r.result(GDALGroupCreateMDArray(group,a.GetString("name").c_str(),dims.size(),dims.data(),type->handle,opts.data()),"MDArray",true,id);

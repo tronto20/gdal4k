@@ -47,6 +47,39 @@ interface MDArray {
      * Cancellation is checked at operation boundaries; there is no native progress callback.
      */
     suspend fun getUnscaled(): MDArray
+    /**
+     * Lazy typed alias using GDAL basic slicing or quoted compound-field access.
+     *
+     * Brackets accept integer indexes, start:stop:step ranges, one ellipsis, and newaxis or
+     * np.newaxis. Negative indexes and steps are supported; empty-result ranges fail. Brackets
+     * can be chained. Integer indexing can produce a scalar, whose I/O uses empty start/count
+     * arrays. Slicing an already scalar source is unsupported. Expressions cannot contain NUL.
+     *
+     * Basic slices write through when the source permits writes. Extracted fields are readable;
+     * field writes are unsupported. Metadata setters may also be unsupported. The view and its
+     * descendants depend on this array and its ancestors; closing it leaves source and siblings
+     * usable. CRS copies remain independent. Cancellation is checked at operation boundaries;
+     * this constructor does not supply a native progress callback.
+     */
+    suspend fun getView(viewExpr: String): MDArray
+    /**
+     * Read-only numeric validity view, with Byte values 0 (invalid) and 1 (valid).
+     *
+     * Combines source NoData, NaN and CF missing_value, _FillValue, valid_min, valid_max and
+     * valid_range attributes. CF criteria are captured at construction; source values and raw
+     * NoData remain live. Int64/UInt64 samples and integer criteria are compared exactly.
+     * Complex sources use only the real component, including NaN and NoData classification.
+     *
+     * UNMASK_FLAGS selects comma-separated CF flag_meanings. Selected flags match by OR, while
+     * all other validity criteria still apply. Flag metadata supports integer types up to 32 bits.
+     * Options are snapshotted before queued work and cannot contain NUL. CF attributes inherited
+     * by an unscaled view may still use raw units; thresholds are not implicitly transformed.
+     *
+     * The returned view and descendants depend on this array and its ancestors. Closing it leaves
+     * source and siblings usable. CRS copies remain independent. Cancellation is checked at
+     * operation boundaries; this constructor does not supply a native progress callback.
+     */
+    suspend fun getMask(options: List<String> = emptyList()): MDArray
     /** Independent CRS copy, usable after this array closes; null means no CRS. Close the copy.
      * Native failures throw instead of returning null.
      */
