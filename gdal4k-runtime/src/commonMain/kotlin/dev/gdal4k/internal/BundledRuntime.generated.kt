@@ -632,6 +632,7 @@ internal class BundledMDArray(engine: RuntimeEngine, id: String, parent: Runtime
     override suspend fun getFullName(): String { val result = invoke("MDArray", "getFullName", mapOf()); return result.jsonPrimitive.contentOrNull.orEmpty() }
     override suspend fun getDimensions(): List<Dimension> { val result = invoke("MDArray", "getDimensions", mapOf()); return result.jsonArray.map { requireNotNull(engine.wrapDimension(it, this)) } }
     override suspend fun transpose(newAxisToOldAxis: IntArray): MDArray { val result = invoke("MDArray", "transpose_IntArray", mapOf("newAxisToOldAxis" to encode(newAxisToOldAxis))); return requireNotNull(engine.wrapMDArray(result, this)) }
+    override suspend fun getUnscaled(): MDArray { val result = invoke("MDArray", "getUnscaled", mapOf()); return requireNotNull(engine.wrapMDArray(result, this)) }
     override suspend fun getSpatialRef(): SpatialReference? { val result = invoke("MDArray", "getSpatialRef", mapOf()); return engine.wrapSpatialReference(result, null) }
     override suspend fun getBlockSize(): List<ULong> { val result = invoke("MDArray", "getBlockSize", mapOf()); return result.jsonArray.map { it.jsonPrimitive.content.toULong() } }
     override suspend fun getStructuralInfo(): List<String> { val result = invoke("MDArray", "getStructuralInfo", mapOf()); return result.jsonArray.map { it.jsonPrimitive.content } }

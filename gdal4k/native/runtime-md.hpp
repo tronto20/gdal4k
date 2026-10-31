@@ -222,6 +222,31 @@ inline CPLJSONObject mdTranspose(Runtime& runtime, GDALMDArrayH source,
     owned.pointer = nullptr;
     return result;
 }
+inline CPLJSONObject mdUnscaled(Runtime& runtime, GDALMDArrayH source,
+                               unsigned long long parent) {
+    require(runtime.next < std::numeric_limits<unsigned long long>::max(), "Runtime handle IDs exhausted");
+    CPLErrorReset();
+    // Even the identity path returns a new owned C wrapper around the shared array.
+    auto view = GDALMDArrayGetUnscaled(source);
+    struct OwnedView {
+        Runtime& runtime;
+        GDALMDArrayH pointer;
+        unsigned long long firstHandle;
+        ~OwnedView() {
+            if (!pointer) return;
+            // result() may insert the entry before its JSON result is constructed.
+            // On a registration/encoding exception, detach it before releasing once.
+            auto entry = runtime.handles.find(runtime.next);
+            if (runtime.next > firstHandle && entry != runtime.handles.end() &&
+                entry->second.pointer == pointer) runtime.handles.erase(entry);
+            GDALMDArrayRelease(pointer);
+        }
+    } owned{runtime, view, runtime.next};
+    fileEnsure(view != nullptr && CPLGetLastErrorType() < CE_Failure, "Cannot obtain unscaled multidimensional array");
+    auto result = runtime.result(view, "MDArray", true, parent);
+    owned.pointer = nullptr;
+    return result;
+}
 inline CPLJSONObject createExtendedArray(Runtime& r,GDALGroupH group,const CPLJSONObject& a,unsigned long long id) {
     auto type=mdType(a.GetObj("dataType"));std::vector<GDALDimensionH> dims;for(auto d:a.GetArray("dimensions"))dims.push_back(static_cast<GDALDimensionH>(r.arg(d)));
     Strings opts(a.GetArray("options"));return r.result(GDALGroupCreateMDArray(group,a.GetString("name").c_str(),dims.size(),dims.data(),type->handle,opts.data()),"MDArray",true,id);

@@ -13,6 +13,7 @@ vcpkg_from_github(
         target-is-valid.patch
         separate-gpkg-arrow-handoff.patch
         transpose-signed-srs-axis-mapping.patch
+        unscaled-nodata-and-write-type.patch
 )
 vcpkg_find_acquire_program(PYTHON3)
 vcpkg_execute_required_process(

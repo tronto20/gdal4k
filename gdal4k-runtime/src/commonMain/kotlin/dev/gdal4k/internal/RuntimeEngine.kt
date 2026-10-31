@@ -29,8 +29,8 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val caller = currentCoroutineContext()
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
-        val ownedTranspose = type == "MDArray" && method == "transpose_IntArray"
-        val cancellable = ownedTranspose || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+        val ownedMDView = type == "MDArray" && (method == "transpose_IntArray" || method == "getUnscaled")
+        val cancellable = ownedMDView || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "footprint", "footprintTo", "tileIndex", "tileIndexTo", "multiDimTranslate", "multiDimTranslateFiles", "multiDimTranslateTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
@@ -71,7 +71,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val failure = try {
             control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
         } catch (failure: Throwable) {
-            if (ownedTranspose) closeAllocated(response, failure)
+            if (ownedMDView) closeAllocated(response, failure)
             throw failure
         }
         if (failure != null) {
@@ -83,16 +83,16 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         // Decode under the same lock in the original cancellable context. Multiple queued
         // reads cannot accumulate one decoded staging buffer each while another read starts.
         try {
-            if (ownedTranspose) caller.ensureActive()
+            if (ownedMDView) caller.ensureActive()
             val value = response.getValue("result").jsonObject.getValue("value")
-            if (ownedTranspose) {
+            if (ownedMDView) {
                 // Validate before the generated wrapper can claim the owned result. The
                 // native registry encodes positive UInt64 IDs as canonical decimal strings.
                 val id = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
                 val number = id?.toULongOrNull()
                 check(number != null && number > 0uL && number.toString() == id &&
                     (response["allocatedHandles"] as? JsonArray)?.contains(value) == true) {
-                    "GDAL transpose returned an invalid owned handle"
+                    "GDAL $name returned an invalid owned handle"
                 }
             }
             if (binary != null) binary.complete(value, binary.output)
