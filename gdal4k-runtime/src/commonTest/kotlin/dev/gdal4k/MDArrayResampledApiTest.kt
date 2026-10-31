@@ -7,6 +7,7 @@ import kotlin.test.*
 import kotlin.time.Duration.Companion.seconds
 
 class MDArrayResampledApiTest {
+    // Explicit WKT node keys select the CRS authority; an empty string is not GDAL's null root key.
     private val samples = DoubleArray(16) { it + 1.0 }
     private val nearest = doubleArrayOf(6.0, 8.0, 14.0, 16.0)
     private val average = doubleArrayOf(3.5, 5.5, 11.5, 13.5)
@@ -382,7 +383,7 @@ class MDArrayResampledApiTest {
             for ((crs, mapping) in inherited) {
                 assertTrue(crs.isGeographic()); assertContentEquals(mapping, crs.getDataAxisToSRSAxisMapping())
             }
-            for (crs in projected) { assertTrue(crs.isProjected()); assertEquals("3857", crs.getAuthorityCode("")) }
+            for (crs in projected) { assertTrue(crs.isProjected()); assertEquals("3857", crs.getAuthorityCode("PROJCS")) }
         } finally {
             for (crs in projected.asReversed()) crs.close()
             for ((crs, _) in inherited.asReversed()) crs.close()
@@ -409,7 +410,7 @@ class MDArrayResampledApiTest {
                         requireNotNull(fileBacked.getRasterBand(1)).use { assertEquals(GdalDataType.Float64, it.getRasterDataType()) }
                         assertContentEquals(samples, fileBacked.readRaster(1))
                         requireNotNull(fileBacked.getSpatialRef()).use {
-                            assertTrue(it.isGeographic()); assertEquals("4326", it.getAuthorityCode(""))
+                            assertTrue(it.isGeographic()); assertEquals("4326", it.getAuthorityCode("GEOGCS"))
                         }
                         val expected = fileBacked.warp("EPSG:3857", name = "resampled-reference.tif", arguments = listOf("-r", "near"))
                         runtime.openDataset(expected).use { reference ->
@@ -420,7 +421,7 @@ class MDArrayResampledApiTest {
                                         assertEquals(MDDataType.Numeric(GdalDataType.Float64), source.getExtendedDataType())
                                         assertContentEquals(samples, source.read(longArrayOf(0, 0), longArrayOf(4, 4)))
                                         requireNotNull(source.getSpatialRef()).use {
-                                            assertTrue(it.isGeographic()); assertEquals("4326", it.getAuthorityCode(""))
+                                            assertTrue(it.isGeographic()); assertEquals("4326", it.getAuthorityCode("GEOGCS"))
                                         }
                                         val target = runtime.createSpatialReference("EPSG:3857")
                                         val mapping = target.getDataAxisToSRSAxisMapping()
@@ -441,7 +442,7 @@ class MDArrayResampledApiTest {
                 }
             }
             requireNotNull(detached).let { crs ->
-                assertTrue(crs.isProjected()); assertEquals("3857", crs.getAuthorityCode(""))
+                assertTrue(crs.isProjected()); assertEquals("3857", crs.getAuthorityCode("PROJCS"))
             }
         } finally { detached?.close() }
     }
