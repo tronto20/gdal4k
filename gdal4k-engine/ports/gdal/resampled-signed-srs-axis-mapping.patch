@@ -1,0 +1,23 @@
+--- a/gcore/gdalmultidim.cpp
++++ b/gcore/gdalmultidim.cpp
+@@ -7790,12 +7790,18 @@
+         {
+             m_poSRS.reset(m_poSRS->Clone());
+             auto axisMapping = m_poSRS->GetDataAxisToSRSAxisMapping();
++            const auto nXDim = static_cast<GInt64>(m_iXDim) + 1;
++            const auto nYDim = static_cast<GInt64>(m_iYDim) + 1;
+             for (auto &m : axisMapping)
+             {
+-                if (m == static_cast<int>(m_iXDim) + 1)
++                if (m == nXDim)
+                     m = 1;
+-                else if (m == static_cast<int>(m_iYDim) + 1)
++                else if (m == -nXDim)
++                    m = -1;
++                else if (m == nYDim)
+                     m = 2;
++                else if (m == -nYDim)
++                    m = -2;
+             }
+             m_poSRS->SetDataAxisToSRSAxisMapping(axisMapping);
+         }

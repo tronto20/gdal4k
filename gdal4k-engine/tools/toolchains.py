@@ -68,7 +68,7 @@ def native_toolchain(target, destination):
         # Use its LLVM compiler and the matching MinGW sysroot, as K/N itself does.
         # This GCC runtime uses emulated TLS, including std::call_once's internal
         # variables. Match K/N's clangFlags.mingw_x64 for every dependency too.
-        text = f'''set(CMAKE_SYSTEM_NAME Windows)
+        text = fr'''set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR AMD64)
 set(CMAKE_C_COMPILER "{(llvm/'bin/clang.exe').as_posix()}")
 set(CMAKE_CXX_COMPILER "{(llvm/'bin/clang++.exe').as_posix()}")
@@ -76,7 +76,7 @@ set(CMAKE_C_COMPILER_TARGET x86_64-w64-windows-gnu)
 set(CMAKE_CXX_COMPILER_TARGET x86_64-w64-windows-gnu)
 set(CMAKE_SYSROOT "{gcc.as_posix()}")
 set(CMAKE_C_FLAGS_INIT "--target=x86_64-w64-windows-gnu --sysroot={gcc.as_posix()} -femulated-tls")
-set(CMAKE_CXX_FLAGS_INIT "--target=x86_64-w64-windows-gnu --sysroot={gcc.as_posix()} -femulated-tls -isystem {headers.as_posix()}")
+set(CMAKE_CXX_FLAGS_INIT "--target=x86_64-w64-windows-gnu --sysroot={gcc.as_posix()} -femulated-tls -isystem \"${{CMAKE_CURRENT_LIST_DIR}}/compiler-headers\"")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "--ld-path={llvm.as_posix()}/bin/ld.lld.exe -pthread")
 set(CMAKE_SHARED_LINKER_FLAGS_INIT "--ld-path={llvm.as_posix()}/bin/ld.lld.exe -pthread")
 set(CMAKE_RC_COMPILER "{(gcc/'bin/windres.exe').as_posix()}")
@@ -118,11 +118,12 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
     if not ranlib.exists():
         if os.name == 'nt':shutil.copy2(ar, ranlib)
         else:ranlib.symlink_to(ar)
-    text += f'''set(CMAKE_RANLIB "{ranlib.as_posix()}")
+    ranlib_reference = '${CMAKE_CURRENT_LIST_DIR}/' + ranlib.name
+    text += f'''set(CMAKE_RANLIB "{ranlib_reference}")
 set(CMAKE_C_COMPILER_AR "{ar.as_posix()}")
 set(CMAKE_CXX_COMPILER_AR "{ar.as_posix()}")
-set(CMAKE_C_COMPILER_RANLIB "{ranlib.as_posix()}")
-set(CMAKE_CXX_COMPILER_RANLIB "{ranlib.as_posix()}")
+set(CMAKE_C_COMPILER_RANLIB "{ranlib_reference}")
+set(CMAKE_CXX_COMPILER_RANLIB "{ranlib_reference}")
 set(CMAKE_ASM_COMPILER "${{CMAKE_C_COMPILER}}")
 set(CMAKE_ASM_COMPILER_TARGET "${{CMAKE_C_COMPILER_TARGET}}")
 set(CMAKE_ASM_FLAGS_INIT "${{CMAKE_C_FLAGS_INIT}}")

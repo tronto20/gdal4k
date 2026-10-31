@@ -3,6 +3,31 @@ package dev.gdal4k.internal
 import dev.gdal4k.runtime.*
 import kotlinx.serialization.json.*
 
+internal fun decodeMDStatistics(element: JsonElement): MDStatistics {
+    val fields = element as? JsonObject
+    require(fields != null && fields.keys == setOf("minimum", "maximum", "mean", "standardDeviation", "validCount")) {
+        "Invalid multidimensional statistics object"
+    }
+    fun moment(name: String): Double {
+        val value = fields.getValue(name) as? JsonPrimitive
+        require(value != null && value !is JsonNull) { "Invalid statistics moment: $name" }
+        if (value.isString) return when (value.content) {
+            "NaN" -> Double.NaN
+            "Infinity" -> Double.POSITIVE_INFINITY
+            "-Infinity" -> Double.NEGATIVE_INFINITY
+            else -> error("Invalid nonfinite statistics moment: $name")
+        }
+        val number = value.content.toDoubleOrNull()
+        require(number != null && number.isFinite()) { "Invalid numeric statistics moment: $name" }
+        return number
+    }
+    val count = fields.getValue("validCount") as? JsonPrimitive
+    val text = count?.takeIf { it.isString }?.content
+    val value = text?.toULongOrNull()
+    require(value != null && value.toString() == text) { "Invalid unsigned statistics count" }
+    return MDStatistics(moment("minimum"), moment("maximum"), moment("mean"), moment("standardDeviation"), value)
+}
+
 internal fun RuntimeHandle.encodeMDType(type: MDDataType): JsonElement = buildJsonObject {
     when (type) {
         is MDDataType.Numeric -> { put("kind", "numeric"); put("type", type.dataType) }

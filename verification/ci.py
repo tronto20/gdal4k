@@ -74,6 +74,11 @@ def stage(name, platforms=(), targets=(), include_root=False, include_tests=Fals
         manifest=BUILD/f'engine/{platform}/manifest.json'
         data=json.loads(manifest.read_text())
         files.add(manifest)
+        for metadata_name in ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json'):
+            metadata = manifest.parent / metadata_name
+            if metadata.is_symlink() or not metadata.is_file():
+                raise RuntimeError('Missing regular SDK input metadata: ' + str(metadata))
+            files.add(metadata)
         files.update(BUILD/f for f in data['artifacts'])
     suffixes={'wasmJs':'wasm-js'}
     coordinates=[m+'-'+suffixes.get(t,t.lower()) for m in ['gdal4k-runtime','gdal4k'] for t in targets]

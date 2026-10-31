@@ -6,6 +6,7 @@ from pathlib import Path
 from toolchains import native_toolchain
 from versions import configured_binary_version
 from staged_engine import verify_staged_engine
+from sdk_cache_identity import prepare_sdk_cache_inputs
 ROOT=Path(__file__).resolve().parents[2]
 BINARY=ROOT/'gdal4k-engine'
 VCPKG_REV='3cd21e48a75f67acfef289da52893ce79144aaa1'
@@ -119,7 +120,8 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
  triplets=BINARY/'build/triplets';triplets.mkdir(parents=True,exist_ok=True)
  base_file=next((vcpkg/d/(base+'.cmake') for d in ['triplets','triplets/community'] if (vcpkg/d/(base+'.cmake')).exists()),None)
  if not base_file:raise SystemExit('Missing base triplet: '+base)
- settings=f'include("{base_file.as_posix()}")\nset(VCPKG_BUILD_TYPE release)\nset(VCPKG_LIBRARY_LINKAGE static)\nlist(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS -DCMAKE_POSITION_INDEPENDENT_CODE=ON)\n'
+ base_relative=base_file.relative_to(vcpkg).as_posix()
+ settings=f'include("${{VCPKG_ROOT_DIR}}/{base_relative}")\nset(VCPKG_BUILD_TYPE release)\nset(VCPKG_LIBRARY_LINKAGE static)\nlist(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS -DCMAKE_POSITION_INDEPENDENT_CODE=ON)\n'
  if target=='web':settings+='set(VCPKG_CXX_FLAGS "-fexceptions")\nset(VCPKG_C_FLAGS "-fexceptions")\n'
  if target.startswith('android'):settings+='set(VCPKG_CMAKE_SYSTEM_VERSION 28)\nset(VCPKG_CRT_LINKAGE static)\nset(VCPKG_CMAKE_CONFIGURE_OPTIONS "${VCPKG_CMAKE_CONFIGURE_OPTIONS};-DANDROID_STL=c++_static")\n'
  if target.startswith('ios'):settings+='set(VCPKG_OSX_DEPLOYMENT_TARGET 15.0)\n'
@@ -131,9 +133,11 @@ def build(a,vcpkg,out,source_hash,cmake,ninja):
   if platform.system()=='Darwin':
    # Pinned Meson helper compares CPU families but misses a same-CPU OS change.
    settings+='set(IS_CROSS TRUE)\n'
+ chain=None
  if target.startswith(('linux','windows')):
   chain=native_toolchain(target,out/'toolchain.cmake')
-  settings+=f'set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "{chain.as_posix()}")\n'
+  settings+=f'set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${{CMAKE_CURRENT_LIST_DIR}}/../engine/{target}/toolchain.cmake")\n'
+ settings=prepare_sdk_cache_inputs(ROOT,vcpkg,out,base_file,chain,target,settings,VCPKG_REV)
  (triplets/(triplet+'.cmake')).write_text(settings)
  env=os.environ.copy();env['VCPKG_MAX_CONCURRENCY']=str(a.jobs)
  if target.startswith('android'):

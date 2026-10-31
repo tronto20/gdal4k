@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.io.encoding.Base64
 
 internal class RuntimeEngine(private val transport: GdalTransport) {
@@ -21,6 +22,21 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
     val supportsMDJsonStringSubtype: Boolean get() = transport.supportsMDJsonStringSubtype
     val supportsHttpInputPolicy: Boolean get() = transport.supportsHttpInputPolicy
     private val mutex = Mutex()
+    // Native IDs increase monotonically and are never reused, including after close/rollback.
+    // An atomic watermark protects every known earlier handle without retaining wrappers or IDs.
+    private val knownHandleHighWatermark = MutableStateFlow(0uL)
+    internal fun observeHandleId(id: String) {
+        val number = canonicalHandleId(id) ?: return
+        while (true) {
+            val known = knownHandleHighWatermark.value
+            if (number <= known || knownHandleHighWatermark.compareAndSet(known, number)) return
+        }
+    }
+    private fun canonicalHandleId(id: String): ULong? = id.toULongOrNull()?.takeIf {
+        it > 0uL && it.toString() == id
+    }
+    private fun canonicalHandleId(value: JsonElement): ULong? =
+        (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let(::canonicalHandleId)
     private var closed = false
     suspend fun close() = withContext(NonCancellable) { mutex.withLock {
         if (!closed) { transport.close(); closed = true }
@@ -30,14 +46,19 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         if (method != "close") caller.ensureActive()
         val name = method.substringBefore('_')
         val ownedMDView = type == "MDArray" && (method == "transpose_IntArray" || method == "getUnscaled" ||
-            method == "getView_String" || method == "getMask_List_String")
-        val cancellable = ownedMDView || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+            method == "getView_String" || method == "getMask_List_String" || name == "getResampled")
+        val ownedMDResampled = type == "MDArray" && name == "getResampled"
+        val ownedMDList = type == "MDArray" && method == "getCoordinateVariables"
+        val mdStatistics = type == "MDArray" && name in setOf("getStatistics", "computeStatistics")
+        val cancellable = ownedMDView || ownedMDList || mdStatistics || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "footprint", "footprintTo", "tileIndex", "tileIndexTo", "multiDimTranslate", "multiDimTranslateFiles", "multiDimTranslateTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
         val control = if (method != "close" && (cancellable || caller[GdalProgressContext] != null))
             GdalCallControl(caller[Job], caller[GdalProgressContext], "$type.$name") else null
         return mutex.withLock {
+        // Snapshot under operation serialization, before observing this call's allocations.
+        val freshHandleFloor = if (ownedMDList || ownedMDResampled) knownHandleHighWatermark.value else null
         if (method != "close") { caller.ensureActive(); check(!closed) { "GDAL runtime is closed" } }
         // Queued calls hold only caller references and metadata, never eagerly packed large buffers.
         val input = binary?.prepare?.invoke()
@@ -69,14 +90,19 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
             if (cancelled != null) { if (cancelled !== transportFailure) cancelled.addSuppressed(transportFailure); throw cancelled }
             throw transportFailure
         }
+        // Every native response carries its allocation ledger, even for ordinary non-controlled
+        // getters. Observe it before unlock: another call may start before generated wrapping.
+        (response["allocatedHandles"] as? JsonArray)?.forEach { id ->
+            canonicalHandleId(id)?.let { observeHandleId(it.toString()) }
+        }
         val failure = try {
             control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
         } catch (failure: Throwable) {
-            if (ownedMDView) closeAllocated(response, failure)
+            if (ownedMDView || ownedMDList) closeAllocated(response, failure, freshHandleFloor)
             throw failure
         }
         if (failure != null) {
-            closeAllocated(response, failure)
+            closeAllocated(response, failure, freshHandleFloor)
             throw failure
         }
         response
@@ -84,7 +110,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         // Decode under the same lock in the original cancellable context. Multiple queued
         // reads cannot accumulate one decoded staging buffer each while another read starts.
         try {
-            if (ownedMDView) caller.ensureActive()
+            if (ownedMDView || ownedMDList || mdStatistics) caller.ensureActive()
             val value = response.getValue("result").jsonObject.getValue("value")
             if (ownedMDView) {
                 // Validate before the generated wrapper can claim the owned result. The
@@ -95,21 +121,55 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
                     (response["allocatedHandles"] as? JsonArray)?.contains(value) == true) {
                     "GDAL $name returned an invalid owned handle"
                 }
+                if (ownedMDResampled) {
+                    val allocated = response["allocatedHandles"] as? JsonArray
+                    check(number > checkNotNull(freshHandleFloor) && allocated == JsonArray(listOf(value))) {
+                        "GDAL $name returned an invalid fresh owned handle"
+                    }
+                }
+            }
+            if (ownedMDList) {
+                val values = value as? JsonArray
+                val allocated = response["allocatedHandles"] as? JsonArray
+                val floor = checkNotNull(freshHandleFloor)
+                check(values != null && allocated != null &&
+                    values.all { canonicalHandleId(it)?.let { id -> id > floor } == true } &&
+                    allocated.all { canonicalHandleId(it)?.let { id -> id > floor } == true } &&
+                    values.size == values.toSet().size && allocated.size == allocated.toSet().size &&
+                    values.toSet() == allocated.toSet()) {
+                    "GDAL $name returned an invalid owned handle list"
+                }
             }
             if (binary != null) binary.complete(value, binary.output)
             value
         } catch (failure: Throwable) {
             // A malformed binary reply or cancellation while decoding an input-open reply
             // must release the newly allocated dataset and its isolated file workspace too.
-            withContext(NonCancellable) { closeAllocated(response, failure) }
+            withContext(NonCancellable) { closeAllocated(response, failure, freshHandleFloor) }
             throw failure
         }
     }
     }
-    private suspend fun closeAllocated(response: JsonObject, failure: Throwable) {
+    private suspend fun closeAllocated(response: JsonObject, failure: Throwable, freshHandleFloor: ULong? = null) {
         val allocated = try { response["allocatedHandles"]?.jsonArray.orEmpty() }
-        catch (cleanup: Throwable) { failure.addSuppressed(cleanup); return }
-        for (id in allocated.asReversed()) {
+        catch (cleanup: Throwable) {
+            failure.addSuppressed(cleanup)
+            if (freshHandleFloor == null) return
+            emptyList()
+        }
+        val cleanupIds = if (freshHandleFloor != null) {
+            // An omitted/malformed ledger can still leave identifiable fresh IDs in the exact
+            // top-level owned result. Never guess IDs recursively or accept earlier/noncanonical IDs.
+            val returned = when (val value = (response["result"] as? JsonObject)?.get("value")) {
+                is JsonArray -> value.toList()
+                is JsonPrimitive -> listOf(value)
+                else -> emptyList()
+            }
+            (allocated + returned).mapNotNull { canonicalHandleId(it)?.takeIf { id -> id > freshHandleFloor } }
+                .toSet().sortedDescending().map { JsonPrimitive(it.toString()) }
+        } else allocated.asReversed()
+        for (id in cleanupIds) {
+            if (freshHandleFloor != null) observeHandleId(id.jsonPrimitive.content)
             try {
                 val close = buildJsonObject {
                     put("op", "runtime")
@@ -123,6 +183,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
 }
 
 internal open class RuntimeHandle(val engine: RuntimeEngine, private val id: String, private val parent: RuntimeHandle?) {
+    init { engine.observeHandleId(id) }
     @kotlin.concurrent.Volatile private var closed = false
     internal val runtimeId: String get() = id
     fun checkOpen() { check(!closed) { "GDAL handle is closed" }; parent?.checkOpen() }

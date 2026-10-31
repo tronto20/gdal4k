@@ -89,6 +89,8 @@ jobs:
         with:
           name: profile-evidence-${{ matrix.profile }}-${{ matrix.target }}
           path: |
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-source-inputs.json
             build/driver-profiles/**/inputs.json
             build/driver-profiles/**/prepared.json
             build/driver-profiles/**/source/verification/build/driver-profile.h5
@@ -179,6 +181,8 @@ jobs:
         with:
           name: profile-evidence-${{ matrix.profile }}-linux-amd64
           path: |
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-source-inputs.json
             build/driver-profiles/**/inputs.json
             build/driver-profiles/**/prepared.json
             build/driver-profiles/**/source/verification/build/driver-profile.h5
@@ -248,6 +252,10 @@ jobs:
         with:
           name: profile-cross-evidence-combined-linux-arm64
           path: |
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-source-inputs.json
+            gdal4k-engine/build/engine/linux-arm64/sdk-toolchain-inputs.json
+            gdal4k-engine/build/engine/linux-arm64/sdk-source-inputs.json
             verification/results/ci-commands-linuxArm64/
             gdal4k-engine/build/engine/linux-arm64/manifest.json
             build/driver-profiles/**/inputs.json
@@ -290,6 +298,8 @@ jobs:
         with:
           name: profile-evidence-combined-linux-arm64
           path: |
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-source-inputs.json
             verification/results/arm64-fixtures/**/postgis/**
             verification/results/arm64-fixtures/**/http/*-requests.json
             verification/results/arm64-fixtures/**/http/*.crt
@@ -372,6 +382,8 @@ jobs:
         with:
           name: profile-evidence-combined-windows-amd64
           path: |
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            build/driver-profiles/**/source/gdal4k-engine/build/engine/*/sdk-source-inputs.json
             verification/results/ci-commands-mingwX64/
             verification/results/windows-process-selfcheck/
             verification/results/windows-winsock-link-selfcheck/

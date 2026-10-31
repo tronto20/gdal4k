@@ -401,6 +401,18 @@ Byte 뷰를 반환합니다. 값은 무효 `0`, 유효 `1`이며, Int64/UInt64 �
 않습니다. 두 뷰 모두 원본 수명에 종속되고 취소는 호출 경계에서 확인합니다.
 구현과 검증 범위는 [mdarray-view-mask.md](verification/mdarray-view-mask.md)에 기록합니다.
 
+### 다차원 재표본화
+
+`MDArray.getResampled(newDimensions, resampling, targetSRS, options)`는 원본 수명에
+종속된 읽기 전용 숫자 배열 뷰를 반환합니다. 차원 수만큼 `Dimension?`을 전달하며,
+일반적으로 마지막 Y/X 축의 `null`은 GDAL의 크기 추론을 요청합니다. 대상 좌표계를
+지정하면 재투영하고, 반환 뷰는 `use`로 닫습니다. `Gauss`는 지원하지 않습니다.
+
+추가 축의 슬라이스 간격과 부호 있는 CRS 축 매핑을 반영하는 GDAL 포트 수정 및 실제
+3·4차원 검증 코드를 준비했으며 새 SDK에서 실행해야 합니다. Int64/UInt64 NoData의
+정확한 warp 판정은 별도 검증이 필요합니다. 원본 코드·검증 범위와 남은 제약은
+[mdarray-resampled.md](verification/mdarray-resampled.md)에 기록합니다.
+
 ### 다차원 변환
 
 `Dataset.multiDimTranslate`는 고정 GDAL 3.12.4의 GDALMultiDimTranslate로 배열·그룹을

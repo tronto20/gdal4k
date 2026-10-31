@@ -158,6 +158,8 @@ jobs:
         with:
           name: evidence-${{ matrix.target }}
           path: |
+            gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            gdal4k-engine/build/engine/*/sdk-source-inputs.json
             gdal4k/build/test-results/
             gdal4k-runtime/build/test-results/
             gdal4k-runtime/build/reports/tests/
@@ -255,6 +257,8 @@ jobs:
         with:
           name: evidence-web
           path: |
+            gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            gdal4k-engine/build/engine/*/sdk-source-inputs.json
             gdal4k-runtime/build/test-results/
             verification/results/published-consumer-*/
             verification/results/web-inputs-*/
@@ -332,6 +336,8 @@ jobs:
         with:
           name: evidence-android-${{ matrix.abi }}
           path: |
+            gdal4k-engine/build/engine/*/sdk-toolchain-inputs.json
+            gdal4k-engine/build/engine/*/sdk-source-inputs.json
             gdal4k-runtime/build/outputs/androidTest-results/
             gdal4k-runtime/build/results/
             verification/results/published-consumer-*/

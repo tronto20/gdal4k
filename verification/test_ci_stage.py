@@ -31,6 +31,10 @@ class CiStageTest(unittest.TestCase):
                 path.write_bytes(value)
             manifest_path = build / 'engine/linux-arm64/manifest.json'
             manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+            metadata = [manifest_path.parent / name for name in
+                        ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json')]
+            for path in metadata:
+                path.write_text(json.dumps({'unitTransportOnly': path.name}), encoding='utf-8')
             # Neither SDK/cache inputs nor a non-debug test executable are portable outputs.
             excluded = build / 'engine/linux-arm64/private-sdk.bin'
             excluded.write_bytes(b'not in manifest')
@@ -54,7 +58,7 @@ class CiStageTest(unittest.TestCase):
             current = lzma.decompress((staged / 'linuxArm64.tar.xz').read_bytes())
             self.assertEqual(legacy, current)  # Full TAR headers, PAX records, order and padding.
             expected = {str((build / name).relative_to(root)).replace('\\', '/') for name in payloads}
-            expected.update(str(p.relative_to(root)).replace('\\', '/') for p in [manifest_path, debug, published])
+            expected.update(str(p.relative_to(root)).replace('\\', '/') for p in [manifest_path, debug, published, *metadata])
             # The previous stage() wrote this TAR directly into gzip. Keep its
             # full serialization as a reference, including modes and PAX data.
             old_stream = io.BytesIO()
@@ -66,10 +70,34 @@ class CiStageTest(unittest.TestCase):
                 self.assertEqual(expected, set(archive.getnames()))
                 for member in archive:
                     self.assertEqual((root / member.name).read_bytes(), archive.extractfile(member).read())
+            self.assertEqual(manifest, json.loads(manifest_path.read_text()))
             self.assertTrue(excluded.exists())
             self.assertEqual(b'not requested', release.read_bytes())
             summaries = [json.loads(line)['stagedArchive'] for line in stdout.getvalue().splitlines() if line.startswith('{')]
             self.assertEqual(2, len(summaries))
+
+    def test_missing_or_nonregular_sdk_metadata_rejects_success_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build = root / 'gdal4k-engine/build'
+            engine = build / 'engine/linux-arm64'
+            engine.mkdir(parents=True)
+            (engine / 'manifest.json').write_text(json.dumps({'artifacts': {}}))
+            names = ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json')
+            for name in names:
+                (engine / name).write_text('{}')
+            for name in names:
+                metadata = engine / name
+                metadata.unlink()
+                for directory in [False, True]:
+                    if directory: metadata.mkdir()
+                    with self.subTest(name=name, directory=directory), \
+                         patch.object(ci, 'ROOT', root), patch.object(ci, 'BUILD', build), \
+                         self.assertRaisesRegex(RuntimeError, 'regular SDK input metadata'):
+                        ci.stage('linuxArm64', platforms=['linux-arm64'])
+                    if directory: metadata.rmdir()
+                metadata.write_text('{}')
+            self.assertFalse((root / 'verification/build/staged').exists())
 
 
 if __name__ == '__main__':

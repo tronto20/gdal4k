@@ -7,6 +7,44 @@ interface MDArray {
     suspend fun getFullName(): String
     suspend fun getDimensions(): List<Dimension>
     /**
+     * Current driver-defined auxiliary coordinate arrays, in native order.
+     *
+     * These are distinct from each Dimension's indexing variable. Repeated references remain
+     * repeated entries; types, ranks and shapes are not restricted or converted. Drivers may
+     * return an empty list, and may warn and omit unresolved names while returning valid arrays.
+     * Native failures throw. CF name parsing and view behavior remain driver-defined.
+     *
+     * Each returned wrapper aliases its actual array and depends on this array and its ancestors.
+     * Closing one leaves the source and other wrappers usable. Later queries see current metadata;
+     * already returned arrays remain live aliases. Use typed value I/O for exact stored values.
+     * Cancellation is checked at operation boundaries; there is no native progress callback.
+     */
+    suspend fun getCoordinateVariables(): List<MDArray>
+    /**
+     * Native cached statistics, or null when a nonforced lookup has no eligible cache.
+     *
+     * force permits computation but may still use a cache; computeStatistics always requests
+     * recomputation. Caching and invalidation are driver-defined: MEM does not retain a cache.
+     * Moments describe this array's values and native validity mask, with no extra scale/offset
+     * transform. Query an unscaled view for its physical values. Approximation is permitted when
+     * requested; the C API does not report whether a returned result is approximate.
+     *
+     * Failures and cancellation throw. Both methods support sampled progress; a fraction of 1
+     * does not guarantee cache or metadata work has completed. Cancellation does not roll back
+     * native side effects. Native PAM count persistence above Long.MAX_VALUE is unqualified.
+     */
+    suspend fun getStatistics(approximate: Boolean = false, force: Boolean = false): MDStatistics?
+    /**
+     * Recompute a detached native statistics snapshot, including the unsigned valid-sample count.
+     *
+     * Complex, text and compound arrays are unsupported by generic computation. No valid samples
+     * is a successful count-zero snapshot, distinct from getStatistics returning null. Integer
+     * moments can round through Double. Options are snapshotted before queued work and cannot
+     * contain NUL. UPDATE_METADATA=YES requests driver actual_range updates where supported;
+     * default computation does not request them. Success alone does not prove persistence.
+     */
+    suspend fun computeStatistics(approximate: Boolean = false, options: List<String> = emptyList()): MDStatistics
+    /**
      * Lazy aliased view with the requested output dimension order.
      *
      * Each entry selects a zero-based source axis. Every source axis must appear exactly once;
@@ -24,6 +62,30 @@ interface MDArray {
      * boundaries; this operation does not supply a native progress callback.
      */
     suspend fun transpose(newAxisToOldAxis: IntArray): MDArray
+    /**
+     * Read-only numeric resampled or reprojected view, retaining the source's stored type.
+     *
+     * Pass one entry per source dimension (rank at least two). Null spatial entries let GDAL
+     * infer the output size; normally the final two axes are Y/X. Explicit nonspatial entries
+     * must match source names and sizes. Spatial dimensions are rebuilt by GDAL. If either
+     * target spatial axis has an indexing variable, both must have regular numeric 1D axes.
+     * Gauss is unsupported. CubicSpline need not preserve values for an unchanged grid.
+     *
+     * Options follow native GetResampled semantics, including its EMIT-specific options;
+     * they are not arbitrary gdalwarp arguments. Inputs are snapshotted before queued work.
+     * Construction may materialize geolocation data and has no native progress callback.
+     * Cancellation is checked at operation boundaries, without inner-warp preemption.
+     *
+     * Closing this view leaves source and siblings usable. This view and its descendants
+     * depend on the source and ancestors. Target dimension/SRS wrappers can close after
+     * construction; an explicit target SRS is cloned. getSpatialRef returns an owned copy.
+     * Native metadata/cache behavior after source mutation is driver-defined.
+     *
+     * The bundled GDAL port carries an extra-axis step correction for composed slices.
+     * Signed CRS axis mappings and exact
+     * Int64/UInt64 NoData classification through the warp also require separate verification.
+     */
+    suspend fun getResampled(newDimensions: List<Dimension?>, resampling: RasterResampling = RasterResampling.Nearest, targetSRS: SpatialReference? = null, options: List<String> = emptyList()): MDArray
     /**
      * Lazy numeric view that applies the source's scale and offset to each value.
      *

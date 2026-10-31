@@ -28,6 +28,8 @@ def methods(cls):
 def key(name,params): return name+''.join('_'+t.replace('?','').replace('<','_').replace('>','') for _,t in params)
 
 def kt_arg(name,typ):
+    if typ=='List<Dimension?>':return f'JsonArray({name}.map {{ handle(it) }})'
+    if typ=='RasterResampling':return f'encode({name}.code)'
     if typ.rstrip('?') in TYPES:return f'handle({name})'
     if typ in ['DatasetOpenOptions','DatasetInfoOptions']:return f'encode({name})'
     return f'encode({name})'
@@ -51,6 +53,7 @@ def kt_result(typ,expr,parent):
     elif t=='ColorEntry':out=f'{expr}.jsonArray.let {{ ColorEntry(it[0].jsonPrimitive.int, it[1].jsonPrimitive.int, it[2].jsonPrimitive.int, it[3].jsonPrimitive.int) }}'
     elif t=='MDDataType':out=f'decodeMDType({expr})'
     elif t=='MDValue':out=f'decodeMDValue({expr})'
+    elif t=='MDStatistics':out=f'decodeMDStatistics({expr})'
     elif t=='MDNumericMetadata':out=f'{expr}.jsonObject.let {{ MDNumericMetadata(it.getValue("value").jsonPrimitive.content.toDouble(), it.getValue("storageType").jsonPrimitive.int) }}'
     elif t=='FieldDomainBound':out=f'decodeDomainBound({expr})'
     elif t=='List<CodedFieldValue>':out=f'{expr}.jsonArray.map(::decodeCodedValue)'
@@ -150,8 +153,14 @@ PARENT_OWNED.add(('Dimension','getIndexingVariable'))
 special('Dimension','getIndexingVariable','return r.result(GDALDimensionGetIndexingVariable(h),"MDArray",true,id);')
 special('Dimension','setIndexingVariable','auto v=a["array"];return value(GDALDimensionSetIndexingVariable(h,v.GetType()==CPLJSONObject::Type::Null?nullptr:static_cast<GDALMDArrayH>(r.arg(v)))!=0);')
 special('MDArray','getDimensions','size_t n=0;auto dims=GDALMDArrayGetDimensions(h,&n);CPLJSONArray out;for(size_t i=0;i<n;++i)out.Add(r.result(dims[i],"Dimension",true,id)["value"]);CPLFree(dims);return value(out);')
+PARENT_OWNED.add(('MDArray','getCoordinateVariables'))
+special('MDArray','getCoordinateVariables','return mdCoordinateVariables(r,h,id);')
+for method in ['getStatistics', 'computeStatistics']:
+    special('MDArray',method,'return mdStatistics(h,a,'+str(method=='computeStatistics').lower()+');')
 PARENT_OWNED.add(('MDArray','transpose'))
 special('MDArray','transpose','return mdTranspose(r,h,a,id);')
+PARENT_OWNED.add(('MDArray','getResampled'))
+special('MDArray','getResampled','return mdResampled(r,h,a,id);')
 PARENT_OWNED.add(('MDArray','getUnscaled'))
 special('MDArray','getUnscaled','return mdUnscaled(r,h,id);')
 for method in ['getView', 'getMask']:
@@ -391,6 +400,8 @@ for cls in TYPES:
             body='require(\'\\u0000\' !in viewExpr) { "NUL in multidimensional view expression" }; val result = '+call+'; return requireNotNull(engine.wrapMDArray(result, this))'
         elif cls=='MDArray' and name=='getMask':
             body='require(options.none { \'\\u0000\' in it }) { "NUL in multidimensional mask option" }; val result = '+call+'; return requireNotNull(engine.wrapMDArray(result, this))'
+        elif cls=='MDArray' and name=='computeStatistics':
+            body='require(options.none { \'\\u0000\' in it }) { "NUL in multidimensional statistics option" }; val result = '+call+'; return decodeMDStatistics(result)'
         elif cls=='MDArray' and name=='write':
             body='return mdWriteRasterCall(start, count, values)'
         elif cls in ['MDArray','Attribute'] and name=='readValues':

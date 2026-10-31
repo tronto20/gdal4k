@@ -88,11 +88,18 @@ alias writes use MEM; read-only NC4 slice and mask writes must return `false`
 and preserve the source values. The explicit
 published-consumer copy list includes both new common API test classes.
 
-This is source implementation and fixture preparation. No C17 engine build,
-native probe, test worker, CI run or publication has been accepted yet. Fresh
-patched engines and applicable source plus independent published consumers are
-required on all four JVM classifiers first, followed by the other current
-platform contracts. Cross-production, actual ARM64 execution, iOS device
-compile/link, simulator execution and Android native-bridge emulation keep their
-existing distinct evidence labels. This cohort does not complete the broader
-GDAL API/driver/platform goal.
+The C17 slice/mask contract was accepted at
+`1947b3e015def1f641d5a9d0700a98a0a1d493c9` after all 25 required
+[primary](https://github.com/tronto20/gdal4k/actions/runs/41157676873) and
+[driver-profile](https://github.com/tronto20/gdal4k/actions/runs/41157676850)
+CI jobs and all nine package, source and platform acceptance gates passed.
+[PR49](https://github.com/tronto20/gdal4k/pull/49) merged that exact tree on
+2026-10-31 as `d6ac1199ddace3d846bf5b3f9f48cb1232215397`.
+Physical iOS qualification remains compile/link only; simulator execution is
+separate, and Android uses an emulator native bridge. The default ARM64 role
+exercises source/published Native and published JVM; the combined profile
+separately exercises source JVM ARM64. External Maven Central publication
+remains unverified. This acceptance covers C17 slice/mask behavior; the next
+coordinate-variable, statistics, resampled-view and cache-identity changes still
+require their own current-source CI and acceptance evidence. The broader GDAL
+API/driver/platform goal remains open.

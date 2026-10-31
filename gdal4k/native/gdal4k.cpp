@@ -112,13 +112,14 @@ extern "C" char *gdal4k_execute_controlled(gdal4k_context *ctx, const char *requ
     CPLJSONArray released;
     for(auto id:ctx->runtime.releasedDatasets)released.Add(std::to_string(id));
     response.Add("releasedDatasets",released);
-    if (control) {
-        // A late cancellation/callback error can arrive after native work completed. Let the
-        // caller close every newly registered handle before propagating that error.
-        CPLJSONArray allocated;
+    // Include the allocation ledger for ordinary getters too. The caller records monotonic
+    // IDs before unlocking, protecting results that generated wrappers have not claimed yet.
+    // A late cancellation/callback error still uses the same ledger for owned cleanup.
+    CPLJSONArray allocated;
+    if (ctx->runtime.next != firstHandle) {
         for (const auto& entry : ctx->runtime.handles) if (entry.first > firstHandle) allocated.Add(std::to_string(entry.first));
-        response.Add("allocatedHandles", allocated);
     }
+    response.Add("allocatedHandles", allocated);
     if (!ctx->gdalData.empty()) CPLPopFinderLocation();
     if (previousPaths) { OSRSetPROJSearchPaths(previousPaths); CSLDestroy(previousPaths); }
     CPLSetThreadLocalConfigOptions(previous);
