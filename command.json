@@ -1,0 +1,79 @@
+{
+  "actor": {
+    "argv": [],
+    "outerConfig": null,
+    "plan": null,
+    "preparation": {
+      "bytes": 1420,
+      "path": "/workspace/shared/gdal4k-c23-root-control-h12-a1-v1/prepare-activation.json",
+      "sha256": "62de017f5b988590759bcae333795b089d7524a48ffd1de7132a091539714007"
+    },
+    "registration": null,
+    "source": {
+      "bytes": 38343,
+      "path": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/_remote/remote_materializer.py",
+      "sha256": "0efefbfd8a9104be9d72071a9d0284fe9340d5406f92f53b87283be855726c7b"
+    },
+    "sourcePolicy": null
+  },
+  "export": {
+    "includeFiles": [],
+    "roots": [
+      "/workspace/shared/gdal4k-c23-h12-prepare-41561656368-1"
+    ]
+  },
+  "files": [
+    {
+      "bytes": 233060,
+      "gitBlob": "6a1c49f3e9f255491d91fd0bfc1a32a124286fc3",
+      "mode": 256,
+      "remotePath": "/workspace/shared/gdal4k-c23-root-inputs-h12-v1/cohort-static-intent.json",
+      "sha256": "ab0995546af72dd77b8db4f1f94ee5ba04d3dace40e2151b5c419b3991bf7f83"
+    },
+    {
+      "bytes": 366164,
+      "gitBlob": "9f284d3492969a4bb023a9efdbf5aa63d9d7a53e",
+      "mode": 256,
+      "remotePath": "/workspace/shared/gdal4k-c23-current-ci-h12-k4-20261103-a1/catalogue.json",
+      "sha256": "6b5d1af42eef3a2bf4209fd8525fd244d0332d05c879e41127ab66231b118683"
+    },
+    {
+      "bytes": 199128,
+      "gitBlob": "84bedda1e487e30a7efccfcad560c0737a6d5965",
+      "mode": 256,
+      "remotePath": "/workspace/shared/gdal4k-c23-current-ci-h12-k4-20261103-a1/qualified/qualified-current-scope.json",
+      "sha256": "c7305c5109100abfb96b57c7b19794ba1a5ee05a8aa7384132abeeb2a8332e14"
+    },
+    {
+      "bytes": 1420,
+      "gitBlob": "1f99e40422f025953e773b32802ea203968478f1",
+      "mode": 256,
+      "remotePath": "/workspace/shared/gdal4k-c23-root-control-h12-a1-v1/prepare-activation.json",
+      "sha256": "62de017f5b988590759bcae333795b089d7524a48ffd1de7132a091539714007"
+    }
+  ],
+  "kind": "GDAL-remote-audit-root-command",
+  "previousControlCommit": null,
+  "previousReceiptSha256": null,
+  "rootApprovedActualInputs": true,
+  "schemaVersion": 1,
+  "scope": {
+    "bytes": 199128,
+    "path": "/workspace/shared/gdal4k-c23-current-ci-h12-k4-20261103-a1/qualified/qualified-current-scope.json",
+    "sha256": "c7305c5109100abfb96b57c7b19794ba1a5ee05a8aa7384132abeeb2a8332e14"
+  },
+  "sequence": 0,
+  "site": {
+    "attempt": 1,
+    "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+    "jobId": 125673600189,
+    "repository": "tronto20/gdal4k",
+    "runId": 41561656368,
+    "uid": 0
+  },
+  "stage": "prepare",
+  "toolkit": {
+    "commit": "a2a3a7979970091f3f7fc3736719cd05542d01fc",
+    "manifestSha256": "0a01fb6749fee3bed8347104b959737dfeb4e11d7ef260f484c95f3569a78389"
+  }
+}
