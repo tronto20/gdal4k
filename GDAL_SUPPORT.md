@@ -20,6 +20,8 @@ Linux ARM64 combined verification uses an x64 cross producer and a separate actu
 
 The existing targets also include six Kotlin/Native variants, Android ARM64, and JavaScript and wasmJs in Node and browsers. Functionality should use the same public contracts across these targets, with explicit platform access and resource-lifetime rules.
 
+The [platform functional verification matrix](verification/platform-functional-verification.md) maps source and independently published-consumer fixtures to each execution path. It also records compile-only and physical-device gaps; configured tests count as evidence only after their meaningful cases actually execute successfully.
+
 Compilation, simulator execution, emulated instruction execution and execution on a physical device are distinct evidence. In particular, current iOS-device compile/link evidence and Android ARM64 JNI execution through an x86 native bridge must retain those labels. A missing runtime fixture remains a verification gap.
 
 Host, sandbox, filesystem, network, dependency or upstream limitations must be recorded per capability and platform. A documented limitation does not count as an implemented capability; it identifies the next implementation, packaging or verification work. Do not infer HDF5, netCDF or other optional-driver availability on hosts that have not executed the corresponding fixtures.

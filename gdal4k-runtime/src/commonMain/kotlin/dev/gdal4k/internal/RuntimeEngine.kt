@@ -50,7 +50,10 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val ownedMDResampled = type == "MDArray" && name == "getResampled"
         val ownedMDList = type == "MDArray" && method == "getCoordinateVariables"
         val mdStatistics = type == "MDArray" && name in setOf("getStatistics", "computeStatistics")
-        val cancellable = ownedMDView || ownedMDList || mdStatistics || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
+        val mdPlanning = type == "MDArray" && name in setOf("getTotalElementsCount", "getProcessingChunkSize")
+        val mdSetter = type == "MDArray" && method in setOf("setSpatialRef_SpatialReference", "setScale_Double_Int", "setOffset_Double_Int")
+        val detachedMDValue = mdPlanning || mdSetter
+        val cancellable = ownedMDView || ownedMDList || mdStatistics || detachedMDValue || transport.supportsHttpInputPolicy || ((type == "MDArray" || type == "Attribute") && name in setOf("read", "write", "readValues", "writeValues")) || type == "FeatureColumnStream" || name in setOf("writeMemoryFile", "readMemoryFile", "openColumnStream", "openDataset", "translate", "translateTo", "warp", "warpTo", "translateVector", "translateVectorTo",
             "demProcessing", "demProcessingTo", "rasterize", "rasterizeTo", "polygonize", "polygonizeTo", "footprint", "footprintTo", "tileIndex", "tileIndexTo", "multiDimTranslate", "multiDimTranslateFiles", "multiDimTranslateTo", "buildVRT",
             "sieveTo", "proximityTo", "fillNoData", "contour", "contourTo", "grid", "gridTo", "viewshed", "viewshedTo", "overlayTo",
             "transformPoints", "buildOverviews", "createCopy", "computeStatistics", "getHistogram", "getDefaultHistogram", "readRaster", "writeRaster", "readBlock", "writeBlock")
@@ -58,7 +61,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
             GdalCallControl(caller[Job], caller[GdalProgressContext], "$type.$name") else null
         return mutex.withLock {
         // Snapshot under operation serialization, before observing this call's allocations.
-        val freshHandleFloor = if (ownedMDList || ownedMDResampled) knownHandleHighWatermark.value else null
+        val freshHandleFloor = if (ownedMDList || ownedMDResampled || detachedMDValue) knownHandleHighWatermark.value else null
         if (method != "close") { caller.ensureActive(); check(!closed) { "GDAL runtime is closed" } }
         // Queued calls hold only caller references and metadata, never eagerly packed large buffers.
         val input = binary?.prepare?.invoke()
@@ -90,6 +93,26 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
             if (cancelled != null) { if (cancelled !== transportFailure) cancelled.addSuppressed(transportFailure); throw cancelled }
             throw transportFailure
         }
+        // These detached metadata values allocate no registered output resources.
+        // Fence ordinary calls too, before unvalidated IDs could affect handle bookkeeping.
+        if (detachedMDValue) {
+            try {
+                check((response["allocatedHandles"] as? JsonArray)?.isEmpty() == true) {
+                    "GDAL $name returned an invalid detached allocation ledger"
+                }
+            } catch (failure: Throwable) {
+                val cancelled = try { control?.cancellation() } catch (observerFailure: Throwable) { observerFailure }
+                val primary = cancelled ?: try {
+                    response["error"]?.let { GdalException(it.jsonPrimitive.content) } ?: failure
+                } catch (malformedError: Throwable) {
+                    failure.addSuppressed(malformedError)
+                    failure
+                }
+                if (primary !== failure) primary.addSuppressed(failure)
+                closeAllocated(response, primary, freshHandleFloor, includeReturnedHandles = false)
+                throw primary
+            }
+        }
         // Every native response carries its allocation ledger, even for ordinary non-controlled
         // getters. Observe it before unlock: another call may start before generated wrapping.
         (response["allocatedHandles"] as? JsonArray)?.forEach { id ->
@@ -98,11 +121,11 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val failure = try {
             control?.cancellation() ?: response["error"]?.let { GdalException(it.jsonPrimitive.content) }
         } catch (failure: Throwable) {
-            if (ownedMDView || ownedMDList) closeAllocated(response, failure, freshHandleFloor)
+            if (ownedMDView || ownedMDList || detachedMDValue) closeAllocated(response, failure, freshHandleFloor, includeReturnedHandles = !detachedMDValue)
             throw failure
         }
         if (failure != null) {
-            closeAllocated(response, failure, freshHandleFloor)
+            closeAllocated(response, failure, freshHandleFloor, includeReturnedHandles = !detachedMDValue)
             throw failure
         }
         response
@@ -110,8 +133,14 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         // Decode under the same lock in the original cancellable context. Multiple queued
         // reads cannot accumulate one decoded staging buffer each while another read starts.
         try {
-            if (ownedMDView || ownedMDList || mdStatistics) caller.ensureActive()
+            if (ownedMDView || ownedMDList || mdStatistics || detachedMDValue) caller.ensureActive()
             val value = response.getValue("result").jsonObject.getValue("value")
+            if (mdSetter) {
+                val accepted = value as? JsonPrimitive
+                check(accepted != null && !accepted.isString && accepted.booleanOrNull != null) {
+                    "GDAL $name returned an invalid metadata acceptance result"
+                }
+            }
             if (ownedMDView) {
                 // Validate before the generated wrapper can claim the owned result. The
                 // native registry encodes positive UInt64 IDs as canonical decimal strings.
@@ -145,12 +174,12 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         } catch (failure: Throwable) {
             // A malformed binary reply or cancellation while decoding an input-open reply
             // must release the newly allocated dataset and its isolated file workspace too.
-            withContext(NonCancellable) { closeAllocated(response, failure, freshHandleFloor) }
+            withContext(NonCancellable) { closeAllocated(response, failure, freshHandleFloor, includeReturnedHandles = !detachedMDValue) }
             throw failure
         }
     }
     }
-    private suspend fun closeAllocated(response: JsonObject, failure: Throwable, freshHandleFloor: ULong? = null) {
+    private suspend fun closeAllocated(response: JsonObject, failure: Throwable, freshHandleFloor: ULong? = null, includeReturnedHandles: Boolean = true) {
         val allocated = try { response["allocatedHandles"]?.jsonArray.orEmpty() }
         catch (cleanup: Throwable) {
             failure.addSuppressed(cleanup)
@@ -160,7 +189,7 @@ internal class RuntimeEngine(private val transport: GdalTransport) {
         val cleanupIds = if (freshHandleFloor != null) {
             // An omitted/malformed ledger can still leave identifiable fresh IDs in the exact
             // top-level owned result. Never guess IDs recursively or accept earlier/noncanonical IDs.
-            val returned = when (val value = (response["result"] as? JsonObject)?.get("value")) {
+            val returned = if (!includeReturnedHandles) emptyList() else when (val value = (response["result"] as? JsonObject)?.get("value")) {
                 is JsonArray -> value.toList()
                 is JsonPrimitive -> listOf(value)
                 else -> emptyList()

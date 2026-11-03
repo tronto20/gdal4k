@@ -102,7 +102,7 @@ class TransferTest(unittest.TestCase):
             if name.endswith('test.kexe'): path.chmod(0o755)
         arm.save(snapshot/'verification/results/published-consumer-linuxArm64/result.json',
                  dict(result='passed',compiled_only=True,producer_paths_hidden_count=3))
-        transfer = root/'verification/build/unit-transfer.tar.gz'
+        transfer = root/'verification/build/unit-transfer.tar.xz'
         with patch.object(arm.platform,'system',return_value='Linux'), patch.object(arm.platform,'machine',return_value='x86_64'):
             manifest=arm.create_transfer(root,snapshot,transfer)
         return transfer, manifest
@@ -111,10 +111,10 @@ class TransferTest(unittest.TestCase):
         subprocess.run(['git','clone','-q','--no-hardlinks',str(source),str(destination)],check=True)
 
     def rewrite(self, original, output, mutate):
-        with tarfile.open(original,'r:gz') as archive:
+        with tarfile.open(original,'r:xz') as archive:
             members=[(member,archive.extractfile(member).read()) for member in archive.getmembers()]
         mutate(members)
-        with tarfile.open(output,'w:gz') as archive:
+        with tarfile.open(output,'w:xz',preset=3) as archive:
             for member,data in members:
                 member.size=len(data); archive.addfile(member,io.BytesIO(data))
 
@@ -136,7 +136,7 @@ class TransferTest(unittest.TestCase):
                 for name in ('sdk-toolchain-inputs.json', 'sdk-source-inputs.json'):
                     self.assertTrue(json.loads((engine / name).read_text())['unitTransportOnly'])
                     self.assertIn((engine / name).relative_to(runtime).as_posix(), restored['files'])
-            self.assertEqual(archive.stat().st_size,json.loads(archive.with_suffix('.gz.json').read_text())['bytes'])
+            self.assertEqual(archive.stat().st_size,json.loads(archive.with_suffix('.xz.json').read_text())['bytes'])
             with self.assertRaisesRegex(ValueError,'existing destination'):
                 arm.restore_transfer(runtime,archive)
 
@@ -165,7 +165,7 @@ class TransferTest(unittest.TestCase):
             archive,_=self.prepare_transfer(root)
             for kind in ['hash','link','duplicate','traversal']:
                 runtime=Path(temporary)/kind;self.clone_checkout(root,runtime)
-                broken=Path(temporary)/(kind+'.tar.gz')
+                broken=Path(temporary)/(kind+'.tar.xz')
                 def mutate(members):
                     if kind=='hash': members[-1]=(members[-1][0],b'changed')
                     elif kind=='link': members[-1][0].type=tarfile.SYMTYPE;members[-1][0].linkname='/outside'

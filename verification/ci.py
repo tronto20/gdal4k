@@ -234,6 +234,9 @@ def main():
         stage('jvm-maven',targets=['jvm'],include_root=True,archive_format=a.archive_format)
     elif target=='linuxArm64-run':
         # Kotlin/Native has no Linux ARM64 compiler host. Execute the cross-linked tests here.
+        # Run the source JVM suite against the verified cross-produced engine; never rebuild it here.
+        gradle(':gdal4k:jvmTest', ':gdal4k-runtime:jvmTest',
+               options=['-Pgdal4kVerifiedStagedEngine=linux-arm64'])
         native=ROOT/'gdal4k-runtime/build/bin/linuxArm64/debugTest/test.kexe'
         run(native)
         binaries=list((ROOT/'verification/results/published-consumer-linuxArm64/bin').glob('**/test.kexe'))

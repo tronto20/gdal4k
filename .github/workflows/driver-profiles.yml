@@ -234,7 +234,7 @@ jobs:
       - name: Actual default ARM64 engine size baseline
         run: python verification/ci.py linuxArm64 --build-engine-only --command-timeout-seconds 10800
       - name: Cross-link source and independent consumer, publish isolated JVM and Native packages
-        run: python verification/driver-profile/arm64-profile.py cross-build --transfer verification/build/combined-linux-arm64.tar.gz
+        run: python verification/driver-profile/arm64-profile.py cross-build --transfer verification/build/combined-linux-arm64.tar.xz
       - uses: actions/cache/save@v6
         if: always()
         with:
@@ -244,8 +244,8 @@ jobs:
         with:
           name: profile-cross-combined-linux-arm64
           path: |
-            verification/build/combined-linux-arm64.tar.gz
-            verification/build/combined-linux-arm64.tar.gz.json
+            verification/build/combined-linux-arm64.tar.xz
+            verification/build/combined-linux-arm64.tar.xz.json
           if-no-files-found: error
       - uses: ./.github/actions/upload-audit-artifact
         if: always()
@@ -285,7 +285,7 @@ jobs:
       - name: Inspect space and actual ARM64 runtime host
         run: df -h . && uname -sm && docker version
       - name: Verify unchanged transport, run actual source and published JVM and Native, close owned fixtures
-        run: python verification/driver-profile/arm64-profile.py run --transfer verification/build/arm64-transfer/combined-linux-arm64.tar.gz
+        run: python verification/driver-profile/arm64-profile.py run --transfer verification/build/arm64-transfer/combined-linux-arm64.tar.xz
       - uses: ./.github/actions/upload-audit-artifact
         with:
           name: profile-combined-linux-arm64

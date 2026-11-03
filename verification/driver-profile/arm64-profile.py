@@ -156,7 +156,7 @@ def create_transfer(root, snapshot, destination):
     if destination.exists():
         raise ValueError('Refusing to replace an existing ARM transfer')
     payload = json.dumps(receipt, sort_keys=True, indent=2).encode()
-    with tarfile.open(destination, 'w:gz') as archive:
+    with tarfile.open(destination, 'w:xz', preset=3) as archive:
         member = tarfile.TarInfo('arm64-transfer.json'); member.size = len(payload); member.mode = 0o644
         archive.addfile(member, io.BytesIO(payload))
         for name in metadata:
@@ -168,7 +168,7 @@ def create_transfer(root, snapshot, destination):
 
 def restore_transfer(root, archive_path):
     """Audit every member before writing; no links or tracked-checkout replacement."""
-    with tarfile.open(archive_path, 'r:gz') as archive:
+    with tarfile.open(archive_path, 'r:xz') as archive:
         members = archive.getmembers()
         if not members or members[0].name != 'arm64-transfer.json' or not members[0].isfile() or members[0].size > 2**24:
             raise ValueError('Missing bounded ARM transfer manifest')

@@ -423,6 +423,45 @@ inline CPLJSONObject mdViewOrMask(Runtime& runtime, GDALMDArrayH source,
     owned.pointer = nullptr;
     return result;
 }
+inline CPLJSONObject mdTotalElementsCount(GDALMDArrayH source) {
+    CPLErrorReset();
+    const auto count = GDALMDArrayGetTotalElementsCount(source);
+    fileEnsure(CPLGetLastErrorType() < CE_Failure,
+               "Cannot obtain multidimensional element count");
+    // Native overflow is the value zero, without a failure diagnostic.
+    return value(std::to_string(count));
+}
+inline size_t mdProcessingChunkMemory(const CPLJSONObject& input) {
+    const auto text = mdViewString(input, "Processing chunk memory must be an unsigned decimal string");
+    uint64_t bytes = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), bytes);
+    require(parsed.ec == std::errc() && parsed.ptr == text.data() + text.size() &&
+                std::to_string(bytes) == text,
+            "Processing chunk memory must be a canonical UInt64 string");
+    require(bytes <= std::numeric_limits<size_t>::max(),
+            "Processing chunk memory exceeds native SIZE_MAX");
+    return static_cast<size_t>(bytes);
+}
+inline CPLJSONObject mdProcessingChunkSize(GDALMDArrayH source, const CPLJSONObject& args) {
+    const auto memory = mdProcessingChunkMemory(args["maxChunkMemory"]);
+    CPLErrorReset();
+    size_t count = 0;
+    auto chunks = GDALMDArrayGetProcessingChunkSize(source, &count, memory);
+    struct FreeChunks {
+        size_t* pointer;
+        ~FreeChunks() { CPLFree(pointer); }
+    } cleanup{chunks};
+    fileEnsure(CPLGetLastErrorType() < CE_Failure && (count == 0 || chunks != nullptr),
+               "Cannot obtain multidimensional processing chunks");
+    const auto rank = GDALMDArrayGetDimensionCount(source);
+    fileEnsure(CPLGetLastErrorType() < CE_Failure && count == rank &&
+                   count <= static_cast<size_t>(INT_MAX),
+               "Invalid multidimensional processing chunk rank");
+    CPLJSONArray result;
+    // Keep the same canonical string wire contract on both 32- and 64-bit size_t.
+    for (size_t i = 0; i < count; ++i) result.Add(std::to_string(chunks[i]));
+    return value(result);
+}
 inline CPLJSONObject mdStatistics(GDALMDArrayH source, const CPLJSONObject& args, bool compute) {
     require(args["approximate"].GetType() == CPLJSONObject::Type::Boolean,
             "Statistics approximate must be a boolean");

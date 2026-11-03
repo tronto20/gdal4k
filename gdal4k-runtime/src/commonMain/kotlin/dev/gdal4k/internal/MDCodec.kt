@@ -3,6 +3,19 @@ package dev.gdal4k.internal
 import dev.gdal4k.runtime.*
 import kotlinx.serialization.json.*
 
+internal fun decodeMDPlanningCount(element: JsonElement): ULong {
+    val text = (element as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val value = text?.toULongOrNull()
+    require(value != null && value.toString() == text) { "Invalid unsigned multidimensional planning value" }
+    return value
+}
+
+internal fun decodeMDPlanningChunks(element: JsonElement): List<ULong> {
+    val values = element as? JsonArray
+    require(values != null) { "Invalid multidimensional processing shape" }
+    return values.map(::decodeMDPlanningCount)
+}
+
 internal fun decodeMDStatistics(element: JsonElement): MDStatistics {
     val fields = element as? JsonObject
     require(fields != null && fields.keys == setOf("minimum", "maximum", "mean", "standardDeviation", "validCount")) {
