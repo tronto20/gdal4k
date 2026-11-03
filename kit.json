@@ -6,9 +6,9 @@
       "sha256": "d97daf109b2ad71e905041cd5c61d3d598d5b2425281302495d08d14f1b9608a"
     },
     "body": {
-      "bytes": 26057,
+      "bytes": 26975,
       "path": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/c23_serial_family_driver_v1.py",
-      "sha256": "9ee43ce3d6dfe52d222c2bec5e81a3d18762b5c6edd9c5dc7f5915d1b45b9c65"
+      "sha256": "7b1ca4ed0f7d4c7a8b5d5999702e3f9135f7c39a6d5b55642f6428f3eeeebcf7"
     },
     "combinedArm64": {
       "bytes": 44109,
@@ -135,10 +135,10 @@
       "sha256": "d97daf109b2ad71e905041cd5c61d3d598d5b2425281302495d08d14f1b9608a"
     },
     {
-      "bytes": 26057,
+      "bytes": 26975,
       "gitPath": "toolkit/c23_serial_family_driver_v1.py",
       "remotePath": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/c23_serial_family_driver_v1.py",
-      "sha256": "9ee43ce3d6dfe52d222c2bec5e81a3d18762b5c6edd9c5dc7f5915d1b45b9c65"
+      "sha256": "7b1ca4ed0f7d4c7a8b5d5999702e3f9135f7c39a6d5b55642f6428f3eeeebcf7"
     },
     {
       "bytes": 28680,
@@ -321,9 +321,9 @@
       "sha256": "d97daf109b2ad71e905041cd5c61d3d598d5b2425281302495d08d14f1b9608a"
     },
     {
-      "bytes": 26057,
+      "bytes": 26975,
       "path": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/c23_serial_family_driver_v1.py",
-      "sha256": "9ee43ce3d6dfe52d222c2bec5e81a3d18762b5c6edd9c5dc7f5915d1b45b9c65"
+      "sha256": "7b1ca4ed0f7d4c7a8b5d5999702e3f9135f7c39a6d5b55642f6428f3eeeebcf7"
     },
     {
       "bytes": 28680,

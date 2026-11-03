@@ -13,6 +13,7 @@ from pathlib import Path
 import signal
 import stat
 import subprocess
+import sys
 import time
 
 import recovery_archive_core_v3 as core
@@ -238,7 +239,7 @@ def launch_monitored(arguments, logging, *, pidfd_factory=os.pidfd_open):
     readfd, writefd = os.pipe()
     child, pidfd = None, None
     try:
-        child = subprocess.Popen(['python3', '-B', '-c', BOOTSTRAP, str(readfd), *arguments],
+        child = subprocess.Popen([sys.executable, '-B', '-c', BOOTSTRAP, str(readfd), *arguments],
                                  stdout=logging, stderr=subprocess.STDOUT, start_new_session=True,
                                  close_fds=True, pass_fds=(readfd,))
         os.close(readfd)
@@ -339,10 +340,22 @@ def main():
     body_path = Path(config['bodySource']['path'])
     core.need(body_path.name == 'c23_family_source_v1.py', 'Expected current frozen familyv5 source')
     scratch_base = Path(config['scratchBase'])
+    code_root = Path(__file__).parent
+    source_root = Path(COHORT['source']['root'])
     core.need(args.output.is_absolute() and scratch_base.is_absolute() and
-              args.output.is_relative_to(Path(__file__).parent) and
-              scratch_base.is_relative_to('/tmp') and '..' not in args.output.parts and '..' not in scratch_base.parts,
-              'Proof/scratch roots must be new controlled recovery paths')
+              (args.output.is_relative_to('/workspace/shared') or args.output.is_relative_to('/dev/shm')) and
+              scratch_base.is_relative_to('/tmp') and '..' not in args.output.parts and '..' not in scratch_base.parts and
+              args.output.resolve() == args.output and scratch_base.resolve() == scratch_base,
+              'Proof/scratch roots must be canonical controlled recovery paths')
+    for protected in (code_root, source_root, scratch_base):
+        core.need(not args.output.is_relative_to(protected) and not protected.is_relative_to(args.output),
+                  'Driver proof output overlaps code/source/scratch')
+    core.need(not os.path.lexists(args.output) and not os.path.lexists(scratch_base),
+              'Driver proof/scratch roots must be new')
+    for parent in (args.output.parent, scratch_base.parent):
+        parent_stat = os.stat(parent, follow_symlinks=False)
+        core.need(stat.S_ISDIR(parent_stat.st_mode) and parent_stat.st_uid == os.getuid(),
+                  'Driver proof/scratch parents must be owned directories')
     for material in inputs.materialization['artifacts'].values():
         raw_path = Path(material['path'])
         core.need(not raw_path.is_relative_to(scratch_base) and not raw_path.is_relative_to(args.output) and
