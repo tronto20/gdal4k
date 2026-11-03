@@ -285,6 +285,47 @@ def _positive_jvm(c, family, classifier, expected, *, version=None, fixture=Fals
     tests=_xml_contract(c,_xml_for(c,family,prefix),expected,'consumer',fixture=fixture)
     return {'classifier':classifier,'receipt':_ref(record),'consumer':facts,'tests':tests}
 
+def _default_arm_source_jvm(c, common_expected, common_source):
+    family='evidence-linux-arm64-runtime'
+    references=c.cohort['source']['references']
+    pins={row['path']:row for row in references}
+    _need(c,len(pins)==len(references),'current source reference map is duplicated')
+    def require_pin(pin):
+        expected=pins.get(pin['path'])
+        _need(c,isinstance(expected,dict) and all(pin[key]==expected.get(key) for key in ('bytes','sha256')),
+              'default ARM source JVM source pin differs from current intent: '+pin['path'])
+    for pin in common_source['groups']:require_pin(pin)
+    wire_groups=c.cohort['contracts']['wire']
+    _need(c,isinstance(wire_groups,list) and wire_groups,'current source JVM wire contract is absent')
+    wire_expected={};wire_sources=[]
+    for group in wire_groups:
+        name,path,methods=group['className'],group['path'],group['methods']
+        _need(c,isinstance(name,str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) and name not in wire_expected and name not in common_expected,
+              'duplicate or invalid source JVM wire class')
+        _need(c,isinstance(path,str) and path=='gdal4k-runtime/src/jvmTest/kotlin/dev/gdal4k/'+name+'.kt',
+              'source JVM wire path differs from its exact source class')
+        _need(c,isinstance(methods,list) and methods and len(methods)==len(set(methods)) and all(isinstance(x,str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',x) for x in methods),
+              'source JVM wire methods are invalid or duplicated')
+        raw,pin=_source(c,path);require_pin(pin)
+        actual=re.findall(r'@Test\s+fun\s+(\w+)\s*\(',raw.decode('utf-8'))
+        _need(c,actual==methods,'current source JVM wire methods differ from intent: '+name)
+        wire_expected[name]=set(methods);wire_sources.append({'className':name,**pin,'methods':list(methods)})
+    def select(expected):
+        return [_one(c,_suffix(c,[family],'gdal4k-runtime/build/test-results/jvmTest/TEST-dev.gdal4k.'+name+'.xml'),
+                     'current default ARM source JVM XML '+name) for name in expected]
+    common=_xml_contract(c,select(common_expected),common_expected,'dev.gdal4k')
+    wire=_xml_contract(c,select(wire_expected),wire_expected,'dev.gdal4k')
+    route_sources=[]
+    for path in ('verification/ci.py','.github/workflows/library-tests.yml','gdal4k-runtime/build.gradle.kts','gdal4k-engine/build.gradle.kts'):
+        _,pin=_source(c,path);require_pin(pin);route_sources.append(pin)
+    fingerprint=c.cohort['source']['defaultEngineFingerprint']
+    _need(c,c.prior['maven'].get('defaultEngineSourceFingerprint')==fingerprint,
+          'default ARM source JVM engine profile differs from current Maven/source identity')
+    return {'common':common,'wire':wire,'currentSourceContracts':{'common':common_source,'wire':{'groups':wire_sources,'methodCount':sum(map(len,wire_expected.values()))}},
+            'sourceRouteRefs':route_sources,'artifactFamily':family,'profile':'default','defaultEngineSourceFingerprint':fingerprint,
+            'scope':'Actual default source JVM common and wire cases on Linux ARM64; exact current intent class/method XML and source hashes, not a producer compile-only receipt.'}
+
+
 def gate_default_arm64(c):
     _scope(c);expected,source=_contract(c)
     role=_role(c,'verify / linux-arm64-runtime',_run(c,'primary'))
@@ -301,6 +342,7 @@ def gate_default_arm64(c):
         native.append(_native_suite(c,block[:finish.end()],namespace,expected))
     jvm_cases=_gradle_contract(c,text,expected,'','jvm')
     published=_positive_jvm(c,'evidence-linux-arm64-runtime','linux-arm64-gnu',expected)
+    source_jvm=_default_arm_source_jvm(c,expected,source)
     compiled_rows=_suffix(c,['evidence-linuxArm64'],'verification/results/published-consumer-linuxArm64/result.json')
     record=_one(c,compiled_rows,'cross-produced default ARM Native compilation receipt')
     value=_jsons(c,[record])[c.key(record)];_consumer(c,value,'linuxArm64',compiled=True,hidden=True)
@@ -310,7 +352,7 @@ def gate_default_arm64(c):
     for rows in (source_bins,consumer_bins):
         binary=_one(c,rows,'staged AArch64 Native test executable')
         _need(c,binary.get('details',{}).get('format')=='ELF' and binary['details'].get('machine')==183 and binary['details'].get('bits')==64,'default ARM executable header is not ELF64 AArch64')
-    return {'head':_identity(c)['head'],'role':role,'sourceContract':source,'nativeSuiteTotalsInExecutionOrder':[row['tests'] for row in native],'sourceNative':native[0],'publishedNative':native[1],'publishedJvm':published,'publishedJvmLogCases':jvm_cases,'crossCompilationReceipt':_ref(record),'stagedExecutableHeaderFacts':[_ref(r) for r in source_bins+consumer_bins],'defaultSourceJVMTestsExecutedByThisRole':False,'scope':'Actual source Native, independently published Native and published JVM on Linux ARM64; source JVM was not run by this default role. Header facts do not establish a compiled SDK ABI.'}
+    return {'head':_identity(c)['head'],'role':role,'sourceContract':source,'nativeSuiteTotalsInExecutionOrder':[row['tests'] for row in native],'sourceNative':native[0],'publishedNative':native[1],'publishedJvm':published,'publishedJvmLogCases':jvm_cases,'crossCompilationReceipt':_ref(record),'stagedExecutableHeaderFacts':[_ref(r) for r in source_bins+consumer_bins],'sourceJvm':source_jvm,'defaultSourceJVMTestsExecutedByThisRole':bool(source_jvm['common']['contractCases'] and source_jvm['wire']['contractCases']),'scope':'Actual default source JVM common/wire, source Native, independently published Native and published JVM on Linux ARM64; source JVM uses the current default engine profile. Native compilation receipts remain compile-only. Header facts do not establish a compiled SDK ABI.'}
 
 def _relative_record(c, family, prefix, relative, description):
     _need(c,isinstance(relative,str) and relative and not relative.startswith('/') and '..' not in PurePosixPath(relative).parts,'unsafe relative producer evidence path')
@@ -615,6 +657,15 @@ def gate_platform_scopes(c):
         if target in ('linuxX64','macosArm64','mingwX64'):
             xml=_records(c,[family],lambda r:'/gdal4k-runtime/build/test-results/jvmTest/' in '/'+_path(r) and _path(r).endswith('.xml'))
             source_jvm.append({'host':target,'tests':_xml_contract(c,xml,expected,'dev.gdal4k')})
+    arm=c.prior['defaultArm64']
+    _need(c,arm.get('head')==_identity(c)['head'] and arm.get('defaultSourceJVMTestsExecutedByThisRole') is True and isinstance(arm.get('sourceJvm'),dict),
+          'current default ARM source JVM prior is absent or not actually executed')
+    arm_source_jvm=arm['sourceJvm']
+    _need(c,{name:set(methods) for name,methods in arm_source_jvm['common']['contractCases'].items()}==expected and
+          {name:set(methods) for name,methods in arm_source_jvm['wire']['contractCases'].items()}=={group['className']:set(group['methods']) for group in c.cohort['contracts']['wire']},
+          'default ARM source JVM common/wire prior differs from current intent')
+    source_jvm.append({'host':'linuxArm64','tests':arm_source_jvm['common'],'wireTests':arm_source_jvm['wire'],
+                       'sourceContract':arm_source_jvm['currentSourceContracts'],'sourceRouteRefs':arm_source_jvm['sourceRouteRefs'],'actualRuntimePrior':'defaultArm64'})
     ios_record,ios=_receipt_for_target(c,'evidence-iosArm64','iosArm64');_consumer(c,ios,'iosArm64',compiled=True,hidden=True)
     web=[]
     for target in ('js','wasmJs'):
@@ -652,4 +703,4 @@ def gate_platform_scopes(c):
             _need(c,counts==contexts[label]['suiteCounts'],'NC4 producer report totals differ from actual retained JUnit cases')
         nc4.append({'profile':profile,'target':target,'report':_ref(report_record),'contexts':contexts})
     _,fixture_source=_source(c,'verification/driver-profile/DriverProfileApiTest.kt')
-    return {'head':_identity(c)['head'],'sourceContract':contract,'defaultFourJVMClassifiers':classifiers,'defaultSourceJVMs':source_jvm,'defaultSourceJVMARM64Executed':False,'nativeRuntimeScopes':native,'defaultARMActualRuntimePrior':'defaultArm64','optionalCombinedSourceJVMARM64SeparatelyVerified':'combinedArm64','iosDeviceCompileOnly':{'consumerReceipt':_ref(ios_record),'physicalDeviceExecuted':False,'scope':'Current iOS ARM64 source/consumer compile and link only'},'webRuntimeScopes':web,'androidRuntimeScope':{'report':_ref(android_record),'sourceCases':android_source,'consumerReceipt':_ref(android_consumer_record),'publishedCases':android_published,'scope':'ARM64 library execution through x86_64 emulator native bridge','physicalARM64DeviceExecuted':False},'nc4ProfileRuntimeScopes':nc4,'combinedARMNC4Prior':'combinedArm64','currentNC4FixtureSource':fixture_source,'compiledSDKABIEstablished':False,'externalPublicationEstablished':False,'fullGDALGoalComplete':False,'scope':'Current configured API and regression contracts across four JVM classifiers and supported Native/web/Android routes; precise compile-only, emulator and actual runtime scopes remain separate.'}
+    return {'head':_identity(c)['head'],'sourceContract':contract,'defaultFourJVMClassifiers':classifiers,'defaultSourceJVMs':source_jvm,'defaultSourceJVMARM64Executed':arm['defaultSourceJVMTestsExecutedByThisRole'],'nativeRuntimeScopes':native,'defaultARMActualRuntimePrior':'defaultArm64','optionalCombinedSourceJVMARM64SeparatelyVerified':'combinedArm64','iosDeviceCompileOnly':{'consumerReceipt':_ref(ios_record),'physicalDeviceExecuted':False,'scope':'Current iOS ARM64 source/consumer compile and link only'},'webRuntimeScopes':web,'androidRuntimeScope':{'report':_ref(android_record),'sourceCases':android_source,'consumerReceipt':_ref(android_consumer_record),'publishedCases':android_published,'scope':'ARM64 library execution through x86_64 emulator native bridge','physicalARM64DeviceExecuted':False},'nc4ProfileRuntimeScopes':nc4,'combinedARMNC4Prior':'combinedArm64','currentNC4FixtureSource':fixture_source,'compiledSDKABIEstablished':False,'externalPublicationEstablished':False,'fullGDALGoalComplete':False,'scope':'Current configured API and regression contracts across four JVM classifiers and supported Native/web/Android routes; precise compile-only, emulator and actual runtime scopes remain separate.'}
