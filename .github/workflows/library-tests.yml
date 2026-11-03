@@ -439,4 +439,7 @@ jobs:
         if: always()
         with:
           name: evidence-linux-arm64-runtime
-          path: verification/results/published-consumer-jvm*/
+          path: |
+            verification/results/published-consumer-jvm*/
+            gdal4k/build/test-results/jvmTest/
+            gdal4k-runtime/build/test-results/jvmTest/

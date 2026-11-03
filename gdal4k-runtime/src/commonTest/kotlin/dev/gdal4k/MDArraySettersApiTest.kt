@@ -48,7 +48,9 @@ class MDArraySettersApiTest {
 
     @Test fun memoryHintsDoNotConvertValuesAndLegacyCallsRetainTheirMeaning() = runTest(timeout = 120.seconds) {
         val precise = 1.234567890123
-        assertNotEquals(precise, precise.toFloat().toDouble())
+        // Force an IEEE-754 Float32 roundtrip; Kotlin/JS Float casts use JS Number.
+        val roundedFloat32 = Float.fromBits(precise.toFloat().toBits()).toDouble()
+        assertNotEquals(precise, roundedFloat32)
         memory { group ->
             array(group, "numeric", MDDataType.Numeric(GdalDataType.Float64), longArrayOf(2, 3)) { source ->
                 val samples = doubleArrayOf(1.0, -2.0, 3.5, 4.0, 5.0, -6.0)
