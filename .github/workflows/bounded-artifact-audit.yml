@@ -30,7 +30,7 @@ jobs:
       - name: Checkout immutable reviewed audit kit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 9a03c9b2113083964195db201325058fcebfdec2
+          ref: d1b33ef20e1fe180738d8bfbfeafd5b367014e7d
           fetch-depth: 1
           persist-credentials: false
           path: audit-kit
@@ -41,8 +41,8 @@ jobs:
           python3 - <<'PY'
           import hashlib,json,pathlib,subprocess
           root=pathlib.Path("audit-kit").resolve()
-          assert subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"]).decode().strip()=="9a03c9b2113083964195db201325058fcebfdec2"
-          raw=(root/"kit.json").read_bytes();assert hashlib.sha256(raw).hexdigest()=="dbee5d6aa15b1034a62e278b96c07ef7a8c337d45591ef237ca5adac1aa90a63"
+          assert subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"]).decode().strip()=="d1b33ef20e1fe180738d8bfbfeafd5b367014e7d"
+          raw=(root/"kit.json").read_bytes();assert hashlib.sha256(raw).hexdigest()=="27a0cdbfe74379e1f570e164d65fcda6ccb3c06f50a89c2568d8091a24637dc4"
           data=json.loads(raw)
           for row in data["files"]+data["hostFiles"]:
               relative=pathlib.PurePosixPath(row["gitPath"])
@@ -74,7 +74,7 @@ jobs:
           IMAGE_ID=$(docker inspect --format "{{.Image}}" "$AUDIT_CONTAINER")
           docker exec -e GDAL_AUDIT_CONTAINER_ID="$CID" -e GDAL_AUDIT_IMAGE_ID="$IMAGE_ID" "$AUDIT_CONTAINER" \
             python3 -B /checkout/kit/worker/remote_worker.py init --kit /checkout/kit \
-            --kit-commit 9a03c9b2113083964195db201325058fcebfdec2 --manifest-sha256 dbee5d6aa15b1034a62e278b96c07ef7a8c337d45591ef237ca5adac1aa90a63 \
+            --kit-commit d1b33ef20e1fe180738d8bfbfeafd5b367014e7d --manifest-sha256 27a0cdbfe74379e1f570e164d65fcda6ccb3c06f50a89c2568d8091a24637dc4 \
             --source-checkout /checkout/producer --state-root "$AUDIT_STATE"
       - name: Retain bounded initialization failure
         if: failure()
