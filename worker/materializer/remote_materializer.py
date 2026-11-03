@@ -42,8 +42,8 @@ def utc():
     return dt.datetime.now(dt.timezone.utc).isoformat().replace('+00:00','Z')
 
 def timestamp(value):
-    need(isinstance(value,str) and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z',value),'UTC_TIMESTAMP')
-    return dt.datetime.fromisoformat(value[:-1]+'+00:00')
+    need(isinstance(value,str) and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|\+00:00)',value),'UTC_TIMESTAMP')
+    return dt.datetime.fromisoformat(value[:-1]+'+00:00' if value.endswith('Z') else value)
 
 def unique(pairs):
     value={}

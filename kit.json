@@ -51,9 +51,9 @@
       "sha256": "d97daf109b2ad71e905041cd5c61d3d598d5b2425281302495d08d14f1b9608a"
     },
     "prepare": {
-      "bytes": 38297,
+      "bytes": 38343,
       "path": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/_remote/remote_materializer.py",
-      "sha256": "bd1d93dbc9aba579edda2927b59e13629bc6505596eb98ab04e5cf6f11f6cc5a"
+      "sha256": "0efefbfd8a9104be9d72071a9d0284fe9340d5406f92f53b87283be855726c7b"
     },
     "sourceBindings": {
       "bytes": 44109,
@@ -219,10 +219,10 @@
       "sha256": "2eb20c9b6b97650a392e94667642129560c4f9346d3d1c02157d31d285646d32"
     },
     {
-      "bytes": 38297,
+      "bytes": 38343,
       "gitPath": "worker/materializer/remote_materializer.py",
       "remotePath": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/_remote/remote_materializer.py",
-      "sha256": "bd1d93dbc9aba579edda2927b59e13629bc6505596eb98ab04e5cf6f11f6cc5a"
+      "sha256": "0efefbfd8a9104be9d72071a9d0284fe9340d5406f92f53b87283be855726c7b"
     }
   ],
   "hostFiles": [
@@ -254,9 +254,9 @@
     "sha256": "8a64c06e34c32204ee401a948b85e1e05e4a30499ad973547b44be626559e628"
   },
   "materializer": {
-    "bytes": 38297,
+    "bytes": 38343,
     "path": "/workspace/shared/gdal4k-c23-acceptance-tools-v1/_remote/remote_materializer.py",
-    "sha256": "bd1d93dbc9aba579edda2927b59e13629bc6505596eb98ab04e5cf6f11f6cc5a"
+    "sha256": "0efefbfd8a9104be9d72071a9d0284fe9340d5406f92f53b87283be855726c7b"
   },
   "outerRunner": {
     "bytes": 20186,
