@@ -1,0 +1,373 @@
+{
+  "capturedAtUtc": "2026-11-03 02:47:34 UTC",
+  "captures": [
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 716015,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/defaultArm64-text/content.txt",
+        "sha256": "b1bb18ef80dd37c9b936db3094a613cefc0206f202aa255dc9a48069ce8dfd6a"
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125692490151,
+      "operation": {
+        "bytes": 727615,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/defaultArm64-operation/operation.json",
+        "sha256": "0b07393104b1af7509cc3d37b1ce484db7bd67f117c30b3e128830a822bb220f"
+      },
+      "role": "defaultArm64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 844758,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/windowsReadiness-text/content.txt",
+        "sha256": "e7c4f0c8d7770bc6b440833954d13cd130b56bf652f215200dd04c01018b63a8"
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719457,
+      "operation": {
+        "bytes": 866497,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-04/operation.json",
+        "sha256": "75291e90489bfbd345eaffcca6d06bc8795208629dfc03c8a4db216efe643392"
+      },
+      "role": "windowsReadiness",
+      "run": 41561656477
+    }
+  ],
+  "cohortManifest": {
+    "bytes": 233060,
+    "path": "/workspace/shared/gdal4k-c23-root-inputs-h12-v1/cohort-static-intent.json",
+    "sha256": "ab0995546af72dd77b8db4f1f94ee5ba04d3dace40e2151b5c419b3991bf7f83"
+  },
+  "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+  "kind": "GDAL-cohort-current-normal-plugin-joblog-captures",
+  "noAcceptanceClaim": true,
+  "schemaVersion": 1,
+  "sdkCaptures": [
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 347304,
+        "sha256": "2736c4e8a51e19d618c8d77f0db38d3cd578e0ca8d6bbd90fc76f531b00954ee",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719593,
+      "operation": {
+        "bytes": 356497,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-01/operation.json",
+        "sha256": "02e8e77f82243a36e86b725f9753e38e433aa96243fbe00d867022533582ee2a"
+      },
+      "role": "verify / Native linuxX64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 177153,
+        "sha256": "21810fed6803e2f7e4c1ff040116c8280a005a6ec0ff32c1c5374c91f61d06c9",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719614,
+      "operation": {
+        "bytes": 180303,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-02/operation.json",
+        "sha256": "d1563f693979f3fb14d57b76fbd5c042c655552f4f0f5e36b66170ffa72d1ebe"
+      },
+      "role": "verify / Native linuxArm64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 323758,
+        "sha256": "8613e83f2e8ccfff968f1b05d5901f1c6aac751e2835f2bf883ad437adf498f8",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719550,
+      "operation": {
+        "bytes": 332479,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-03/operation.json",
+        "sha256": "c3e2f28b9366ce21fa829b6d9163539ea8ffbf7dda275f6a07aaacf3da8a74b9"
+      },
+      "role": "verify / Native macosArm64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 844758,
+        "sha256": "e7c4f0c8d7770bc6b440833954d13cd130b56bf652f215200dd04c01018b63a8",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719457,
+      "operation": {
+        "bytes": 866497,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-04/operation.json",
+        "sha256": "75291e90489bfbd345eaffcca6d06bc8795208629dfc03c8a4db216efe643392"
+      },
+      "role": "verify / Native mingwX64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 188003,
+        "sha256": "83d87243a724a65ed806793c84397a2409a84b38cdecc2434de50028f166ec10",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719455,
+      "operation": {
+        "bytes": 190963,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-05/operation.json",
+        "sha256": "f46a0ae744850bc1f43f6a307d830bb0f36b6964c4b02d30c3d9981979d752a3"
+      },
+      "role": "verify / Native iosArm64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 207223,
+        "sha256": "bc3a0cececc460f1d0e763620fbd411df9e1165095a4f094a52cc7c71c436bb4",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719668,
+      "operation": {
+        "bytes": 210566,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-06/operation.json",
+        "sha256": "e02918365d138b5a51aca4185c89aa9353d78a12f70751d5da7c68468bfb01ef"
+      },
+      "role": "verify / Native iosSimulatorArm64",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 222981,
+        "sha256": "9ab43eb429b900f60ec6a855e8ac19b87675166053baebd13fbe554caacb33ec",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719492,
+      "operation": {
+        "bytes": 227075,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-07/operation.json",
+        "sha256": "98cfd95669dcc439344cf5bc7668bbb70e2c8aedaa120b216d08677386a5cc9e"
+      },
+      "role": "verify / web",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 199269,
+        "sha256": "268e718404f2d85f98a575395d30607e77cc5e780d4e10ed5c00ea71c1bd8d1f",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673719582,
+      "operation": {
+        "bytes": 202521,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-08/operation.json",
+        "sha256": "26b50615dc97e31817851702d74a9391d4eaf128eb66cb9048fe761b6cf684dd"
+      },
+      "role": "verify / Android arm64-v8a",
+      "run": 41561656477
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 433183,
+        "sha256": "d6cb0059241d3e846f5ac0e2ccad1b5a0da37578ccf36f2392dbb92156804a2c",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673432094,
+      "operation": {
+        "bytes": 438834,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-09/operation.json",
+        "sha256": "c9d00373dc06c97c6358a790d9ebe5d52cee35138ddb6415f287255328c791e9"
+      },
+      "role": "Profile scientific on linux-amd64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 506363,
+        "sha256": "44f82fa13dc3c77ae838d445e463fa8af4477acf7754bd9e1605dfba9834ba29",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673432055,
+      "operation": {
+        "bytes": 511937,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-10/operation.json",
+        "sha256": "450230120fbb8fe2248db976ea2150bd82af6c6205f0970d2925c9a3b97bcf9c"
+      },
+      "role": "Profile scientific on macos-arm64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 475938,
+        "sha256": "28d45f137955547fa3b60c8afa10c97ea92175c30d07562838acbb0be91f1e36",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673432039,
+      "operation": {
+        "bytes": 482217,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-11/operation.json",
+        "sha256": "f25e920a634227c3e2b6bd1022aa81a94718b1cf1ccedcceed8fe5f677163796"
+      },
+      "role": "Profile parquet on linux-amd64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 559074,
+        "sha256": "e8d8384e39041727e05ee74729abcefee52ddb4b07cee527897ca9d73924ace3",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673431912,
+      "operation": {
+        "bytes": 565469,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-12/operation.json",
+        "sha256": "f485c22f1202651d565df48e5ba5407d661eaeb734e1c1bb5a227b74bbe3924b"
+      },
+      "role": "Profile parquet on macos-arm64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 455686,
+        "sha256": "3fbc7a24e455a992c04d3f3ef39ce8d539252fbb7611faa10180168f63302b68",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673432079,
+      "operation": {
+        "bytes": 461928,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-13/operation.json",
+        "sha256": "c14049e0345e4d7a54693b08ebba028c52fa40af94a68b716242d8c6de643d6f"
+      },
+      "role": "Profile http on linux-amd64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 520341,
+        "sha256": "c74fa06f25989beef3b288a474fbf60dff710619a421ce493bfe26a27736b0ed",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673432122,
+      "operation": {
+        "bytes": 526458,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-14/operation.json",
+        "sha256": "24e663a846eacf676523b883b9f0c50dc97c506e57000dd3b492eb7851b65bea"
+      },
+      "role": "Profile http on macos-arm64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 636035,
+        "sha256": "337add20f2d56bb20af09bfc762669da8821faed8552060fb1b1138c92667b04",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673431987,
+      "operation": {
+        "bytes": 643718,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-15/operation.json",
+        "sha256": "0e560409f37b4077de9635bc69d384d46e796721574ee44ebce7fb6af0df4b6e"
+      },
+      "role": "Profile combined on macos-arm64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 443689,
+        "sha256": "02a8732c15ec0a505809f0c55eb2fc909644a45715175e97dc9ecce851e2cc68",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673431806,
+      "operation": {
+        "bytes": 449547,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-16/operation.json",
+        "sha256": "8c6be321cd8bac50cde0be0ec6ec6e8ccd5f646f562fb5194449f84b78605307"
+      },
+      "role": "Profile postgresql on linux-amd64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 566738,
+        "sha256": "b433380169362941968641a4a0d4d321c2368550d5be4aa9c14bbdbb0e0951ab",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673431704,
+      "operation": {
+        "bytes": 574651,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-17/operation.json",
+        "sha256": "83934006579981c58987f4c2896dfa27715c36d313536b9f76c4d8cc3104e060"
+      },
+      "role": "Profile combined on linux-amd64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 260021,
+        "sha256": "45bfb2de81683a42f246ccf169478e67e6b600f1630ac2c918718f5f3650fcf9",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673432070,
+      "operation": {
+        "bytes": 263366,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-18/operation.json",
+        "sha256": "3c5cfc6adbfd3c81d24ca7dd8003615a215d5056fc242229d31a6ab81263e031"
+      },
+      "role": "Cross-build combined drivers for Linux ARM64",
+      "run": 41561656367
+    },
+    {
+      "attempt": 1,
+      "decodedText": {
+        "bytes": 703093,
+        "sha256": "5f53f89510fecacc69f631fcbc703be20469b0079cb7fe37f29fdf63ed0ccb35",
+        "transform": "Exact UTF-8 encoding of actual returnedResult.structuredContent.content; preserves BOM and newlines."
+      },
+      "head": "fa8a1779b293c5db869c07e0a62775ba7aefbfb8",
+      "jobId": 125673431994,
+      "operation": {
+        "bytes": 727613,
+        "path": "/workspace/shared/gdal4k-c23-h12-job125696844062-postprepare-v1/shared/joblogs/sdk-19/operation.json",
+        "sha256": "edc580dda7acebec5f7256f57009fb67b032bfa7149b16aeedf99cb47860ae6b"
+      },
+      "role": "Profile combined on windows-amd64",
+      "run": 41561656367
+    }
+  ]
+}
